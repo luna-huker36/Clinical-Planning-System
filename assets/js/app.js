@@ -7,6 +7,7 @@ import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
 import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
 import { MTLLoader } from 'three/addons/loaders/MTLLoader.js';
+import { ConvexHull } from 'three/addons/math/ConvexHull.js';
 
 // ==================== TAB NAVIGATION ====================
 const tabBtns = document.querySelectorAll('.tab-btn');
@@ -240,14 +241,19 @@ function applyVisualMode3D(obj) {
 
 function autoDetectScale(maxDim, prefix) {
   // maxDim in model units. Heuristic for face/head scans:
-  // 0.05–1.0  → meters (1 unit = 1000 mm)
-  // 1–1000    → millimeters (1 unit = 1 mm)
-  // >1000     → unknown, ask calibration
+  // 0.05–1.0   → meters   (1 unit = 1000 mm)
+  // 1–50       → centimeters (1 unit = 10 mm) — typical artistic/demo models
+  // 50–1000    → millimeters (1 unit = 1 mm)  — typical photogrammetry scans
+  // >1000      → unknown, ask calibration
   if (maxDim > 0.05 && maxDim < 1.0) {
     scale3dMMperUnit = 1000;
     updateScaleBadge();
     setStatus3d(`${prefix} Авто-масштаб: 1 ед. = 1000 мм (метры).`);
-  } else if (maxDim >= 1.0 && maxDim <= 1000) {
+  } else if (maxDim >= 1.0 && maxDim < 50) {
+    scale3dMMperUnit = 10;
+    updateScaleBadge();
+    setStatus3d(`${prefix} Авто-масштаб: 1 ед. = 10 мм (сантиметры).`);
+  } else if (maxDim >= 50 && maxDim <= 1000) {
     scale3dMMperUnit = 1;
     updateScaleBadge();
     setStatus3d(`${prefix} Авто-масштаб: 1 ед. = 1 мм.`);
@@ -265,8 +271,7 @@ function loadModel3D(url) {
   wireframeMode = false; normalsMode = false;
   updateBtn3DStates();
 
-  loader.load(url, gltf => {
-    const model = gltf.scene;
+  const finishLoad = (model) => {
     model.traverse(c => { if (c.isMesh) c.userData.originalMaterial = c.material.clone(); });
     scene.add(model);
     currentModel = model;
@@ -277,10 +282,51 @@ function loadModel3D(url) {
     const size = box.getSize(new THREE.Vector3());
     const maxDim = Math.max(size.x, size.y, size.z);
     autoDetectScale(maxDim, 'Модель загружена.');
-  }, null, err => {
+  };
+
+  const onError = (err) => {
     loadEl.classList.remove('visible');
     console.error('Model load error:', err);
-  });
+  };
+
+  if (url.toLowerCase().endsWith('.obj')) {
+    // OBJ format: use OBJLoader
+    const objLoader = new OBJLoader();
+    const basePath = url.substring(0, url.lastIndexOf('/') + 1);
+    const mtlUrl = url.replace(/\.obj$/i, '.obj.mtl');
+    // Try loading MTL first
+    const mtlLoader = new MTLLoader();
+    mtlLoader.setPath(basePath);
+    const mtlFile = mtlUrl.substring(mtlUrl.lastIndexOf('/') + 1);
+    mtlLoader.load(mtlFile, (materials) => {
+      materials.preload();
+      objLoader.setMaterials(materials);
+      objLoader.setPath(basePath);
+      objLoader.load(url.substring(url.lastIndexOf('/') + 1), (model) => {
+        // Apply texture if available
+        const texLoader = new THREE.TextureLoader();
+        const texUrl = basePath + 'texture_0.png';
+        texLoader.load(texUrl, (tex) => {
+          tex.flipY = false;
+          tex.colorSpace = THREE.SRGBColorSpace;
+          model.traverse(c => {
+            if (c.isMesh) {
+              c.material = new THREE.MeshStandardMaterial({
+                map: tex, roughness: 0.7, metalness: 0.0
+              });
+            }
+          });
+          finishLoad(model);
+        }, null, () => finishLoad(model));
+      }, null, onError);
+    }, null, () => {
+      // No MTL — load OBJ directly
+      objLoader.load(url, finishLoad, null, onError);
+    });
+  } else {
+    // GLB/GLTF format
+    loader.load(url, gltf => finishLoad(gltf.scene), null, onError);
+  }
 }
 
 function loadOBJModel(objFile, mtlFile, allFiles) {
@@ -586,49 +632,123 @@ function analyzeMeshVolume(mesh) {
   // (before vertex deduplication, which merges nearby vertices across fragments)
   const triCount = index ? index.count / 3 : pos.count / 3;
   const rawTris = []; // [rawA, rawB, rawC] using original buffer indices
-  const rawAdj = new Array(pos.count);
-  for (let i = 0; i < pos.count; i++) rawAdj[i] = [];
 
   for (let i = 0; i < triCount; i += 1) {
     const ai = index ? index.getX(i * 3) : i * 3;
     const bi = index ? index.getX(i * 3 + 1) : i * 3 + 1;
     const ci = index ? index.getX(i * 3 + 2) : i * 3 + 2;
     rawTris.push([ai, bi, ci]);
-    rawAdj[ai].push(bi, ci);
-    rawAdj[bi].push(ai, ci);
-    rawAdj[ci].push(ai, bi);
   }
 
-  // BFS on raw indices to find connected components
-  const rawCompId = new Int32Array(pos.count).fill(-1);
-  const compSizes = [];
-  let ci = 0;
-  for (let start = 0; start < pos.count; start++) {
-    if (rawCompId[start] !== -1 || rawAdj[start].length === 0) continue;
-    const queue = [start];
-    rawCompId[start] = ci;
-    let head = 0;
-    while (head < queue.length) {
-      const v = queue[head++];
-      for (const n of rawAdj[v]) {
-        if (rawCompId[n] === -1) { rawCompId[n] = ci; queue.push(n); }
-      }
+  // BFS component detection: works on indexed geometry directly,
+  // or on deduplicated vertices for non-indexed geometry (e.g. OBJ).
+  let totalComponents = 1;
+  let largestPct = 100;
+  let useComponentFilter = false;
+  let filteredRawTris = rawTris;
+
+  if (index) {
+    // Indexed geometry: BFS on raw vertex indices (fast, uses shared vertices)
+    const rawAdj = new Array(pos.count);
+    for (let i = 0; i < pos.count; i++) rawAdj[i] = [];
+    for (const [ai, bi, ci2] of rawTris) {
+      rawAdj[ai].push(bi, ci2);
+      rawAdj[bi].push(ai, ci2);
+      rawAdj[ci2].push(ai, bi);
     }
-    compSizes.push({ id: ci, count: queue.length });
-    ci++;
+
+    const rawCompId = new Int32Array(pos.count).fill(-1);
+    const compSizes = [];
+    let ci = 0;
+    for (let start = 0; start < pos.count; start++) {
+      if (rawCompId[start] !== -1 || rawAdj[start].length === 0) continue;
+      const queue = [start];
+      rawCompId[start] = ci;
+      let head = 0;
+      while (head < queue.length) {
+        const v = queue[head++];
+        for (const n of rawAdj[v]) {
+          if (rawCompId[n] === -1) { rawCompId[n] = ci; queue.push(n); }
+        }
+      }
+      compSizes.push({ id: ci, count: queue.length });
+      ci++;
+    }
+
+    compSizes.sort((a, b) => b.count - a.count);
+    const largestCompId = compSizes[0]?.id ?? 0;
+    totalComponents = compSizes.length;
+    largestPct = pos.count > 0
+      ? Math.round(compSizes[0].count / pos.count * 100) : 100;
+
+    if (totalComponents > 1 && (largestPct > 50 || totalComponents > 50)) {
+      filteredRawTris = rawTris.filter(([a]) => rawCompId[a] === largestCompId);
+      useComponentFilter = true;
+    }
+  } else {
+    // Non-indexed geometry (OBJ): deduplicate vertices by position, then BFS
+    const dedupMap = new Map(); // position key → deduplicated ID
+    const rawToDedup = new Int32Array(pos.count);
+    let dedupCount = 0;
+    const tmpV = new THREE.Vector3();
+
+    for (let i = 0; i < pos.count; i++) {
+      tmpV.fromBufferAttribute(pos, i).applyMatrix4(matrix);
+      const key = `${Math.round(tmpV.x * 1e4)},${Math.round(tmpV.y * 1e4)},${Math.round(tmpV.z * 1e4)}`;
+      let did = dedupMap.get(key);
+      if (did == null) {
+        did = dedupCount++;
+        dedupMap.set(key, did);
+      }
+      rawToDedup[i] = did;
+    }
+
+    // Build adjacency on deduplicated IDs
+    const dedupAdj = new Array(dedupCount);
+    for (let i = 0; i < dedupCount; i++) dedupAdj[i] = [];
+    const triCompId = new Int32Array(rawTris.length).fill(-1);
+
+    for (let t = 0; t < rawTris.length; t++) {
+      const da = rawToDedup[rawTris[t][0]];
+      const db = rawToDedup[rawTris[t][1]];
+      const dc = rawToDedup[rawTris[t][2]];
+      dedupAdj[da].push(db, dc);
+      dedupAdj[db].push(da, dc);
+      dedupAdj[dc].push(da, db);
+    }
+
+    // BFS on deduplicated vertices
+    const dedupCompId = new Int32Array(dedupCount).fill(-1);
+    const compSizes = [];
+    let ci = 0;
+    for (let start = 0; start < dedupCount; start++) {
+      if (dedupCompId[start] !== -1 || dedupAdj[start].length === 0) continue;
+      const queue = [start];
+      dedupCompId[start] = ci;
+      let head = 0;
+      while (head < queue.length) {
+        const v = queue[head++];
+        for (const n of dedupAdj[v]) {
+          if (dedupCompId[n] === -1) { dedupCompId[n] = ci; queue.push(n); }
+        }
+      }
+      compSizes.push({ id: ci, count: queue.length });
+      ci++;
+    }
+
+    compSizes.sort((a, b) => b.count - a.count);
+    const largestCompId = compSizes[0]?.id ?? 0;
+    totalComponents = compSizes.length;
+    largestPct = dedupCount > 0
+      ? Math.round(compSizes[0].count / dedupCount * 100) : 100;
+
+    if (totalComponents > 1 && (largestPct > 50 || totalComponents > 50)) {
+      filteredRawTris = rawTris.filter(([a]) => dedupCompId[rawToDedup[a]] === largestCompId);
+      useComponentFilter = true;
+    }
   }
 
-  // Use largest component only
-  compSizes.sort((a, b) => b.count - a.count);
-  const largestCompId = compSizes[0]?.id ?? 0;
-  const totalComponents = compSizes.length;
-  const largestPct = pos.count > 0
-    ? Math.round(compSizes[0].count / pos.count * 100) : 100;
-
-  // Step 2: Process only triangles from the largest component, with deduplication
-  const filteredRawTris = totalComponents > 1
-    ? rawTris.filter(([a]) => rawCompId[a] === largestCompId)
-    : rawTris;
+  // Step 2: Process triangles with deduplication
 
   for (const [ai, bi, ci2] of filteredRawTris) {
     const aId = getVertexId(ai);
@@ -640,10 +760,123 @@ function analyzeMeshVolume(mesh) {
 
   if (worldVertices.length < 3) return null;
 
-  // Filter triangles (already filtered above)
-  const useTris = allTris;
+  // Step 2b: Spatial density filtering using 3D voxel grid
+  // For noisy photogrammetry, vertex density is high on the actual object surface
+  // and sparse in noise regions. We find the densest cluster and keep only that.
+  let useTris = allTris;
+  // Run spatial filter for: (a) indexed with many components, or (b) non-indexed (OBJ) with many tris
+  const needsSpatialFilter = (allTris.length > 500) &&
+    ((useComponentFilter && totalComponents > 50) || (!index && allTris.length > 5000));
+  if (needsSpatialFilter) {
+    const vBbox = new THREE.Box3().setFromPoints(worldVertices);
+    const vSize = vBbox.getSize(new THREE.Vector3());
+    const gridRes = 32;
+    const cellSize = new THREE.Vector3(
+      vSize.x / gridRes || 1, vSize.y / gridRes || 1, vSize.z / gridRes || 1
+    );
 
-  // Step 3: Build edge map and compute base signed volume on filtered triangles
+    // Count vertices per cell
+    const cellCounts = new Map();
+    const vertCell = new Int32Array(worldVertices.length);
+    for (let i = 0; i < worldVertices.length; i++) {
+      const v = worldVertices[i];
+      const cx = Math.min(gridRes - 1, Math.floor((v.x - vBbox.min.x) / cellSize.x));
+      const cy = Math.min(gridRes - 1, Math.floor((v.y - vBbox.min.y) / cellSize.y));
+      const cz = Math.min(gridRes - 1, Math.floor((v.z - vBbox.min.z) / cellSize.z));
+      const key = cx + cy * gridRes + cz * gridRes * gridRes;
+      vertCell[i] = key;
+      cellCounts.set(key, (cellCounts.get(key) || 0) + 1);
+    }
+
+    // Find densest cell, then BFS expand to adjacent non-empty cells
+    let maxCell = 0, maxCount = 0;
+    for (const [key, count] of cellCounts) {
+      if (count > maxCount) { maxCount = count; maxCell = key; }
+    }
+
+    // Density threshold: median-based, separates dense surface from sparse noise
+    const densities = Array.from(cellCounts.values()).sort((a, b) => a - b);
+    const medianDensity = densities[Math.floor(densities.length * 0.5)] || 1;
+    const densityThreshold = Math.max(2, Math.floor(medianDensity * 0.5));
+
+    // BFS on grid cells: 26-neighbor with density threshold
+    const visitedCells = new Set([maxCell]);
+    const cellQueue = [maxCell];
+    let qHead = 0;
+    while (qHead < cellQueue.length) {
+      const cur = cellQueue[qHead++];
+      const cz = Math.floor(cur / (gridRes * gridRes));
+      const cy = Math.floor((cur - cz * gridRes * gridRes) / gridRes);
+      const cx = cur - cz * gridRes * gridRes - cy * gridRes;
+      for (let dz = -1; dz <= 1; dz++) {
+        for (let dy = -1; dy <= 1; dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            if (dx === 0 && dy === 0 && dz === 0) continue;
+            const nx = cx + dx, ny = cy + dy, nz = cz + dz;
+            if (nx < 0 || nx >= gridRes || ny < 0 || ny >= gridRes || nz < 0 || nz >= gridRes) continue;
+            const nKey = nx + ny * gridRes + nz * gridRes * gridRes;
+            if (!visitedCells.has(nKey) && (cellCounts.get(nKey) || 0) >= densityThreshold) {
+              visitedCells.add(nKey);
+              cellQueue.push(nKey);
+            }
+          }
+        }
+      }
+    }
+
+    // Conditionally dilate: expand visited region by 1 cell only when the filter was aggressive
+    // (removed >25% of triangles). This recovers edge geometry for sparse scans without
+    // introducing noise for already-clean scans.
+    const keepVertPre = new Uint8Array(worldVertices.length);
+    for (let i = 0; i < worldVertices.length; i++) {
+      if (visitedCells.has(vertCell[i])) keepVertPre[i] = 1;
+    }
+    const preDilateCount = allTris.filter(([a, b, c]) => keepVertPre[a] && keepVertPre[b] && keepVertPre[c]).length;
+    const preDilatePct = allTris.length > 0 ? preDilateCount / allTris.length : 1;
+
+    const dilated = new Set(visitedCells);
+    const shouldDilate = preDilatePct < 0.75; // Only dilate if initial filter removed >25%
+    if (shouldDilate) for (const cur of visitedCells) {
+      const cz = Math.floor(cur / (gridRes * gridRes));
+      const cy = Math.floor((cur - cz * gridRes * gridRes) / gridRes);
+      const cx = cur - cz * gridRes * gridRes - cy * gridRes;
+      for (let dz = -1; dz <= 1; dz++) {
+        for (let dy = -1; dy <= 1; dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            if (dx === 0 && dy === 0 && dz === 0) continue;
+            const nx = cx + dx, ny = cy + dy, nz = cz + dz;
+            if (nx < 0 || nx >= gridRes || ny < 0 || ny >= gridRes || nz < 0 || nz >= gridRes) continue;
+            const nKey = nx + ny * gridRes + nz * gridRes * gridRes;
+            if (cellCounts.has(nKey)) dilated.add(nKey);
+          }
+        }
+      }
+    }
+
+    // Keep only triangles whose vertices are all in dilated cells
+    const keepVert = new Uint8Array(worldVertices.length);
+    for (let i = 0; i < worldVertices.length; i++) {
+      if (dilated.has(vertCell[i])) keepVert[i] = 1;
+    }
+    const spatialTris = allTris.filter(([a, b, c]) => keepVert[a] && keepVert[b] && keepVert[c]);
+    const spatialPct = allTris.length > 0 ? Math.round(spatialTris.length / allTris.length * 100) : 100;
+
+
+
+    if (spatialTris.length > 100 && spatialPct < 95) {
+      useTris = spatialTris;
+    }
+  }
+
+  // Step 3: Compute mesh center from USED vertices only (for origin-independent signed volume)
+  const usedVertIds = new Set();
+  for (const [a, b, c] of useTris) { usedVertIds.add(a); usedVertIds.add(b); usedVertIds.add(c); }
+  const usedVertArray = Array.from(usedVertIds).map(id => worldVertices[id]);
+  const meshCenter = new THREE.Box3().setFromPoints(usedVertArray).getCenter(new THREE.Vector3());
+
+  // Build edge map and compute base signed volume on filtered triangles
+  // Subtract meshCenter from vertices so signed volume is origin-independent
+  // (critical for open/non-watertight meshes like photogrammetry scans)
   const edgeMap = new Map();
   let baseSignedVolume = 0;
 
@@ -654,15 +887,45 @@ function analyzeMeshVolume(mesh) {
     edgeMap.set(key, edge);
   };
 
+  // For non-indexed meshes (OBJ), normals may be inconsistent.
+  // Fix winding: ensure each triangle's normal points away from meshCenter.
+  // Also store corrected triangles for GWN (which needs consistent winding).
+  const fixWinding = !index;
+  const correctedTris = []; // [aId, bId, cId] with consistent outward winding
+
   for (const [aId, bId, cId] of useTris) {
-    baseSignedVolume += signedTriangleVolume(worldVertices[aId], worldVertices[bId], worldVertices[cId]);
+    const a = new THREE.Vector3().subVectors(worldVertices[aId], meshCenter);
+    const b = new THREE.Vector3().subVectors(worldVertices[bId], meshCenter);
+    const c = new THREE.Vector3().subVectors(worldVertices[cId], meshCenter);
+
+    if (fixWinding) {
+      // Face normal via cross product
+      const ab = new THREE.Vector3().subVectors(b, a);
+      const ac = new THREE.Vector3().subVectors(c, a);
+      const faceNormal = new THREE.Vector3().crossVectors(ab, ac);
+      // Face center relative to meshCenter
+      const faceCenter = new THREE.Vector3().addVectors(a, b).add(c).multiplyScalar(1/3);
+      // If normal points toward center (dot < 0), flip winding
+      if (faceNormal.dot(faceCenter) < 0) {
+        baseSignedVolume += signedTriangleVolume(a, c, b); // swapped b,c
+        addEdge(aId, cId);
+        addEdge(cId, bId);
+        addEdge(bId, aId);
+        correctedTris.push([aId, cId, bId]); // flipped
+        continue;
+      }
+    }
+
+    baseSignedVolume += signedTriangleVolume(a, b, c);
     addEdge(aId, bId);
     addEdge(bId, cId);
     addEdge(cId, aId);
+    correctedTris.push([aId, bId, cId]); // original order
   }
 
+
+
   // Step 4: Find boundary and build boundary adjacency
-  const meshCenter = new THREE.Box3().setFromPoints(worldVertices).getCenter(new THREE.Vector3());
   const boundaryAdj = new Map();
   let boundaryEdges = 0;
   let nonManifoldEdges = 0;
@@ -680,11 +943,16 @@ function analyzeMeshVolume(mesh) {
   }
 
   // Step 5: Close boundary loops with fan triangulation
+  // Large loops (main opening) use curved cap toward mesh center to avoid over-estimation
   const { loops, unresolvedBoundaryEdges } = collectBoundaryLoops(boundaryAdj, boundaryEdges);
   let capSignedVolume = 0;
   let cappedLoops = 0;
   let rejectedLoops = 0;
   let maxPlanarityRatio = 0;
+
+  // Compute mesh bounding sphere radius for relative size comparisons
+  const meshBbox = new THREE.Box3().setFromPoints(usedVertArray);
+  const meshDiag = meshBbox.getSize(new THREE.Vector3()).length();
 
   for (const loop of loops) {
     const points = loop.map(id => worldVertices[id]);
@@ -716,6 +984,21 @@ function analyzeMeshVolume(mesh) {
       continue;
     }
 
+    // Skip capping if mesh is heavily fragmented AND spatial filter was NOT applied
+    // (noise fragments create false boundary loops; spatial filter cleans them)
+    if (useComponentFilter && totalComponents > 10 && useTris === allTris) {
+      rejectedLoops += loops.length - cappedLoops;
+      break;
+    }
+    // Only cap small loops — they are genuine holes.
+    // For spatially-filtered fragmented meshes, use tighter limit (2%) to avoid noise loops
+    const loopSize = maxRadius * 2;
+    const sizeLimit = (useTris !== allTris && totalComponents > 10) ? meshDiag * 0.02 : meshDiag * 0.05;
+    if (loopSize > sizeLimit) {
+      rejectedLoops += 1;
+      continue;
+    }
+
     for (let i = 0; i < points.length; i += 1) {
       const p1 = points[i];
       const p2 = points[(i + 1) % points.length];
@@ -723,15 +1006,91 @@ function analyzeMeshVolume(mesh) {
         new THREE.Vector3().subVectors(p1, centroid),
         new THREE.Vector3().subVectors(p2, centroid)
       );
+      // Subtract meshCenter for origin-independent volume (consistent with base volume)
+      const cC = new THREE.Vector3().subVectors(centroid, meshCenter);
+      const p1C = new THREE.Vector3().subVectors(p1, meshCenter);
+      const p2C = new THREE.Vector3().subVectors(p2, meshCenter);
       capSignedVolume += edgeNormal.dot(normal) >= 0
-        ? signedTriangleVolume(centroid, p1, p2)
-        : signedTriangleVolume(centroid, p2, p1);
+        ? signedTriangleVolume(cC, p1C, p2C)
+        : signedTriangleVolume(cC, p2C, p1C);
     }
     cappedLoops += 1;
+
+    // Budget: if cap volume exceeds 15% of base volume, stop capping
+    if (Math.abs(capSignedVolume) > Math.abs(baseSignedVolume) * 0.15) {
+      rejectedLoops += loops.length - cappedLoops - rejectedLoops;
+      break;
+    }
+  }
+
+  // Compute convex hull volume as upper bound sanity check
+  let convexHullVolume = null;
+  try {
+    const hull = new ConvexHull().setFromPoints(usedVertArray);
+    let hullVol = 0;
+    const hullCenter = meshCenter;
+    for (const face of hull.faces) {
+      let edge = face.edge;
+      const a = edge.head().point;
+      edge = edge.next;
+      while (edge.next !== face.edge) {
+        const b = edge.head().point;
+        const c = edge.next.head().point;
+        const ac = new THREE.Vector3().subVectors(a, hullCenter);
+        const bc = new THREE.Vector3().subVectors(b, hullCenter);
+        const cc = new THREE.Vector3().subVectors(c, hullCenter);
+        hullVol += signedTriangleVolume(ac, bc, cc);
+        edge = edge.next;
+      }
+    }
+    convexHullVolume = Math.abs(hullVol);
+  } catch (e) {
+    console.warn('[VOL] convex hull failed:', e.message);
+  }
+
+  // Compute filtered geometry bbox (not the whole model bbox)
+  const filteredBbox = meshBbox; // meshBbox was already set from worldVertices (filtered only)
+  const filteredBboxSize = filteredBbox.getSize(new THREE.Vector3());
+
+  const rawVolume = Math.abs(baseSignedVolume + capSignedVolume);
+  // If convex hull is available and raw volume exceeds it, clamp to hull volume
+  let volumeUnits = (convexHullVolume != null && rawVolume > convexHullVolume)
+    ? convexHullVolume : rawVolume;
+
+  // For non-indexed meshes (OBJ), signed volume is unreliable on open surfaces.
+  // Use Generalized Winding Number (Jacobson et al. SIGGRAPH 2013) for robust inside/outside.
+  const isOpenOBJ = !index && boundaryEdges > 0;
+  // Store GWN computation params for async execution
+  let gwnParams = null;
+  if (isOpenOBJ && convexHullVolume != null && volumeUnits > convexHullVolume * 0.4) {
+    const R = 15; // 15³=3375 cells — good balance of accuracy and speed
+    const vSzGWN = filteredBboxSize;
+    const vMinGWN = { x: meshBbox.min.x, y: meshBbox.min.y, z: meshBbox.min.z };
+    const cX = vSzGWN.x/R, cY = vSzGWN.y/R, cZ = vSzGWN.z/R;
+
+    // Use ORIGINAL triangles for GWN — OBJ meshes typically have consistent winding
+    // already (just possibly inward-facing). The winding fix for signed volume may
+    // break GWN by flipping normals based on meshCenter (which is ON the surface for open meshes).
+    // No subsampling — winding number scales linearly with triangle count, so
+    // subsampling would proportionally reduce wn below the threshold.
+    const sampleTris = useTris;
+
+    // Precompute flat triangle vertex array for speed
+    const nTris = sampleTris.length;
+    const tv = new Float64Array(nTris * 9);
+    for (let t = 0; t < nTris; t++) {
+      const [aId,bId,cId] = sampleTris[t];
+      const a = worldVertices[aId], b = worldVertices[bId], c = worldVertices[cId];
+      tv[t*9]=a.x; tv[t*9+1]=a.y; tv[t*9+2]=a.z;
+      tv[t*9+3]=b.x; tv[t*9+4]=b.y; tv[t*9+5]=b.z;
+      tv[t*9+6]=c.x; tv[t*9+7]=c.y; tv[t*9+8]=c.z;
+    }
+
+    gwnParams = { R, vMinGWN, cX, cY, cZ, tv, nTris };
   }
 
   return {
-    volumeUnits: Math.abs(baseSignedVolume + capSignedVolume),
+    volumeUnits,
     boundaryEdges,
     nonManifoldEdges,
     boundaryLoops: loops.length,
@@ -740,7 +1099,11 @@ function analyzeMeshVolume(mesh) {
     unresolvedBoundaryEdges,
     maxPlanarityRatio,
     totalComponents,
-    largestComponentPct: largestPct
+    largestComponentPct: largestPct,
+    convexHullVolume,
+    filteredBboxSize,
+    isOpenOBJ,
+    gwnParams
   };
 }
 
@@ -790,8 +1153,59 @@ function upsertVolumeItem(volumeUnits, quality, stats) {
   selected3dPlan = item.id;
 }
 
-function computeMeshVolume() {
+// Run GWN (Generalized Winding Number) computation asynchronously
+function runGWNAsync(gwnParams) {
+  return new Promise(resolve => {
+    const { R, vMinGWN, cX, cY, cZ, tv, nTris } = gwnParams;
+    const FPI = 4 * Math.PI;
+    let insideCount = 0;
+    let ix = 0;
+
+    // Process one X-slice per frame to avoid blocking UI
+    function processSlice() {
+      const endIx = Math.min(ix + 1, R); // 1 slice per frame for UI responsiveness
+      for (; ix < endIx; ix++) {
+        const px = vMinGWN.x + (ix + 0.5) * cX;
+        for (let iy = 0; iy < R; iy++) {
+          const py = vMinGWN.y + (iy + 0.5) * cY;
+          for (let iz = 0; iz < R; iz++) {
+            const pz = vMinGWN.z + (iz + 0.5) * cZ;
+            let wn = 0;
+            for (let t = 0; t < nTris; t++) {
+              const i = t * 9;
+              const ax=tv[i]-px, ay=tv[i+1]-py, az=tv[i+2]-pz;
+              const bx=tv[i+3]-px, by=tv[i+4]-py, bz=tv[i+5]-pz;
+              const cx=tv[i+6]-px, cy=tv[i+7]-py, cz=tv[i+8]-pz;
+              const la = Math.sqrt(ax*ax+ay*ay+az*az);
+              const lb = Math.sqrt(bx*bx+by*by+bz*bz);
+              const lc = Math.sqrt(cx*cx+cy*cy+cz*cz);
+              if (la < 1e-10 || lb < 1e-10 || lc < 1e-10) continue;
+              const tp = ax*(by*cz-bz*cy) + ay*(bz*cx-bx*cz) + az*(bx*cy-by*cx);
+              const ab = ax*bx+ay*by+az*bz;
+              const bc = bx*cx+by*cy+bz*cz;
+              const ca = cx*ax+cy*ay+cz*az;
+              wn += 2 * Math.atan2(tp, la*lb*lc + ab*lc + bc*la + ca*lb);
+            }
+            if (wn / FPI > 0.5) insideCount++;
+          }
+        }
+      }
+      if (ix < R) {
+        setTimeout(processSlice, 0);
+      } else {
+        const gwnVolume = insideCount * cX * cY * cZ;
+        console.log(`[VOL] GWN: ${insideCount}/${R*R*R} inside, vol=${gwnVolume.toFixed(6)}, tris=${nTris}`);
+        resolve(gwnVolume);
+      }
+    }
+    processSlice();
+  });
+}
+
+async function computeMeshVolume() {
   if (!currentModel) { setStatus3d('Сначала загрузите модель.'); return; }
+
+  setStatus3d('Вычисление объёма...');
 
   const bbox = new THREE.Box3().setFromObject(currentModel);
   const bboxSize = bbox.getSize(new THREE.Vector3());
@@ -805,13 +1219,18 @@ function computeMeshVolume() {
     unresolvedBoundaryEdges: 0,
     maxPlanarityRatio: 0,
     totalComponents: 0,
-    largestComponentPct: 100
+    largestComponentPct: 100,
+    convexHullVolume: 0,
+    filteredBboxSize: null
   };
+
+  let pendingGWN = null;
 
   currentModel.traverse(child => {
     if (!child.isMesh) return;
     const meshStats = analyzeMeshVolume(child);
     if (!meshStats) return;
+
     stats.volumeUnits += meshStats.volumeUnits;
     stats.boundaryEdges += meshStats.boundaryEdges;
     stats.nonManifoldEdges += meshStats.nonManifoldEdges;
@@ -822,7 +1241,20 @@ function computeMeshVolume() {
     stats.maxPlanarityRatio = Math.max(stats.maxPlanarityRatio, meshStats.maxPlanarityRatio);
     stats.totalComponents += meshStats.totalComponents;
     stats.largestComponentPct = Math.min(stats.largestComponentPct, meshStats.largestComponentPct);
+    if (meshStats.convexHullVolume != null) stats.convexHullVolume += meshStats.convexHullVolume;
+    if (meshStats.filteredBboxSize) stats.filteredBboxSize = meshStats.filteredBboxSize;
+    if (meshStats.gwnParams) pendingGWN = meshStats.gwnParams;
   });
+
+  // Run GWN asynchronously if needed (open OBJ meshes)
+  if (pendingGWN) {
+    setStatus3d('Вычисление объёма (GWN)... не закрывайте вкладку.');
+    await new Promise(r => setTimeout(r, 50)); // let UI update
+    const gwnVolume = await runGWNAsync(pendingGWN);
+    if (gwnVolume > 0 && gwnVolume < stats.volumeUnits) {
+      stats.volumeUnits = gwnVolume;
+    }
+  }
 
   if (stats.volumeUnits <= 0) {
     setStatus3d('Не удалось вычислить объём: у модели нет пригодной замкнутой геометрии.');
@@ -831,17 +1263,21 @@ function computeMeshVolume() {
 
   const quality = buildVolumeQuality(stats);
   const s = scale3dMMperUnit ?? 1;
-  const bW = (bboxSize.x * s).toFixed(0);
-  const bH = (bboxSize.y * s).toFixed(0);
-  const bD = (bboxSize.z * s).toFixed(0);
+  const useBboxSize = stats.filteredBboxSize || bboxSize;
+  const bW = (useBboxSize.x * s).toFixed(0);
+  const bH = (useBboxSize.y * s).toFixed(0);
+  const bD = (useBboxSize.z * s).toFixed(0);
   const valueText = formatVolumeUnits(stats.volumeUnits);
   const extra = scale3dMMperUnit == null ? ' Калибруйте модель для клинических единиц.' : '';
   const topologyText = quality.approximate
     ? `${quality.tag}; ${quality.note}.`
     : `${quality.tag}; ${quality.note}.`;
 
+  const hullText = stats.convexHullVolume > 0
+    ? ` | hull: ${formatVolumeUnits(stats.convexHullVolume, false)}`
+    : '';
   upsertVolumeItem(stats.volumeUnits, quality, stats);
-  setStatus3d(`Объём: ${valueText} | bbox: ${bW}×${bH}×${bD} мм | ${topologyText}${extra}`);
+  setStatus3d(`Объём: ${valueText}${hullText} | bbox: ${bW}×${bH}×${bD} мм | ${topologyText}${extra}`);
   render3dPlanList();
   update3dSelectedInfo();
   save3dProject();
@@ -1654,6 +2090,8 @@ window._3d = {
   get currentModel() { return currentModel; },
   get raycaster() { return raycaster; },
   get mouse() { return mouse; },
+  loadOBJ: loadOBJModel,
+  computeVolume: computeMeshVolume,
   setTool: setTool3D,
   addMarker: addMarker3D,
   addLine: addLine3D,
