@@ -582,45 +582,36 @@ function analyzeMeshVolume(mesh) {
     return id;
   };
 
-  // Step 1: Collect all deduplicated vertices and triangles
+  // Step 1: Collect raw triangles and find connected components on RAW indices
+  // (before vertex deduplication, which merges nearby vertices across fragments)
   const triCount = index ? index.count / 3 : pos.count / 3;
-  const vertAdj = new Map(); // vertex adjacency for connected components
+  const rawTris = []; // [rawA, rawB, rawC] using original buffer indices
+  const rawAdj = new Array(pos.count);
+  for (let i = 0; i < pos.count; i++) rawAdj[i] = [];
+
   for (let i = 0; i < triCount; i += 1) {
     const ai = index ? index.getX(i * 3) : i * 3;
     const bi = index ? index.getX(i * 3 + 1) : i * 3 + 1;
     const ci = index ? index.getX(i * 3 + 2) : i * 3 + 2;
-
-    const aId = getVertexId(ai);
-    const bId = getVertexId(bi);
-    const cId = getVertexId(ci);
-    if (aId === bId || bId === cId || cId === aId) continue;
-
-    allTris.push([aId, bId, cId]);
-
-    // Build adjacency for component detection
-    for (const [u, v] of [[aId, bId], [bId, cId], [cId, aId]]) {
-      if (!vertAdj.has(u)) vertAdj.set(u, []);
-      if (!vertAdj.has(v)) vertAdj.set(v, []);
-      vertAdj.get(u).push(v);
-      vertAdj.get(v).push(u);
-    }
+    rawTris.push([ai, bi, ci]);
+    rawAdj[ai].push(bi, ci);
+    rawAdj[bi].push(ai, ci);
+    rawAdj[ci].push(ai, bi);
   }
 
-  if (worldVertices.length < 3) return null;
-
-  // Step 2: Find connected components via BFS to filter noise fragments
-  const compId = new Int32Array(worldVertices.length).fill(-1);
+  // BFS on raw indices to find connected components
+  const rawCompId = new Int32Array(pos.count).fill(-1);
   const compSizes = [];
   let ci = 0;
-  for (let start = 0; start < worldVertices.length; start++) {
-    if (compId[start] !== -1 || !vertAdj.has(start)) continue;
+  for (let start = 0; start < pos.count; start++) {
+    if (rawCompId[start] !== -1 || rawAdj[start].length === 0) continue;
     const queue = [start];
-    compId[start] = ci;
+    rawCompId[start] = ci;
     let head = 0;
     while (head < queue.length) {
       const v = queue[head++];
-      for (const n of (vertAdj.get(v) || [])) {
-        if (compId[n] === -1) { compId[n] = ci; queue.push(n); }
+      for (const n of rawAdj[v]) {
+        if (rawCompId[n] === -1) { rawCompId[n] = ci; queue.push(n); }
       }
     }
     compSizes.push({ id: ci, count: queue.length });
@@ -631,13 +622,26 @@ function analyzeMeshVolume(mesh) {
   compSizes.sort((a, b) => b.count - a.count);
   const largestCompId = compSizes[0]?.id ?? 0;
   const totalComponents = compSizes.length;
-  const largestPct = worldVertices.length > 0
-    ? Math.round(compSizes[0].count / worldVertices.length * 100) : 100;
+  const largestPct = pos.count > 0
+    ? Math.round(compSizes[0].count / pos.count * 100) : 100;
 
-  // Filter triangles to largest component
-  const useTris = totalComponents > 1
-    ? allTris.filter(([a]) => compId[a] === largestCompId)
-    : allTris;
+  // Step 2: Process only triangles from the largest component, with deduplication
+  const filteredRawTris = totalComponents > 1
+    ? rawTris.filter(([a]) => rawCompId[a] === largestCompId)
+    : rawTris;
+
+  for (const [ai, bi, ci2] of filteredRawTris) {
+    const aId = getVertexId(ai);
+    const bId = getVertexId(bi);
+    const cId = getVertexId(ci2);
+    if (aId === bId || bId === cId || cId === aId) continue;
+    allTris.push([aId, bId, cId]);
+  }
+
+  if (worldVertices.length < 3) return null;
+
+  // Filter triangles (already filtered above)
+  const useTris = allTris;
 
   // Step 3: Build edge map and compute base signed volume on filtered triangles
   const edgeMap = new Map();
@@ -658,11 +662,7 @@ function analyzeMeshVolume(mesh) {
   }
 
   // Step 4: Find boundary and build boundary adjacency
-  const useVerts = totalComponents > 1
-    ? worldVertices.filter((_, i) => compId[i] === largestCompId)
-    : worldVertices;
-  const meshCenter = new THREE.Box3().setFromPoints(useVerts.length > 0 ? useVerts : worldVertices)
-    .getCenter(new THREE.Vector3());
+  const meshCenter = new THREE.Box3().setFromPoints(worldVertices).getCenter(new THREE.Vector3());
   const boundaryAdj = new Map();
   let boundaryEdges = 0;
   let nonManifoldEdges = 0;
