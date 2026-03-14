@@ -278,14 +278,15 @@
           <select id="modelSelect" class="flex-grow">
             <option value="models/LeePerrySmith.glb">Lee Perry-Smith</option>
             <option value="models/facecap.glb">Face Cap</option>
+            <option value="models/Object2.glb">Object 2</option>
           </select>
           <button class="btn btn-danger btn-sm" id="btnDeleteModel" title="Удалить модель">✕</button>
         </div>
         <div class="file-upload" style="margin-top:8px">
-          <input type="file" id="fileInput3d" accept=".glb,.gltf" />
+          <input type="file" id="fileInput3d" accept=".glb,.gltf,.obj" multiple />
           <div class="file-upload-label">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-            Загрузить .glb / .gltf
+            Загрузить .glb / .gltf / .obj
           </div>
         </div>
       </div>

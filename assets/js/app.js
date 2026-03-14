@@ -5,6 +5,8 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { KTX2Loader } from 'three/addons/loaders/KTX2Loader.js';
 import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
+import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
+import { MTLLoader } from 'three/addons/loaders/MTLLoader.js';
 
 // ==================== TAB NAVIGATION ====================
 const tabBtns = document.querySelectorAll('.tab-btn');
@@ -265,6 +267,102 @@ function loadModel3D(url) {
     loadEl.classList.remove('visible');
     console.error('Model load error:', err);
   });
+}
+
+function loadOBJModel(objFile, mtlFile, allFiles) {
+  removeModel3D();
+  const loadEl = document.getElementById('loading3d');
+  loadEl.classList.add('visible');
+  wireframeMode = false; normalsMode = false;
+  updateBtn3DStates();
+
+  // Build a map of all uploaded files by name for texture resolution
+  const fileMap = new Map();
+  Array.from(allFiles).forEach(f => fileMap.set(f.name, f));
+
+  const objReader = new FileReader();
+  objReader.onload = (ev) => {
+    const objText = ev.target.result;
+    const objLoader = new OBJLoader();
+
+    const finishLoad = (materials) => {
+      if (materials) objLoader.setMaterials(materials);
+      const model = objLoader.parse(objText);
+      // Try to apply textures from uploaded files
+      model.traverse(c => {
+        if (c.isMesh) {
+          c.userData.originalMaterial = c.material.clone();
+          // If no texture and we have image files, try to apply them
+          if (!c.material.map) {
+            const texFile = Array.from(allFiles).find(f => /\.(png|jpg|jpeg)$/i.test(f.name) && /tex/i.test(f.name));
+            if (texFile) {
+              const texUrl = URL.createObjectURL(texFile);
+              const tex = new THREE.TextureLoader().load(texUrl);
+              tex.flipY = false;
+              c.material.map = tex;
+              c.material.needsUpdate = true;
+            }
+          }
+        }
+      });
+      scene.add(model);
+      currentModel = model;
+      fitCamera3D(model);
+      loadEl.classList.remove('visible');
+
+      // Auto-detect scale
+      const box = new THREE.Box3().setFromObject(model);
+      const size = box.getSize(new THREE.Vector3());
+      const maxDim = Math.max(size.x, size.y, size.z);
+      if (maxDim > 0.05 && maxDim < 1.0) {
+        scale3dMMperUnit = 1000;
+        updateScaleBadge();
+        setStatus3d('OBJ загружен. Авто-масштаб: 1 ед. = 1000 мм.');
+      } else if (maxDim >= 1.0 && maxDim < 500) {
+        scale3dMMperUnit = 1;
+        updateScaleBadge();
+        setStatus3d('OBJ загружен. Авто-масштаб: 1 ед. = 1 мм.');
+      } else {
+        scale3dMMperUnit = null;
+        updateScaleBadge();
+        setStatus3d('OBJ загружен. Калибруйте для измерений в мм.');
+      }
+    };
+
+    if (mtlFile) {
+      const mtlReader = new FileReader();
+      mtlReader.onload = (mev) => {
+        const mtlLoader = new MTLLoader();
+        // Create a custom resource path for textures from uploaded files
+        const texUrlMap = new Map();
+        Array.from(allFiles).forEach(f => {
+          if (/\.(png|jpg|jpeg)$/i.test(f.name)) {
+            texUrlMap.set(f.name, URL.createObjectURL(f));
+          }
+        });
+        mtlLoader.setResourcePath('');
+        const materials = mtlLoader.parse(mev.target.result, '');
+        // Override texture URLs with blob URLs from uploaded files
+        for (const matName in materials.materialsInfo) {
+          const info = materials.materialsInfo[matName];
+          for (const prop of ['map_kd', 'map_ka', 'map_ks', 'map_ao', 'map_tangentspacenormal']) {
+            if (info[prop]) {
+              const texName = info[prop].split('/').pop();
+              if (texUrlMap.has(texName)) {
+                info[prop] = texUrlMap.get(texName);
+              }
+            }
+          }
+        }
+        materials.preload();
+        finishLoad(materials);
+      };
+      mtlReader.readAsText(mtlFile);
+    } else {
+      finishLoad(null);
+    }
+  };
+  objReader.readAsText(objFile);
 }
 
 function updateScaleBadge() {
@@ -1154,8 +1252,16 @@ function bindUI3D() {
     loadModel3D(e.target.value);
   });
   document.getElementById('fileInput3d').addEventListener('change', e => {
-    const f = e.target.files[0]; if (!f) return;
-    loadModel3D(URL.createObjectURL(f));
+    const files = e.target.files; if (!files.length) return;
+    // Check if OBJ file is present
+    const objFile = Array.from(files).find(f => f.name.toLowerCase().endsWith('.obj'));
+    const mtlFile = Array.from(files).find(f => f.name.toLowerCase().endsWith('.mtl'));
+    if (objFile) {
+      loadOBJModel(objFile, mtlFile, files);
+    } else {
+      const f = files[0];
+      loadModel3D(URL.createObjectURL(f));
+    }
   });
   document.getElementById('btnDeleteModel').addEventListener('click', () => {
     removeModel3D();
