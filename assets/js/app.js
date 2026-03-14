@@ -12,8 +12,8 @@ const tabContents = document.querySelectorAll('.tab-content');
 const hamburgerBtn = document.getElementById('hamburgerBtn');
 const tabNav = document.getElementById('tabNav');
 let scene3dInitialized = false;
-const TYPE_NAMES_RU = { point: 'Точка', distance: 'Расстояние', angle: 'Угол', vector: 'Вектор', tilt: 'Наклон', measure: 'Измерение' };
-const TYPE_ICONS = { point: '📍', distance: '📏', angle: '📐', vector: '➡️', tilt: '📊', measure: '📏' };
+const TYPE_NAMES_RU = { point: 'Точка', distance: 'Расстояние', angle: 'Угол', vector: 'Вектор', tilt: 'Наклон', measure: 'Измерение', volume: 'Объём' };
+const TYPE_ICONS = { point: '📍', distance: '📏', angle: '📐', vector: '➡️', tilt: '📊', measure: '📏', volume: '🧠' };
 
 tabBtns.forEach(btn => {
   btn.addEventListener('click', () => {
@@ -90,6 +90,171 @@ function formatDist(unitDist) {
   const mm = mmFromUnit(unitDist);
   if (mm != null) return `${mm.toFixed(2)} мм`;
   return `${unitDist.toFixed(4)} ед.`;
+}
+
+function mm3FromUnitVolume(unitVolume) {
+  if (scale3dMMperUnit == null) return null;
+  return unitVolume * Math.pow(scale3dMMperUnit, 3);
+}
+
+function formatVolume(unitVolume) {
+  const mm3 = mm3FromUnitVolume(unitVolume);
+  if (mm3 != null) {
+    const cm3 = mm3 / 1000;
+    return `${cm3.toFixed(1)} см³ (${cm3.toFixed(1)} мл)`;
+  }
+  return `${unitVolume.toFixed(6)} ед³`;
+}
+
+function formatPlan3DValue(item) {
+  if (!item) return '';
+  if (item.type === 'angle') {
+    return item.deg != null ? `${item.deg.toFixed(1)}°` : '';
+  }
+  if (item.type === 'tilt') {
+    return `${item.deg != null ? item.deg.toFixed(1) + '°' : ''} | ${item.value != null ? formatDist(item.value) : ''}`;
+  }
+  if (item.type === 'volume') {
+    return item.value != null ? formatVolume(item.value) : '';
+  }
+  if (item.value != null) {
+    return formatDist(item.value);
+  }
+  return '';
+}
+
+function formatVolumeQuality(item) {
+  if (!item || item.type !== 'volume') return '';
+  const boundaryEdges = Number(item.boundaryEdges) || 0;
+  const nonManifoldEdges = Number(item.nonManifoldEdges) || 0;
+  if (boundaryEdges === 0 && nonManifoldEdges === 0) {
+    return 'по фактической поверхности меша';
+  }
+  return `есть открытые края: ${boundaryEdges}, неманифолдные рёбра: ${nonManifoldEdges}`;
+}
+
+function computeGeometryEdgeStats(geometry) {
+  const pos = geometry?.attributes?.position;
+  if (!pos || pos.count < 3) return { boundaryEdges: 0, nonManifoldEdges: 0 };
+
+  const tolerance = 1e-5;
+  const vertexIds = new Array(pos.count);
+  const vertexMap = new Map();
+  let nextId = 0;
+
+  for (let i = 0; i < pos.count; i += 1) {
+    const key = `${Math.round(pos.getX(i) / tolerance)},${Math.round(pos.getY(i) / tolerance)},${Math.round(pos.getZ(i) / tolerance)}`;
+    let id = vertexMap.get(key);
+    if (id == null) {
+      id = nextId++;
+      vertexMap.set(key, id);
+    }
+    vertexIds[i] = id;
+  }
+
+  const edgeCounts = new Map();
+  const addEdge = (ia, ib) => {
+    const a = vertexIds[ia];
+    const b = vertexIds[ib];
+    if (a === b) return;
+    const key = a < b ? `${a}:${b}` : `${b}:${a}`;
+    edgeCounts.set(key, (edgeCounts.get(key) || 0) + 1);
+  };
+
+  const index = geometry.index ? geometry.index.array : null;
+  if (index) {
+    for (let i = 0; i + 2 < index.length; i += 3) {
+      addEdge(index[i], index[i + 1]);
+      addEdge(index[i + 1], index[i + 2]);
+      addEdge(index[i + 2], index[i]);
+    }
+  } else {
+    for (let i = 0; i + 2 < pos.count; i += 3) {
+      addEdge(i, i + 1);
+      addEdge(i + 1, i + 2);
+      addEdge(i + 2, i);
+    }
+  }
+
+  let boundaryEdges = 0;
+  let nonManifoldEdges = 0;
+  for (const count of edgeCounts.values()) {
+    if (count === 1) boundaryEdges += 1;
+    else if (count > 2) nonManifoldEdges += 1;
+  }
+  return { boundaryEdges, nonManifoldEdges };
+}
+
+function computeMeshVolumeStats(mesh) {
+  const geometry = mesh?.geometry;
+  const pos = geometry?.attributes?.position;
+  if (!pos || pos.count < 3) return null;
+
+  const index = geometry.index ? geometry.index.array : null;
+  const a = new THREE.Vector3();
+  const b = new THREE.Vector3();
+  const c = new THREE.Vector3();
+  const cross = new THREE.Vector3();
+  let signedVolume = 0;
+  let triangleCount = 0;
+
+  const readVertex = (vertexIndex, target) => target.fromBufferAttribute(pos, vertexIndex).applyMatrix4(mesh.matrixWorld);
+
+  if (index) {
+    for (let i = 0; i + 2 < index.length; i += 3) {
+      readVertex(index[i], a);
+      readVertex(index[i + 1], b);
+      readVertex(index[i + 2], c);
+      signedVolume += a.dot(cross.crossVectors(b, c)) / 6;
+      triangleCount += 1;
+    }
+  } else {
+    for (let i = 0; i + 2 < pos.count; i += 3) {
+      readVertex(i, a);
+      readVertex(i + 1, b);
+      readVertex(i + 2, c);
+      signedVolume += a.dot(cross.crossVectors(b, c)) / 6;
+      triangleCount += 1;
+    }
+  }
+
+  const topology = computeGeometryEdgeStats(geometry);
+  return {
+    volumeUnits: Math.abs(signedVolume),
+    triangleCount,
+    boundaryEdges: topology.boundaryEdges,
+    nonManifoldEdges: topology.nonManifoldEdges
+  };
+}
+
+function computeModelVolumeStats(root) {
+  if (!root) return null;
+  root.updateWorldMatrix(true, true);
+
+  const total = {
+    volumeUnits: 0,
+    triangleCount: 0,
+    boundaryEdges: 0,
+    nonManifoldEdges: 0,
+    meshCount: 0,
+    closedMeshes: 0
+  };
+
+  root.traverse(obj => {
+    if (!obj.isMesh) return;
+    const stats = computeMeshVolumeStats(obj);
+    if (!stats) return;
+    total.meshCount += 1;
+    total.volumeUnits += stats.volumeUnits;
+    total.triangleCount += stats.triangleCount;
+    total.boundaryEdges += stats.boundaryEdges;
+    total.nonManifoldEdges += stats.nonManifoldEdges;
+    if (stats.boundaryEdges === 0 && stats.nonManifoldEdges === 0) {
+      total.closedMeshes += 1;
+    }
+  });
+
+  return total.meshCount > 0 ? total : null;
 }
 
 // ==================== 3D SCENE INIT ====================
@@ -532,32 +697,82 @@ function finalizePlanItem(type, label, points, value = null, deg = null) {
   setStatus3d('Элемент плана добавлен.');
 }
 
+function upsertHeadVolumeItem(stats) {
+  const customLabel = document.getElementById('planLabel3d')?.value?.trim();
+  let item = plan3dItems.find(x => x.type === 'volume');
+
+  if (!item) {
+    item = {
+      id: nextId3d(),
+      type: 'volume',
+      label: customLabel || 'Объём головы',
+      points: [],
+      value: stats.volumeUnits,
+      deg: null
+    };
+    plan3dItems.push(item);
+  }
+
+  item.label = customLabel || item.label || 'Объём головы';
+  item.points = [];
+  item.value = stats.volumeUnits;
+  item.deg = null;
+  item.meshCount = stats.meshCount;
+  item.triangleCount = stats.triangleCount;
+  item.boundaryEdges = stats.boundaryEdges;
+  item.nonManifoldEdges = stats.nonManifoldEdges;
+
+  selected3dPlan = item.id;
+  render3dPlanList();
+  compute3dAsymmetry();
+  update3dSelectedInfo();
+  save3dProject();
+  return item;
+}
+
+function measure3dHeadVolume() {
+  if (!currentModel) {
+    setStatus3d('Сначала загрузите 3D-модель.');
+    return;
+  }
+
+  const stats = computeModelVolumeStats(currentModel);
+  if (!stats || !isFinite(stats.volumeUnits) || stats.volumeUnits <= 0) {
+    setStatus3d('Не удалось вычислить объём: у модели нет пригодной геометрии.');
+    return;
+  }
+
+  const item = upsertHeadVolumeItem(stats);
+  const topologyMsg = stats.boundaryEdges === 0 && stats.nonManifoldEdges === 0
+    ? 'Сетка замкнута, расчёт выполнен по всей поверхности.'
+    : `Есть открытые края (${stats.boundaryEdges}) или неманифолдные рёбра (${stats.nonManifoldEdges}), поэтому результат ориентировочный.`;
+  const scaleMsg = scale3dMMperUnit == null ? ' Для перевода в мл выполните калибровку.' : '';
+  setStatus3d(`${item.label}: ${formatVolume(item.value)}. ${topologyMsg}${scaleMsg}`);
+}
+
 function render3dPlanList() {
   const el = document.getElementById('measurements3d');
+  const badge = document.getElementById('plan3dCountBadge');
   if (!el) return;
+  if (badge) badge.textContent = String(plan3dItems.length);
   if (plan3dItems.length === 0) {
     el.innerHTML = '<div class="hint">Нет измерений. Выберите инструмент и кликните на модель.</div>';
     return;
   }
   el.innerHTML = plan3dItems.map((m, i) => {
-    let val = '';
-    if (m.type === 'angle') {
-      val = m.deg != null ? `${m.deg.toFixed(1)}°` : '';
-    } else if (m.type === 'tilt') {
-      val = `${m.deg != null ? m.deg.toFixed(1) + '°' : ''} | ${m.value != null ? formatDist(m.value) : ''}`;
-    } else if (m.value != null) {
-      val = formatDist(m.value);
-    }
+    const val = formatPlan3DValue(m);
     const isSel = selected3dPlan === m.id;
     const selStyle = isSel ? 'outline:2px solid rgba(59,130,246,0.55);' : '';
     const typeName = TYPE_NAMES_RU[m.type] || m.type;
     const showLabel = m.label && m.label !== m.type && m.label !== typeName;
+    const meta = formatVolumeQuality(m);
     return `<div style="cursor:pointer;${selStyle}" onclick="window._select3dPlan('${m.id}')">
       <div>
         ${TYPE_ICONS[m.type] || ''} <strong>${typeName} ${i + 1}</strong>
         ${showLabel ? ' • <em>' + escHtml(m.label) + '</em>' : ''}
         : ${val}
       </div>
+      ${meta ? '<div class="hint" style="margin-top:4px">' + escHtml(meta) + '</div>' : ''}
       <button class="btn btn-sm btn-danger" onclick="event.stopPropagation(); window._delete3dPlan('${m.id}')" style="margin-top:4px;font-size:10px;">Удалить</button>
     </div>`;
   }).join('');
@@ -584,9 +799,9 @@ function update3dSelectedInfo() {
   if (!selected3dPlan) { el.textContent = '—'; return; }
   const it = plan3dItems.find(x => x.id === selected3dPlan);
   if (!it) { el.textContent = '—'; return; }
-  const valTxt = it.value != null ? formatDist(it.value) : '';
-  const degTxt = it.deg != null ? ` • ${it.deg.toFixed(1)}°` : '';
-  el.textContent = `${it.label} (${TYPE_NAMES_RU[it.type] || it.type}) • ${valTxt}${degTxt}`;
+  const valTxt = formatPlan3DValue(it);
+  const metaTxt = formatVolumeQuality(it);
+  el.textContent = `${it.label} (${TYPE_NAMES_RU[it.type] || it.type})${valTxt ? ' • ' + valTxt : ''}${metaTxt ? ' • ' + metaTxt : ''}`;
 }
 
 // ==================== ASYMMETRY (R vs L) ====================
@@ -763,10 +978,7 @@ async function export3dPDF() {
       html += `<table style="width:100%;border-collapse:collapse;font-size:13px;">`;
       html += `<tr style="background:#f1f5f9;"><th style="text-align:left;padding:8px 10px;font-weight:600;color:#475569;">№</th><th style="text-align:left;padding:8px 10px;font-weight:600;color:#475569;">Тип</th><th style="text-align:left;padding:8px 10px;font-weight:600;color:#475569;">Метка</th><th style="text-align:right;padding:8px 10px;font-weight:600;color:#475569;">Значение</th></tr>`;
       plan3dItems.forEach((item, i) => {
-        let val = '';
-        if (item.type === 'angle') val = item.deg != null ? `${item.deg.toFixed(1)}°` : '';
-        else if (item.type === 'tilt') val = `${item.deg != null ? item.deg.toFixed(1) + '°' : ''} | ${item.value != null ? formatDist(item.value) : ''}`;
-        else if (item.value != null) val = formatDist(item.value);
+        const val = formatPlan3DValue(item);
         const typeName = TYPE_NAMES_RU[item.type] || item.type;
         const icon = TYPE_ICONS[item.type] || '';
         const label = (item.label && item.label !== item.type && item.label !== typeName) ? item.label : '—';
@@ -925,10 +1137,7 @@ async function export3dDOCX() {
       }
 
       const dataRows = plan3dItems.map((item, i) => {
-        let val = '';
-        if (item.type === 'angle') val = item.deg != null ? `${item.deg.toFixed(1)}°` : '';
-        else if (item.type === 'tilt') val = `${item.deg != null ? item.deg.toFixed(1) + '°' : ''} | ${item.value != null ? formatDist(item.value) : ''}`;
-        else if (item.value != null) val = formatDist(item.value);
+        const val = formatPlan3DValue(item);
         const typeName = TYPE_NAMES_RU[item.type] || item.type;
         const icon = TYPE_ICONS[item.type] || '';
         const label = (item.label && item.label !== item.type && item.label !== typeName) ? item.label : '—';
@@ -1124,6 +1333,7 @@ function bindUI3D() {
   document.getElementById('btn3dTilt').addEventListener('click', () => setTool3D('tilt'));
   document.getElementById('btn3dMeasure').addEventListener('click', () => setTool3D('measure'));
   document.getElementById('btn3dCalibrate').addEventListener('click', () => setTool3D('calibration'));
+  document.getElementById('btn3dHeadVolume').addEventListener('click', measure3dHeadVolume);
 
   // Plan controls
   document.getElementById('btn3dClearAll').addEventListener('click', clearAll3D);
@@ -1175,6 +1385,7 @@ window._3d = {
   formatDist: formatDist,
   clearAll: clearAll3D,
   rebuild: rebuildAllVisuals,
+  measureHeadVolume: measure3dHeadVolume,
   raycastAt(cx, cy) {
     const container = document.getElementById('canvas3d-container');
     const rect = container.getBoundingClientRect();

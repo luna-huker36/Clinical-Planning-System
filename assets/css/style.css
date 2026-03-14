@@ -537,6 +537,24 @@ textarea { resize: vertical; min-height: 60px; }
   .sidebar { padding: 10px; }
   .card { padding: 12px; }
   .form-row { flex-direction: column; }
+  .shift-card .shift-card-main-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    align-items: end;
+  }
+  .shift-card .shift-card-mm-group {
+    min-width: 70px;
+  }
+  .shift-card .shift-card-main-row .btn {
+    align-self: end;
+  }
+  .shift-card .shift-card-actions {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .shift-card .shift-card-actions .btn {
+    width: 100%;
+  }
   .about-page { padding: 24px 16px; }
   .hero-title { font-size: 32px; }
   .feature-row { grid-template-columns: 1fr; }

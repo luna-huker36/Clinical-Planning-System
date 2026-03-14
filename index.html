@@ -183,20 +183,20 @@
       </div>
 
       <!-- Shift Planning -->
-      <div class="card">
+      <div class="card shift-card">
         <div class="card-title">↔ Смещение и асимметрия</div>
-        <div class="form-row align-end">
+        <div class="form-row align-end shift-card-main-row">
           <div class="form-group flex-grow">
             <label>Элемент</label>
             <div id="selectedItemInfo" class="hint">—</div>
           </div>
-          <div class="form-group">
+          <div class="form-group shift-card-mm-group">
             <label>мм</label>
             <input type="number" id="plannedShiftMM" step="0.1" placeholder="6.0" style="width:70px" />
           </div>
           <button class="btn btn-primary btn-sm" id="btnApplyShift">OK</button>
         </div>
-        <div class="form-row" style="margin-top:6px">
+        <div class="form-row shift-card-actions" style="margin-top:6px">
           <button class="btn btn-sm" id="btnSnapshotBefore">💾 До</button>
           <button class="btn btn-sm" id="btnToggleBefore">👁 Показать</button>
           <button class="btn btn-danger btn-sm" id="btnResetToBefore">↩ Откатить</button>
@@ -320,6 +320,7 @@
           <button class="btn btn-accent" id="btn3dVector">➡️ Вектор</button>
           <button class="btn btn-accent" id="btn3dTilt">📊 Наклон</button>
           <button class="btn btn-accent" id="btn3dMeasure">✏️ Измерение</button>
+          <button class="btn btn-primary" id="btn3dHeadVolume">🧠 Объём головы</button>
         </div>
       </div>
 
@@ -359,20 +360,20 @@
       </div>
 
       <!-- Shift 3D -->
-      <div class="card">
+      <div class="card shift-card">
         <div class="card-title">↔ Смещение и асимметрия</div>
-        <div class="form-row align-end">
+        <div class="form-row align-end shift-card-main-row">
           <div class="form-group flex-grow">
             <label>Элемент</label>
             <div id="selectedItem3dInfo" class="hint">—</div>
           </div>
-          <div class="form-group">
+          <div class="form-group shift-card-mm-group">
             <label>мм</label>
             <input type="number" id="plannedShift3dMM" step="0.1" placeholder="6.0" style="width:70px" />
           </div>
           <button class="btn btn-primary btn-sm" id="btn3dApplyShift">OK</button>
         </div>
-        <div class="form-row" style="margin-top:6px">
+        <div class="form-row shift-card-actions" style="margin-top:6px">
           <button class="btn btn-sm" id="btn3dSnapshotBefore">💾 До</button>
           <button class="btn btn-sm" id="btn3dToggleBefore">👁 Показать</button>
           <button class="btn btn-danger btn-sm" id="btn3dResetToBefore">↩ Откатить</button>
