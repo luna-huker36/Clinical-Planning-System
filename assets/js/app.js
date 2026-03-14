@@ -565,11 +565,10 @@ function analyzeMeshVolume(mesh) {
   mesh.updateWorldMatrix(true, false);
   const matrix = mesh.matrixWorld;
   const index = geo.index;
-  const edgeMap = new Map();
   const vertexMap = new Map();
   const worldVertices = [];
+  const allTris = []; // [aId, bId, cId]
   const tmp = new THREE.Vector3();
-  let baseSignedVolume = 0;
 
   const getVertexId = vertexIndex => {
     tmp.fromBufferAttribute(pos, vertexIndex).applyMatrix4(matrix);
@@ -583,14 +582,9 @@ function analyzeMeshVolume(mesh) {
     return id;
   };
 
-  const addEdge = (a, b) => {
-    const key = volumeEdgeKey(a, b);
-    const edge = edgeMap.get(key) || { a, b, count: 0 };
-    edge.count += 1;
-    edgeMap.set(key, edge);
-  };
-
+  // Step 1: Collect all deduplicated vertices and triangles
   const triCount = index ? index.count / 3 : pos.count / 3;
+  const vertAdj = new Map(); // vertex adjacency for connected components
   for (let i = 0; i < triCount; i += 1) {
     const ai = index ? index.getX(i * 3) : i * 3;
     const bi = index ? index.getX(i * 3 + 1) : i * 3 + 1;
@@ -601,19 +595,74 @@ function analyzeMeshVolume(mesh) {
     const cId = getVertexId(ci);
     if (aId === bId || bId === cId || cId === aId) continue;
 
-    const a = worldVertices[aId];
-    const b = worldVertices[bId];
-    const c = worldVertices[cId];
-    baseSignedVolume += signedTriangleVolume(a, b, c);
+    allTris.push([aId, bId, cId]);
 
+    // Build adjacency for component detection
+    for (const [u, v] of [[aId, bId], [bId, cId], [cId, aId]]) {
+      if (!vertAdj.has(u)) vertAdj.set(u, []);
+      if (!vertAdj.has(v)) vertAdj.set(v, []);
+      vertAdj.get(u).push(v);
+      vertAdj.get(v).push(u);
+    }
+  }
+
+  if (worldVertices.length < 3) return null;
+
+  // Step 2: Find connected components via BFS to filter noise fragments
+  const compId = new Int32Array(worldVertices.length).fill(-1);
+  const compSizes = [];
+  let ci = 0;
+  for (let start = 0; start < worldVertices.length; start++) {
+    if (compId[start] !== -1 || !vertAdj.has(start)) continue;
+    const queue = [start];
+    compId[start] = ci;
+    let head = 0;
+    while (head < queue.length) {
+      const v = queue[head++];
+      for (const n of (vertAdj.get(v) || [])) {
+        if (compId[n] === -1) { compId[n] = ci; queue.push(n); }
+      }
+    }
+    compSizes.push({ id: ci, count: queue.length });
+    ci++;
+  }
+
+  // Use largest component only
+  compSizes.sort((a, b) => b.count - a.count);
+  const largestCompId = compSizes[0]?.id ?? 0;
+  const totalComponents = compSizes.length;
+  const largestPct = worldVertices.length > 0
+    ? Math.round(compSizes[0].count / worldVertices.length * 100) : 100;
+
+  // Filter triangles to largest component
+  const useTris = totalComponents > 1
+    ? allTris.filter(([a]) => compId[a] === largestCompId)
+    : allTris;
+
+  // Step 3: Build edge map and compute base signed volume on filtered triangles
+  const edgeMap = new Map();
+  let baseSignedVolume = 0;
+
+  const addEdge = (a, b) => {
+    const key = volumeEdgeKey(a, b);
+    const edge = edgeMap.get(key) || { a, b, count: 0 };
+    edge.count += 1;
+    edgeMap.set(key, edge);
+  };
+
+  for (const [aId, bId, cId] of useTris) {
+    baseSignedVolume += signedTriangleVolume(worldVertices[aId], worldVertices[bId], worldVertices[cId]);
     addEdge(aId, bId);
     addEdge(bId, cId);
     addEdge(cId, aId);
   }
 
-  if (worldVertices.length < 3) return null;
-
-  const meshCenter = new THREE.Box3().setFromPoints(worldVertices).getCenter(new THREE.Vector3());
+  // Step 4: Find boundary and build boundary adjacency
+  const useVerts = totalComponents > 1
+    ? worldVertices.filter((_, i) => compId[i] === largestCompId)
+    : worldVertices;
+  const meshCenter = new THREE.Box3().setFromPoints(useVerts.length > 0 ? useVerts : worldVertices)
+    .getCenter(new THREE.Vector3());
   const boundaryAdj = new Map();
   let boundaryEdges = 0;
   let nonManifoldEdges = 0;
@@ -630,6 +679,7 @@ function analyzeMeshVolume(mesh) {
     }
   }
 
+  // Step 5: Close boundary loops with fan triangulation
   const { loops, unresolvedBoundaryEdges } = collectBoundaryLoops(boundaryAdj, boundaryEdges);
   let capSignedVolume = 0;
   let cappedLoops = 0;
@@ -688,7 +738,9 @@ function analyzeMeshVolume(mesh) {
     cappedLoops,
     rejectedLoops,
     unresolvedBoundaryEdges,
-    maxPlanarityRatio
+    maxPlanarityRatio,
+    totalComponents,
+    largestComponentPct: largestPct
   };
 }
 
@@ -709,9 +761,12 @@ function buildVolumeQuality(stats) {
     };
   }
 
+  const compNote = stats.totalComponents > 1
+    ? ` Фильтр: осн. компонент ${stats.largestComponentPct}% из ${stats.totalComponents} фрагм.`
+    : '';
   return {
     tag: 'приближённо',
-    note: `Остались открытые контуры или сложная топология: loops ${stats.boundaryLoops}, rejected ${stats.rejectedLoops}, non-manifold ${stats.nonManifoldEdges}`,
+    note: `Открытые контуры: loops ${stats.boundaryLoops}, rejected ${stats.rejectedLoops}, non-manifold ${stats.nonManifoldEdges}.${compNote}`,
     approximate: true
   };
 }
@@ -748,7 +803,9 @@ function computeMeshVolume() {
     cappedLoops: 0,
     rejectedLoops: 0,
     unresolvedBoundaryEdges: 0,
-    maxPlanarityRatio: 0
+    maxPlanarityRatio: 0,
+    totalComponents: 0,
+    largestComponentPct: 100
   };
 
   currentModel.traverse(child => {
@@ -763,6 +820,8 @@ function computeMeshVolume() {
     stats.rejectedLoops += meshStats.rejectedLoops;
     stats.unresolvedBoundaryEdges += meshStats.unresolvedBoundaryEdges;
     stats.maxPlanarityRatio = Math.max(stats.maxPlanarityRatio, meshStats.maxPlanarityRatio);
+    stats.totalComponents += meshStats.totalComponents;
+    stats.largestComponentPct = Math.min(stats.largestComponentPct, meshStats.largestComponentPct);
   });
 
   if (stats.volumeUnits <= 0) {
