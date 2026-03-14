@@ -51,7 +51,7 @@ a:hover { text-decoration: underline; }
   padding: 0 20px;
   gap: 24px;
   position: relative;
-  z-index: 100;
+  z-index: 10000;
   box-shadow: var(--shadow);
 }
 
@@ -524,42 +524,44 @@ textarea { resize: vertical; min-height: 60px; }
   :root { --sidebar-width: 100%; }
 }
 
+@media (max-width: 768px) {
+  .layout {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr;
+  }
+  .sidebar {
+    border-right: none; border-bottom: 1px solid var(--border);
+    max-height: 55vh; overflow-y: auto;
+  }
+  :root { --sidebar-width: 100%; }
+  .authors-names { flex-wrap: wrap; justify-content: center; }
+}
+
 @media (max-width: 600px) {
   .app-header { padding: 0 12px; gap: 8px; }
   .tab-nav { display: none; }
   .tab-nav.open { display: flex; position: absolute; top: var(--header-height); left: 0; right: 0;
     background: var(--surface); border-bottom: 1px solid var(--border);
-    padding: 8px; z-index: 99; box-shadow: var(--shadow-md);
+    padding: 8px; z-index: 10000; box-shadow: var(--shadow-md);
   }
   .tab-nav.open .tab-btn span { display: inline; }
   .hamburger { display: flex; }
 
   .sidebar { padding: 10px; }
   .card { padding: 12px; }
-  .form-row { flex-direction: column; }
-  .shift-card .shift-card-main-row {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto auto;
-    align-items: end;
-  }
-  .shift-card .shift-card-mm-group {
-    min-width: 70px;
-  }
-  .shift-card .shift-card-main-row .btn {
-    align-self: end;
-  }
-  .shift-card .shift-card-actions {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-  .shift-card .shift-card-actions .btn {
-    width: 100%;
-  }
+  .form-row { flex-direction: row; flex-wrap: wrap; }
+  .form-row.align-end { align-items: flex-end; }
+  .form-row > .form-group.flex-grow { flex: 1 1 100%; min-width: 0; }
+  .form-row > .form-group:not(.flex-grow) { flex: 0 0 auto; }
   .about-page { padding: 24px 16px; }
   .hero-title { font-size: 32px; }
   .feature-row { grid-template-columns: 1fr; }
   .tech-grid { grid-template-columns: repeat(2, 1fr); }
   .authors-names { flex-direction: column; align-items: center; }
+  .btn-grid { gap: 4px; }
+  .btn-grid .btn { font-size: 11px; padding: 6px 8px; }
+  .metrics-row { flex-direction: column; gap: 8px; }
+  .export-bar { flex-direction: column; }
 }
 
 /* ===== SCROLLBAR (global) ===== */
