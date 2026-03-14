@@ -463,11 +463,11 @@ textarea { resize: vertical; min-height: 60px; }
 .tech-role { font-size: 10px; color: var(--text-muted); margin-top: 2px; }
 
 /* Authors */
-.authors-section { max-width: 480px; margin: 0 auto 40px; }
+.authors-section { max-width: 980px; margin: 0 auto 40px; }
 .authors-card {
-  text-align: center; padding: 32px 28px;
+  text-align: center; padding: 44px 36px;
   background: linear-gradient(135deg, #f0f4ff 0%, #fff 100%);
-  border: 1px solid var(--border); border-radius: 16px;
+  border: 1px solid var(--border); border-radius: 28px;
   box-shadow: var(--shadow);
 }
 .authors-badge {
@@ -476,26 +476,43 @@ textarea { resize: vertical; min-height: 60px; }
   color: #b45309; background: #fef3c7; border-radius: 20px; margin-bottom: 12px;
 }
 .authors-uni {
-  font-size: 16px; font-weight: 700; color: var(--primary); margin-bottom: 2px;
+  max-width: 760px; margin: 0 auto 6px;
+  font-size: 28px; line-height: 1.2; font-weight: 800; color: var(--primary);
 }
 .authors-group {
-  font-size: 13px; font-weight: 500; color: var(--text-secondary); margin-bottom: 16px;
+  font-size: 18px; font-weight: 600; color: var(--text-secondary); margin-bottom: 26px;
 }
 .authors-divider {
-  width: 40px; height: 2px; background: var(--border); margin: 0 auto 16px; border-radius: 1px;
+  width: 80px; height: 4px; background: var(--border); margin: 0 auto 32px; border-radius: 999px;
 }
-.authors-names { display: flex; justify-content: center; gap: 16px; }
+.authors-names {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 28px;
+  align-items: stretch;
+}
 .author-chip {
-  display: flex; align-items: center; gap: 10px;
-  padding: 8px 16px; background: var(--surface); border: 1px solid var(--border);
-  border-radius: 28px; box-shadow: var(--shadow);
+  display: flex; align-items: center; justify-content: center; gap: 18px;
+  min-height: 128px; padding: 18px 26px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 999px; box-shadow: var(--shadow-md);
 }
 .author-avatar {
-  width: 48px; height: 48px; border-radius: 50%; object-fit: cover;
-  border: 2px solid var(--primary);
+  width: 88px; height: 88px; border-radius: 50%; object-fit: cover;
+  border: 4px solid var(--primary);
+  flex-shrink: 0;
+}
+.author-avatar-placeholder {
+  display: flex; align-items: center; justify-content: center;
+  background: var(--primary-light); color: var(--primary);
+  font-size: 36px; font-weight: 800;
+}
+.author-info {
+  min-width: 0;
+  text-align: left;
 }
 .author-info .author-name {
-  font-size: 13px; font-weight: 600; color: var(--text);
+  font-size: 22px; line-height: 1.2; font-weight: 700; color: var(--text);
   padding: 0; background: none; border: none; box-shadow: none;
 }
 
@@ -534,7 +551,14 @@ textarea { resize: vertical; min-height: 60px; }
     max-height: 55vh; overflow-y: auto;
   }
   :root { --sidebar-width: 100%; }
-  .authors-names { flex-wrap: wrap; justify-content: center; }
+  .authors-card { padding: 36px 24px; }
+  .authors-uni { font-size: 22px; max-width: 560px; }
+  .authors-group { font-size: 16px; }
+  .authors-names { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+  .author-chip { min-height: 112px; padding: 16px 20px; }
+  .author-avatar { width: 72px; height: 72px; }
+  .author-avatar-placeholder { font-size: 30px; }
+  .author-info .author-name { font-size: 18px; }
 }
 
 @media (max-width: 600px) {
@@ -557,7 +581,15 @@ textarea { resize: vertical; min-height: 60px; }
   .hero-title { font-size: 32px; }
   .feature-row { grid-template-columns: 1fr; }
   .tech-grid { grid-template-columns: repeat(2, 1fr); }
-  .authors-names { flex-direction: column; align-items: center; }
+  .authors-card { padding: 28px 16px; border-radius: 22px; }
+  .authors-uni { font-size: 18px; max-width: 320px; }
+  .authors-group { font-size: 14px; margin-bottom: 20px; }
+  .authors-divider { width: 56px; margin-bottom: 20px; }
+  .authors-names { grid-template-columns: 1fr; gap: 14px; }
+  .author-chip { min-height: 96px; padding: 14px 16px; gap: 14px; }
+  .author-avatar { width: 60px; height: 60px; border-width: 3px; }
+  .author-avatar-placeholder { font-size: 24px; }
+  .author-info .author-name { font-size: 16px; }
   .btn-grid { gap: 4px; }
   .btn-grid .btn { font-size: 11px; padding: 6px 8px; }
   .metrics-row { flex-direction: column; gap: 8px; }
