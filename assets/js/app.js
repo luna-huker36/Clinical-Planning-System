@@ -479,86 +479,312 @@ function on3DClick(e) {
 }
 
 // ==================== 3D VOLUME ====================
+function volumeEdgeKey(a, b) {
+  return a < b ? `${a}_${b}` : `${b}_${a}`;
+}
+
+function signedTriangleVolume(a, b, c) {
+  return a.dot(new THREE.Vector3().crossVectors(b, c)) / 6;
+}
+
+function mm3FromVolumeUnits(volumeUnits) {
+  if (scale3dMMperUnit == null) return null;
+  return volumeUnits * Math.pow(scale3dMMperUnit, 3);
+}
+
+function formatVolumeUnits(volumeUnits, includeMl = true) {
+  const mm3 = mm3FromVolumeUnits(volumeUnits);
+  if (mm3 == null) return `${volumeUnits.toFixed(4)} ед³`;
+  const cm3 = mm3 / 1000;
+  if (cm3 >= 1000) return `${(cm3 / 1000).toFixed(2)} л (${cm3.toFixed(0)} см³)`;
+  return includeMl ? `${cm3.toFixed(1)} см³ (${cm3.toFixed(1)} мл)` : `${cm3.toFixed(1)} см³`;
+}
+
+function computeLoopNormal(points) {
+  const normal = new THREE.Vector3();
+  for (let i = 0; i < points.length; i += 1) {
+    const p = points[i];
+    const n = points[(i + 1) % points.length];
+    normal.x += (p.y - n.y) * (p.z + n.z);
+    normal.y += (p.z - n.z) * (p.x + n.x);
+    normal.z += (p.x - n.x) * (p.y + n.y);
+  }
+  return normal;
+}
+
+function collectBoundaryLoops(boundaryAdj, boundaryEdges) {
+  const loops = [];
+  const usedEdges = new Set();
+
+  for (const [start, neighborsSet] of boundaryAdj.entries()) {
+    for (const neighbor of neighborsSet) {
+      const startEdge = volumeEdgeKey(start, neighbor);
+      if (usedEdges.has(startEdge)) continue;
+
+      const loop = [start];
+      let prev = start;
+      let current = neighbor;
+      usedEdges.add(startEdge);
+      let closed = false;
+
+      for (let guard = 0; guard < boundaryAdj.size + 8; guard += 1) {
+        loop.push(current);
+        const neighbors = [...(boundaryAdj.get(current) || [])];
+        if (neighbors.length !== 2) break;
+
+        const next = neighbors[0] === prev ? neighbors[1] : neighbors[0];
+        const nextEdge = volumeEdgeKey(current, next);
+
+        if (next === start) {
+          usedEdges.add(nextEdge);
+          closed = true;
+          break;
+        }
+        if (usedEdges.has(nextEdge)) break;
+
+        usedEdges.add(nextEdge);
+        prev = current;
+        current = next;
+      }
+
+      if (closed && loop.length >= 3) loops.push(loop);
+    }
+  }
+
+  return {
+    loops,
+    unresolvedBoundaryEdges: Math.max(0, boundaryEdges - usedEdges.size)
+  };
+}
+
+function analyzeMeshVolume(mesh) {
+  const geo = mesh.geometry;
+  const pos = geo?.attributes?.position;
+  if (!pos || pos.count < 3) return null;
+
+  mesh.updateWorldMatrix(true, false);
+  const matrix = mesh.matrixWorld;
+  const index = geo.index;
+  const edgeMap = new Map();
+  const vertexMap = new Map();
+  const worldVertices = [];
+  const tmp = new THREE.Vector3();
+  let baseSignedVolume = 0;
+
+  const getVertexId = vertexIndex => {
+    tmp.fromBufferAttribute(pos, vertexIndex).applyMatrix4(matrix);
+    const key = `${Math.round(tmp.x * 1e5)},${Math.round(tmp.y * 1e5)},${Math.round(tmp.z * 1e5)}`;
+    let id = vertexMap.get(key);
+    if (id == null) {
+      id = worldVertices.length;
+      worldVertices.push(tmp.clone());
+      vertexMap.set(key, id);
+    }
+    return id;
+  };
+
+  const addEdge = (a, b) => {
+    const key = volumeEdgeKey(a, b);
+    const edge = edgeMap.get(key) || { a, b, count: 0 };
+    edge.count += 1;
+    edgeMap.set(key, edge);
+  };
+
+  const triCount = index ? index.count / 3 : pos.count / 3;
+  for (let i = 0; i < triCount; i += 1) {
+    const ai = index ? index.getX(i * 3) : i * 3;
+    const bi = index ? index.getX(i * 3 + 1) : i * 3 + 1;
+    const ci = index ? index.getX(i * 3 + 2) : i * 3 + 2;
+
+    const aId = getVertexId(ai);
+    const bId = getVertexId(bi);
+    const cId = getVertexId(ci);
+    if (aId === bId || bId === cId || cId === aId) continue;
+
+    const a = worldVertices[aId];
+    const b = worldVertices[bId];
+    const c = worldVertices[cId];
+    baseSignedVolume += signedTriangleVolume(a, b, c);
+
+    addEdge(aId, bId);
+    addEdge(bId, cId);
+    addEdge(cId, aId);
+  }
+
+  if (worldVertices.length < 3) return null;
+
+  const meshCenter = new THREE.Box3().setFromPoints(worldVertices).getCenter(new THREE.Vector3());
+  const boundaryAdj = new Map();
+  let boundaryEdges = 0;
+  let nonManifoldEdges = 0;
+
+  for (const edge of edgeMap.values()) {
+    if (edge.count === 1) {
+      boundaryEdges += 1;
+      if (!boundaryAdj.has(edge.a)) boundaryAdj.set(edge.a, new Set());
+      if (!boundaryAdj.has(edge.b)) boundaryAdj.set(edge.b, new Set());
+      boundaryAdj.get(edge.a).add(edge.b);
+      boundaryAdj.get(edge.b).add(edge.a);
+    } else if (edge.count > 2) {
+      nonManifoldEdges += 1;
+    }
+  }
+
+  const { loops, unresolvedBoundaryEdges } = collectBoundaryLoops(boundaryAdj, boundaryEdges);
+  let capSignedVolume = 0;
+  let cappedLoops = 0;
+  let rejectedLoops = 0;
+  let maxPlanarityRatio = 0;
+
+  for (const loop of loops) {
+    const points = loop.map(id => worldVertices[id]);
+    const centroid = points.reduce((acc, p) => acc.add(p), new THREE.Vector3()).multiplyScalar(1 / points.length);
+    const normal = computeLoopNormal(points);
+    if (normal.lengthSq() < 1e-12) {
+      rejectedLoops += 1;
+      continue;
+    }
+
+    normal.normalize();
+    if (new THREE.Vector3().subVectors(centroid, meshCenter).dot(normal) < 0) {
+      normal.negate();
+    }
+
+    let rms = 0;
+    let maxRadius = 0;
+    for (const p of points) {
+      const delta = new THREE.Vector3().subVectors(p, centroid);
+      const planeDist = Math.abs(delta.dot(normal));
+      rms += planeDist * planeDist;
+      maxRadius = Math.max(maxRadius, delta.length());
+    }
+
+    const planarityRatio = maxRadius > 1e-6 ? Math.sqrt(rms / points.length) / maxRadius : 0;
+    maxPlanarityRatio = Math.max(maxPlanarityRatio, planarityRatio);
+    if (planarityRatio > 0.08) {
+      rejectedLoops += 1;
+      continue;
+    }
+
+    for (let i = 0; i < points.length; i += 1) {
+      const p1 = points[i];
+      const p2 = points[(i + 1) % points.length];
+      const edgeNormal = new THREE.Vector3().crossVectors(
+        new THREE.Vector3().subVectors(p1, centroid),
+        new THREE.Vector3().subVectors(p2, centroid)
+      );
+      capSignedVolume += edgeNormal.dot(normal) >= 0
+        ? signedTriangleVolume(centroid, p1, p2)
+        : signedTriangleVolume(centroid, p2, p1);
+    }
+    cappedLoops += 1;
+  }
+
+  return {
+    volumeUnits: Math.abs(baseSignedVolume + capSignedVolume),
+    boundaryEdges,
+    nonManifoldEdges,
+    boundaryLoops: loops.length,
+    cappedLoops,
+    rejectedLoops,
+    unresolvedBoundaryEdges,
+    maxPlanarityRatio
+  };
+}
+
+function buildVolumeQuality(stats) {
+  if (stats.nonManifoldEdges === 0 && stats.boundaryEdges === 0) {
+    return {
+      tag: 'точный по замкнутой сетке',
+      note: 'Замкнутая сетка без открытых контуров',
+      approximate: false
+    };
+  }
+
+  if (stats.nonManifoldEdges === 0 && stats.rejectedLoops === 0 && stats.unresolvedBoundaryEdges === 0) {
+    return {
+      tag: 'сетка автозакрыта',
+      note: `Открытый срез закрыт автоматически: ${stats.cappedLoops} контур(ов)`,
+      approximate: false
+    };
+  }
+
+  return {
+    tag: 'приближённо',
+    note: `Остались открытые контуры или сложная топология: loops ${stats.boundaryLoops}, rejected ${stats.rejectedLoops}, non-manifold ${stats.nonManifoldEdges}`,
+    approximate: true
+  };
+}
+
+function upsertVolumeItem(volumeUnits, quality, stats) {
+  let item = plan3dItems.find(x => x.type === 'volume');
+  if (!item) {
+    item = { id: nextId3d(), type: 'volume', label: 'Объём головы', points: [], value: volumeUnits, deg: null };
+    plan3dItems.push(item);
+  }
+
+  item.label = 'Объём головы';
+  item.points = [];
+  item.value = volumeUnits;
+  item.deg = null;
+  item.note = quality.note;
+  item.approximate = quality.approximate;
+  item.boundaryEdges = stats.boundaryEdges;
+  item.nonManifoldEdges = stats.nonManifoldEdges;
+  item.cappedLoops = stats.cappedLoops;
+  selected3dPlan = item.id;
+}
+
 function computeMeshVolume() {
   if (!currentModel) { setStatus3d('Сначала загрузите модель.'); return; }
-  let signedVolume = 0;
-  let boundaryEdges = 0;
 
   const bbox = new THREE.Box3().setFromObject(currentModel);
-  const center = bbox.getCenter(new THREE.Vector3());
   const bboxSize = bbox.getSize(new THREE.Vector3());
+  const stats = {
+    volumeUnits: 0,
+    boundaryEdges: 0,
+    nonManifoldEdges: 0,
+    boundaryLoops: 0,
+    cappedLoops: 0,
+    rejectedLoops: 0,
+    unresolvedBoundaryEdges: 0,
+    maxPlanarityRatio: 0
+  };
 
   currentModel.traverse(child => {
     if (!child.isMesh) return;
-    const geo = child.geometry;
-    const pos = geo.attributes.position;
-    const idx = geo.index;
-    child.updateWorldMatrix(true, false);
-    const matrix = child.matrixWorld;
-    const vA = new THREE.Vector3(), vB = new THREE.Vector3(), vC = new THREE.Vector3();
-
-    if (idx) {
-      const edgeMap = new Map();
-      for (let i = 0; i < idx.count; i += 3) {
-        for (let e = 0; e < 3; e++) {
-          const a = idx.getX(i + e), b = idx.getX(i + (e + 1) % 3);
-          const key = Math.min(a, b) + '_' + Math.max(a, b);
-          edgeMap.set(key, (edgeMap.get(key) || 0) + 1);
-        }
-      }
-      for (const count of edgeMap.values()) {
-        if (count === 1) boundaryEdges++;
-      }
-    }
-
-    const triCount = idx ? idx.count / 3 : pos.count / 3;
-    for (let i = 0; i < triCount; i++) {
-      if (idx) {
-        vA.fromBufferAttribute(pos, idx.getX(i * 3));
-        vB.fromBufferAttribute(pos, idx.getX(i * 3 + 1));
-        vC.fromBufferAttribute(pos, idx.getX(i * 3 + 2));
-      } else {
-        vA.fromBufferAttribute(pos, i * 3);
-        vB.fromBufferAttribute(pos, i * 3 + 1);
-        vC.fromBufferAttribute(pos, i * 3 + 2);
-      }
-      vA.applyMatrix4(matrix).sub(center);
-      vB.applyMatrix4(matrix).sub(center);
-      vC.applyMatrix4(matrix).sub(center);
-      signedVolume += vA.dot(vB.clone().cross(vC)) / 6.0;
-    }
+    const meshStats = analyzeMeshVolume(child);
+    if (!meshStats) return;
+    stats.volumeUnits += meshStats.volumeUnits;
+    stats.boundaryEdges += meshStats.boundaryEdges;
+    stats.nonManifoldEdges += meshStats.nonManifoldEdges;
+    stats.boundaryLoops += meshStats.boundaryLoops;
+    stats.cappedLoops += meshStats.cappedLoops;
+    stats.rejectedLoops += meshStats.rejectedLoops;
+    stats.unresolvedBoundaryEdges += meshStats.unresolvedBoundaryEdges;
+    stats.maxPlanarityRatio = Math.max(stats.maxPlanarityRatio, meshStats.maxPlanarityRatio);
   });
 
-  const isOpen = boundaryEdges > 0;
-  const totalVolume = Math.abs(signedVolume);
+  if (stats.volumeUnits <= 0) {
+    setStatus3d('Не удалось вычислить объём: у модели нет пригодной замкнутой геометрии.');
+    return;
+  }
+
+  const quality = buildVolumeQuality(stats);
   const s = scale3dMMperUnit ?? 1;
-  const s3 = Math.pow(s, 3);
-
-  // Convert to real units
-  const volMM3 = totalVolume * s3;
-  const volCM3 = volMM3 / 1000; // 1 cm³ = 1000 mm³
-
-  // Bbox dimensions in mm for reference
   const bW = (bboxSize.x * s).toFixed(0);
   const bH = (bboxSize.y * s).toFixed(0);
   const bD = (bboxSize.z * s).toFixed(0);
+  const valueText = formatVolumeUnits(stats.volumeUnits);
+  const extra = scale3dMMperUnit == null ? ' Калибруйте модель для клинических единиц.' : '';
+  const topologyText = quality.approximate
+    ? `${quality.tag}; ${quality.note}.`
+    : `${quality.tag}; ${quality.note}.`;
 
-  let volText;
-  const openTag = isOpen ? ' ⚠️ ~приблизительно' : '';
-  if (scale3dMMperUnit != null) {
-    if (volCM3 >= 1000) {
-      volText = `${(volCM3 / 1000).toFixed(2)} л (${volCM3.toFixed(0)} см³)${openTag}`;
-    } else {
-      volText = `${volCM3.toFixed(1)} см³ (${volCM3.toFixed(1)} мл)${openTag}`;
-    }
-    volText += ` | bbox: ${bW}×${bH}×${bD} мм`;
-  } else {
-    volText = `${totalVolume.toFixed(4)} ед³ (калибруйте для мм³)${openTag}`;
-  }
-
-  finalizePlanItem('volume', 'Объём головы', [], totalVolume);
-  setStatus3d(`Объём: ${volText}`);
+  upsertVolumeItem(stats.volumeUnits, quality, stats);
+  setStatus3d(`Объём: ${valueText} | bbox: ${bW}×${bH}×${bD} мм | ${topologyText}${extra}`);
   render3dPlanList();
+  update3dSelectedInfo();
   save3dProject();
 }
 
@@ -725,10 +951,7 @@ function render3dPlanList() {
     } else if (m.type === 'tilt') {
       val = `${m.deg != null ? m.deg.toFixed(1) + '°' : ''} | ${m.value != null ? formatDist(m.value) : ''}`;
     } else if (m.type === 'volume' && m.value != null) {
-      const s = scale3dMMperUnit ?? 1;
-      const vMM3 = m.value * Math.pow(s, 3);
-      const vCM3 = vMM3 / 1000;
-      val = vCM3 >= 1000 ? `${(vCM3 / 1000).toFixed(2)} л` : `${vCM3.toFixed(1)} см³`;
+      val = formatVolumeUnits(m.value, false);
     } else if (m.value != null) {
       val = formatDist(m.value);
     }
@@ -742,6 +965,7 @@ function render3dPlanList() {
         ${showLabel ? ' • <em>' + escHtml(m.label) + '</em>' : ''}
         : ${val}
       </div>
+      ${m.note ? `<div class="hint" style="margin-top:4px">${escHtml(m.note)}</div>` : ''}
       <button class="btn btn-sm btn-danger" onclick="event.stopPropagation(); window._delete3dPlan('${m.id}')" style="margin-top:4px;font-size:10px;">Удалить</button>
     </div>`;
   }).join('');
@@ -768,9 +992,10 @@ function update3dSelectedInfo() {
   if (!selected3dPlan) { el.textContent = '—'; return; }
   const it = plan3dItems.find(x => x.id === selected3dPlan);
   if (!it) { el.textContent = '—'; return; }
-  const valTxt = it.value != null ? formatDist(it.value) : '';
+  const valTxt = it.type === 'volume' && it.value != null ? formatVolumeUnits(it.value) : (it.value != null ? formatDist(it.value) : '');
   const degTxt = it.deg != null ? ` • ${it.deg.toFixed(1)}°` : '';
-  el.textContent = `${it.label} (${TYPE_NAMES_RU[it.type] || it.type}) • ${valTxt}${degTxt}`;
+  const noteTxt = it.note ? ` • ${it.note}` : '';
+  el.textContent = `${it.label} (${TYPE_NAMES_RU[it.type] || it.type}) • ${valTxt}${degTxt}${noteTxt}`;
 }
 
 // ==================== ASYMMETRY (R vs L) ====================
@@ -950,6 +1175,7 @@ async function export3dPDF() {
         let val = '';
         if (item.type === 'angle') val = item.deg != null ? `${item.deg.toFixed(1)}°` : '';
         else if (item.type === 'tilt') val = `${item.deg != null ? item.deg.toFixed(1) + '°' : ''} | ${item.value != null ? formatDist(item.value) : ''}`;
+        else if (item.type === 'volume' && item.value != null) val = formatVolumeUnits(item.value);
         else if (item.value != null) val = formatDist(item.value);
         const typeName = TYPE_NAMES_RU[item.type] || item.type;
         const icon = TYPE_ICONS[item.type] || '';
@@ -1112,6 +1338,7 @@ async function export3dDOCX() {
         let val = '';
         if (item.type === 'angle') val = item.deg != null ? `${item.deg.toFixed(1)}°` : '';
         else if (item.type === 'tilt') val = `${item.deg != null ? item.deg.toFixed(1) + '°' : ''} | ${item.value != null ? formatDist(item.value) : ''}`;
+        else if (item.type === 'volume' && item.value != null) val = formatVolumeUnits(item.value);
         else if (item.value != null) val = formatDist(item.value);
         const typeName = TYPE_NAMES_RU[item.type] || item.type;
         const icon = TYPE_ICONS[item.type] || '';
