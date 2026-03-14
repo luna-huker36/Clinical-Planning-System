@@ -170,26 +170,34 @@ function clearLights() { lights.forEach(l => scene.remove(l)); lights = []; }
 
 function setupLight1() {
   clearLights();
-  const a = new THREE.AmbientLight(0x404050, 0.6);
-  const d = new THREE.DirectionalLight(0xffffff, 2.5); d.position.set(2, 3, 4);
-  const f = new THREE.DirectionalLight(0x8888ff, 0.8); f.position.set(-2, -1, 2);
-  lights.push(a, d, f); lights.forEach(l => scene.add(l));
+  const a = new THREE.AmbientLight(0xffffff, 0.8);
+  const top = new THREE.DirectionalLight(0xffffff, 1.5); top.position.set(0, 5, 0);
+  const bot = new THREE.DirectionalLight(0xffffff, 0.4); bot.position.set(0, -5, 0);
+  const front = new THREE.DirectionalLight(0xffffff, 1.2); front.position.set(0, 0, 5);
+  const back = new THREE.DirectionalLight(0xffffff, 0.5); back.position.set(0, 0, -5);
+  const left = new THREE.DirectionalLight(0xccddff, 0.8); left.position.set(-5, 2, 2);
+  const right = new THREE.DirectionalLight(0xffddcc, 0.8); right.position.set(5, 2, 2);
+  lights.push(a, top, bot, front, back, left, right); lights.forEach(l => scene.add(l));
 }
 function setupLight2() {
   clearLights();
-  const a = new THREE.AmbientLight(0x303030, 0.4);
-  const k = new THREE.SpotLight(0xffeedd, 5, 20, Math.PI / 4); k.position.set(3, 4, 3);
-  const r = new THREE.PointLight(0x4488ff, 3, 10); r.position.set(-3, 1, -2);
-  lights.push(a, k, r); lights.forEach(l => scene.add(l));
+  const a = new THREE.AmbientLight(0xffffff, 0.6);
+  const key = new THREE.SpotLight(0xffeedd, 4, 20, Math.PI / 4); key.position.set(3, 4, 3);
+  const fill = new THREE.DirectionalLight(0x8888ff, 0.8); fill.position.set(-3, 1, -2);
+  const rim = new THREE.DirectionalLight(0xffffff, 0.6); rim.position.set(0, 0, -5);
+  const bot = new THREE.DirectionalLight(0xffffff, 0.3); bot.position.set(0, -3, 2);
+  lights.push(a, key, fill, rim, bot); lights.forEach(l => scene.add(l));
 }
 function setupLight3() {
   clearLights();
-  const a = new THREE.AmbientLight(0xffffff, 0.3);
-  const t = new THREE.DirectionalLight(0xffffff, 1.5); t.position.set(0, 5, 0);
-  const f = new THREE.DirectionalLight(0xffffff, 1.2); f.position.set(0, 0, 5);
-  const l = new THREE.DirectionalLight(0xccddff, 0.8); l.position.set(-4, 2, 2);
-  const r = new THREE.DirectionalLight(0xffddcc, 0.8); r.position.set(4, 2, 2);
-  lights.push(a, t, f, l, r); lights.forEach(x => scene.add(x));
+  const a = new THREE.AmbientLight(0xffffff, 0.7);
+  const top = new THREE.DirectionalLight(0xffffff, 1.2); top.position.set(0, 5, 0);
+  const bot = new THREE.DirectionalLight(0xffffff, 0.4); bot.position.set(0, -5, 0);
+  const front = new THREE.DirectionalLight(0xffffff, 1.0); front.position.set(0, 0, 5);
+  const back = new THREE.DirectionalLight(0xffffff, 0.5); back.position.set(0, 0, -5);
+  const left = new THREE.DirectionalLight(0xccddff, 0.8); left.position.set(-4, 2, 2);
+  const right = new THREE.DirectionalLight(0xffddcc, 0.8); right.position.set(4, 2, 2);
+  lights.push(a, top, bot, front, back, left, right); lights.forEach(x => scene.add(x));
 }
 
 // ==================== MODEL ====================
@@ -230,6 +238,26 @@ function applyVisualMode3D(obj) {
   });
 }
 
+function autoDetectScale(maxDim, prefix) {
+  // maxDim in model units. Heuristic for face/head scans:
+  // 0.05–1.0  → meters (1 unit = 1000 mm)
+  // 1–1000    → millimeters (1 unit = 1 mm)
+  // >1000     → unknown, ask calibration
+  if (maxDim > 0.05 && maxDim < 1.0) {
+    scale3dMMperUnit = 1000;
+    updateScaleBadge();
+    setStatus3d(`${prefix} Авто-масштаб: 1 ед. = 1000 мм (метры).`);
+  } else if (maxDim >= 1.0 && maxDim <= 1000) {
+    scale3dMMperUnit = 1;
+    updateScaleBadge();
+    setStatus3d(`${prefix} Авто-масштаб: 1 ед. = 1 мм.`);
+  } else {
+    scale3dMMperUnit = null;
+    updateScaleBadge();
+    setStatus3d(`${prefix} Калибруйте для измерений в мм.`);
+  }
+}
+
 function loadModel3D(url) {
   removeModel3D();
   const loadEl = document.getElementById('loading3d');
@@ -245,24 +273,10 @@ function loadModel3D(url) {
     fitCamera3D(model);
     loadEl.classList.remove('visible');
 
-    // Auto-detect scale from bounding box (GLB face scans are typically in meters)
     const box = new THREE.Box3().setFromObject(model);
     const size = box.getSize(new THREE.Vector3());
     const maxDim = Math.max(size.x, size.y, size.z);
-    // If model is ~0.1-0.4 range, likely meters (face ~0.2m), set auto mm/unit = 1000
-    if (maxDim > 0.05 && maxDim < 1.0) {
-      scale3dMMperUnit = 1000; // 1 unit = 1 meter = 1000mm
-      updateScaleBadge();
-      setStatus3d('Модель загружена. Авто-масштаб: 1 ед. = 1000 мм (метры).');
-    } else if (maxDim >= 1.0 && maxDim < 500) {
-      scale3dMMperUnit = 1; // likely already in mm
-      updateScaleBadge();
-      setStatus3d('Модель загружена. Авто-масштаб: 1 ед. = 1 мм.');
-    } else {
-      scale3dMMperUnit = null;
-      updateScaleBadge();
-      setStatus3d('Модель загружена. Выполните калибровку для измерений в мм.');
-    }
+    autoDetectScale(maxDim, 'Модель загружена.');
   }, null, err => {
     loadEl.classList.remove('visible');
     console.error('Model load error:', err);
@@ -276,34 +290,41 @@ function loadOBJModel(objFile, mtlFile, allFiles) {
   wireframeMode = false; normalsMode = false;
   updateBtn3DStates();
 
-  // Build a map of all uploaded files by name for texture resolution
-  const fileMap = new Map();
-  Array.from(allFiles).forEach(f => fileMap.set(f.name, f));
+  // Collect image files as blob URLs by filename
+  const imageFiles = Array.from(allFiles).filter(f => /\.(png|jpg|jpeg)$/i.test(f.name));
+  const texBlobUrls = new Map();
+  imageFiles.forEach(f => texBlobUrls.set(f.name, URL.createObjectURL(f)));
 
   const objReader = new FileReader();
   objReader.onload = (ev) => {
     const objText = ev.target.result;
     const objLoader = new OBJLoader();
+    const model = objLoader.parse(objText);
 
-    const finishLoad = (materials) => {
-      if (materials) objLoader.setMaterials(materials);
-      const model = objLoader.parse(objText);
-      // Try to apply textures from uploaded files
+    // Apply textures and proper material to all meshes
+    const texLoader = new THREE.TextureLoader();
+    const texFile = imageFiles.find(f => /tex/i.test(f.name)) || imageFiles[0];
+    const normFile = imageFiles.find(f => /norm/i.test(f.name));
+    const aoFile = imageFiles.find(f => /ao/i.test(f.name));
+
+    let loadedTex = null, loadedNorm = null, loadedAO = null;
+    let pending = 0;
+
+    const onAllLoaded = () => {
       model.traverse(c => {
-        if (c.isMesh) {
-          c.userData.originalMaterial = c.material.clone();
-          // If no texture and we have image files, try to apply them
-          if (!c.material.map) {
-            const texFile = Array.from(allFiles).find(f => /\.(png|jpg|jpeg)$/i.test(f.name) && /tex/i.test(f.name));
-            if (texFile) {
-              const texUrl = URL.createObjectURL(texFile);
-              const tex = new THREE.TextureLoader().load(texUrl);
-              tex.flipY = false;
-              c.material.map = tex;
-              c.material.needsUpdate = true;
-            }
-          }
-        }
+        if (!c.isMesh) return;
+        // Use MeshStandardMaterial for proper lighting
+        const mat = new THREE.MeshStandardMaterial({
+          color: 0xffffff,
+          roughness: 0.7,
+          metalness: 0.0,
+          side: THREE.DoubleSide,
+        });
+        if (loadedTex) { mat.map = loadedTex; }
+        if (loadedNorm) { mat.normalMap = loadedNorm; }
+        if (loadedAO) { mat.aoMap = loadedAO; }
+        c.material = mat;
+        c.userData.originalMaterial = mat.clone();
       });
       scene.add(model);
       currentModel = model;
@@ -314,52 +335,28 @@ function loadOBJModel(objFile, mtlFile, allFiles) {
       const box = new THREE.Box3().setFromObject(model);
       const size = box.getSize(new THREE.Vector3());
       const maxDim = Math.max(size.x, size.y, size.z);
-      if (maxDim > 0.05 && maxDim < 1.0) {
-        scale3dMMperUnit = 1000;
-        updateScaleBadge();
-        setStatus3d('OBJ загружен. Авто-масштаб: 1 ед. = 1000 мм.');
-      } else if (maxDim >= 1.0 && maxDim < 500) {
-        scale3dMMperUnit = 1;
-        updateScaleBadge();
-        setStatus3d('OBJ загружен. Авто-масштаб: 1 ед. = 1 мм.');
-      } else {
-        scale3dMMperUnit = null;
-        updateScaleBadge();
-        setStatus3d('OBJ загружен. Калибруйте для измерений в мм.');
-      }
+      autoDetectScale(maxDim, 'OBJ загружен.');
     };
 
-    if (mtlFile) {
-      const mtlReader = new FileReader();
-      mtlReader.onload = (mev) => {
-        const mtlLoader = new MTLLoader();
-        // Create a custom resource path for textures from uploaded files
-        const texUrlMap = new Map();
-        Array.from(allFiles).forEach(f => {
-          if (/\.(png|jpg|jpeg)$/i.test(f.name)) {
-            texUrlMap.set(f.name, URL.createObjectURL(f));
-          }
-        });
-        mtlLoader.setResourcePath('');
-        const materials = mtlLoader.parse(mev.target.result, '');
-        // Override texture URLs with blob URLs from uploaded files
-        for (const matName in materials.materialsInfo) {
-          const info = materials.materialsInfo[matName];
-          for (const prop of ['map_kd', 'map_ka', 'map_ks', 'map_ao', 'map_tangentspacenormal']) {
-            if (info[prop]) {
-              const texName = info[prop].split('/').pop();
-              if (texUrlMap.has(texName)) {
-                info[prop] = texUrlMap.get(texName);
-              }
-            }
-          }
-        }
-        materials.preload();
-        finishLoad(materials);
-      };
-      mtlReader.readAsText(mtlFile);
+    const tryFinish = () => { if (--pending <= 0) onAllLoaded(); };
+
+    // Load textures
+    if (texFile) pending++;
+    if (normFile) pending++;
+    if (aoFile) pending++;
+
+    if (pending === 0) {
+      onAllLoaded();
     } else {
-      finishLoad(null);
+      if (texFile) {
+        texLoader.load(texBlobUrls.get(texFile.name), t => { t.flipY = true; t.colorSpace = THREE.SRGBColorSpace; loadedTex = t; tryFinish(); }, undefined, tryFinish);
+      }
+      if (normFile) {
+        texLoader.load(texBlobUrls.get(normFile.name), t => { t.flipY = true; loadedNorm = t; tryFinish(); }, undefined, tryFinish);
+      }
+      if (aoFile) {
+        texLoader.load(texBlobUrls.get(aoFile.name), t => { t.flipY = true; loadedAO = t; tryFinish(); }, undefined, tryFinish);
+      }
     }
   };
   objReader.readAsText(objFile);
@@ -484,8 +481,13 @@ function on3DClick(e) {
 // ==================== 3D VOLUME ====================
 function computeMeshVolume() {
   if (!currentModel) { setStatus3d('Сначала загрузите модель.'); return; }
-  let totalVolume = 0;
+  let signedVolume = 0;
   let boundaryEdges = 0;
+
+  const bbox = new THREE.Box3().setFromObject(currentModel);
+  const center = bbox.getCenter(new THREE.Vector3());
+  const bboxSize = bbox.getSize(new THREE.Vector3());
+
   currentModel.traverse(child => {
     if (!child.isMesh) return;
     const geo = child.geometry;
@@ -495,7 +497,6 @@ function computeMeshVolume() {
     const matrix = child.matrixWorld;
     const vA = new THREE.Vector3(), vB = new THREE.Vector3(), vC = new THREE.Vector3();
 
-    // Check if mesh is watertight (each edge shared by exactly 2 triangles)
     if (idx) {
       const edgeMap = new Map();
       for (let i = 0; i < idx.count; i += 3) {
@@ -521,24 +522,38 @@ function computeMeshVolume() {
         vB.fromBufferAttribute(pos, i * 3 + 1);
         vC.fromBufferAttribute(pos, i * 3 + 2);
       }
-      vA.applyMatrix4(matrix);
-      vB.applyMatrix4(matrix);
-      vC.applyMatrix4(matrix);
-      totalVolume += vA.dot(vB.clone().cross(vC)) / 6.0;
+      vA.applyMatrix4(matrix).sub(center);
+      vB.applyMatrix4(matrix).sub(center);
+      vC.applyMatrix4(matrix).sub(center);
+      signedVolume += vA.dot(vB.clone().cross(vC)) / 6.0;
     }
   });
-  totalVolume = Math.abs(totalVolume);
 
   const isOpen = boundaryEdges > 0;
+  const totalVolume = Math.abs(signedVolume);
+  const s = scale3dMMperUnit ?? 1;
+  const s3 = Math.pow(s, 3);
+
+  // Convert to real units
+  const volMM3 = totalVolume * s3;
+  const volCM3 = volMM3 / 1000; // 1 cm³ = 1000 mm³
+
+  // Bbox dimensions in mm for reference
+  const bW = (bboxSize.x * s).toFixed(0);
+  const bH = (bboxSize.y * s).toFixed(0);
+  const bD = (bboxSize.z * s).toFixed(0);
+
   let volText;
-  let warning = isOpen ? ' ⚠️ Mesh не замкнут — значение приблизительное' : '';
+  const openTag = isOpen ? ' ⚠️ ~приблизительно' : '';
   if (scale3dMMperUnit != null) {
-    const volMM3 = totalVolume * Math.pow(scale3dMMperUnit, 3);
-    const volCM3 = volMM3 / 1000;
-    const volML = volCM3; // 1 см³ = 1 мл
-    volText = `${volCM3.toFixed(1)} см³ (${volML.toFixed(1)} мл)${warning}`;
+    if (volCM3 >= 1000) {
+      volText = `${(volCM3 / 1000).toFixed(2)} л (${volCM3.toFixed(0)} см³)${openTag}`;
+    } else {
+      volText = `${volCM3.toFixed(1)} см³ (${volCM3.toFixed(1)} мл)${openTag}`;
+    }
+    volText += ` | bbox: ${bW}×${bH}×${bD} мм`;
   } else {
-    volText = `${totalVolume.toFixed(4)} ед³ (калибруйте для мм³)${warning}`;
+    volText = `${totalVolume.toFixed(4)} ед³ (калибруйте для мм³)${openTag}`;
   }
 
   finalizePlanItem('volume', 'Объём головы', [], totalVolume);
@@ -709,6 +724,11 @@ function render3dPlanList() {
       val = m.deg != null ? `${m.deg.toFixed(1)}°` : '';
     } else if (m.type === 'tilt') {
       val = `${m.deg != null ? m.deg.toFixed(1) + '°' : ''} | ${m.value != null ? formatDist(m.value) : ''}`;
+    } else if (m.type === 'volume' && m.value != null) {
+      const s = scale3dMMperUnit ?? 1;
+      const vMM3 = m.value * Math.pow(s, 3);
+      const vCM3 = vMM3 / 1000;
+      val = vCM3 >= 1000 ? `${(vCM3 / 1000).toFixed(2)} л` : `${vCM3.toFixed(1)} см³`;
     } else if (m.value != null) {
       val = formatDist(m.value);
     }
@@ -1261,6 +1281,18 @@ function bindUI3D() {
     } else {
       const f = files[0];
       loadModel3D(URL.createObjectURL(f));
+    }
+  });
+  document.getElementById('folderInput3d').addEventListener('change', e => {
+    const files = e.target.files; if (!files.length) return;
+    const objFile = Array.from(files).find(f => f.name.toLowerCase().endsWith('.obj'));
+    const mtlFile = Array.from(files).find(f => f.name.toLowerCase().endsWith('.mtl'));
+    if (objFile) {
+      loadOBJModel(objFile, mtlFile, files);
+    } else {
+      const glbFile = Array.from(files).find(f => /\.(glb|gltf)$/i.test(f.name));
+      if (glbFile) loadModel3D(URL.createObjectURL(glbFile));
+      else setStatus3d('В папке не найден .obj или .glb файл.');
     }
   });
   document.getElementById('btnDeleteModel').addEventListener('click', () => {
