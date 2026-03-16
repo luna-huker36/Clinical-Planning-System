@@ -47,7 +47,7 @@ const raycaster = new THREE.Raycaster();
 const mouse = new THREE.Vector2();
 
 // ==================== 3D CLINICAL STATE ====================
-// Tools: 'point','distance','angle','vector','tilt','measure','calibration'
+// Tools: 'point','distance','angle','vector','tilt','measure','calibration','neckClip'
 let tool3dMode = null;
 let tool3dPoints = [];
 let markers3d = [];
@@ -65,6 +65,10 @@ let calibrationPoints = []; // temporary for calibration
 // Before/After
 let before3dSnapshot = null;
 let show3dBefore = false;
+
+// Neck clip plane for isolating head volume above the neck
+let neckClipPlaneY = null;
+let neckClipHelper = null;
 
 // ==================== HELPERS ====================
 function nextId3d() {
@@ -93,6 +97,147 @@ function formatDist(unitDist) {
   const mm = mmFromUnit(unitDist);
   if (mm != null) return `${mm.toFixed(2)} мм`;
   return `${unitDist.toFixed(4)} ед.`;
+}
+
+function sortedDimsFromSize(size) {
+  return [size.x, size.y, size.z]
+    .filter(v => Number.isFinite(v) && v > 0)
+    .sort((a, b) => b - a);
+}
+
+function estimateHeadScale(size) {
+  const dims = sortedDimsFromSize(size);
+  if (dims.length !== 3) return null;
+
+  const candidates = [0.1, 1, 10, 100, 1000];
+  const target = [240, 190, 160];
+  const min = [170, 130, 110];
+  const max = [320, 260, 220];
+  let best = null;
+
+  for (const scale of candidates) {
+    const scaled = dims.map(v => v * scale);
+    let score = 0;
+
+    for (let i = 0; i < 3; i += 1) {
+      const value = scaled[i];
+      score += Math.abs(Math.log(value / target[i]));
+      if (value < min[i]) score += ((min[i] - value) / min[i]) * 4;
+      if (value > max[i]) score += ((value - max[i]) / max[i]) * 4;
+    }
+
+    const volumeMm3 = scaled[0] * scaled[1] * scaled[2];
+    if (volumeMm3 < 2.5e6 || volumeMm3 > 18e6) score += 1.5;
+
+    if (!best || score < best.score) {
+      best = { scale, score, dimsMM: scaled };
+    }
+  }
+
+  if (!best || best.score > 3.2) return null;
+  return best;
+}
+
+function getCurrentModelBounds() {
+  if (!currentModel) return null;
+  return new THREE.Box3().setFromObject(currentModel);
+}
+
+function getNeckClipSummary() {
+  if (!currentModel || !Number.isFinite(neckClipPlaneY)) return null;
+  const box = getCurrentModelBounds();
+  if (!box) return null;
+  const offsetUnits = Math.max(0, neckClipPlaneY - box.min.y);
+  const totalUnits = Math.max(0, box.max.y - box.min.y);
+  const offsetMM = mmFromUnit(offsetUnits);
+  const totalMM = mmFromUnit(totalUnits);
+  return {
+    offsetUnits,
+    totalUnits,
+    offsetMM,
+    totalMM
+  };
+}
+
+function applyNeckClipUI() {
+  const badge = document.getElementById('neckClipBadge');
+  const info = document.getElementById('neckClipInfo');
+  if (!badge || !info) return;
+
+  const summary = getNeckClipSummary();
+  if (!summary) {
+    badge.className = 'badge';
+    badge.textContent = 'Выкл';
+    info.textContent = 'Объём считается по всей модели.';
+    return;
+  }
+
+  badge.className = 'badge badge-info';
+  badge.textContent = 'Активно';
+  const offsetText = summary.offsetMM != null
+    ? `${summary.offsetMM.toFixed(1)} мм`
+    : `${summary.offsetUnits.toFixed(3)} ед.`;
+  const totalText = summary.totalMM != null
+    ? `${summary.totalMM.toFixed(1)} мм`
+    : `${summary.totalUnits.toFixed(3)} ед.`;
+  info.textContent = `Объём считается выше плоскости шеи: ${offsetText} от нижней границы модели из ${totalText}.`;
+}
+
+function removeNeckClipHelper() {
+  if (!neckClipHelper) return;
+  scene?.remove(neckClipHelper);
+  neckClipHelper.traverse(obj => {
+    if (obj.geometry) obj.geometry.dispose();
+    if (obj.material) {
+      (Array.isArray(obj.material) ? obj.material : [obj.material]).forEach(mat => mat.dispose());
+    }
+  });
+  neckClipHelper = null;
+}
+
+function updateNeckClipHelper() {
+  removeNeckClipHelper();
+  if (!scene || !currentModel || !Number.isFinite(neckClipPlaneY)) {
+    applyNeckClipUI();
+    return;
+  }
+
+  const box = getCurrentModelBounds();
+  if (!box || !isFinite(box.min.x) || !isFinite(box.max.x)) {
+    applyNeckClipUI();
+    return;
+  }
+
+  const size = box.getSize(new THREE.Vector3());
+  const center = box.getCenter(new THREE.Vector3());
+  const planeWidth = Math.max(size.x * 1.08, size.z * 1.08, 0.05);
+  const planeDepth = Math.max(size.z * 1.08, size.x * 1.08, 0.05);
+  const planeGeo = new THREE.PlaneGeometry(planeWidth, planeDepth);
+  const planeMat = new THREE.MeshBasicMaterial({
+    color: 0xf59e0b,
+    transparent: true,
+    opacity: 0.16,
+    side: THREE.DoubleSide,
+    depthWrite: false
+  });
+  const planeMesh = new THREE.Mesh(planeGeo, planeMat);
+  planeMesh.rotation.x = -Math.PI / 2;
+  planeMesh.position.set(center.x, neckClipPlaneY, center.z);
+  planeMesh.renderOrder = 10;
+
+  const outline = new THREE.LineSegments(
+    new THREE.EdgesGeometry(planeGeo),
+    new THREE.LineBasicMaterial({ color: 0xf59e0b, transparent: true, opacity: 0.85 })
+  );
+  outline.rotation.copy(planeMesh.rotation);
+  outline.position.copy(planeMesh.position);
+  outline.renderOrder = 11;
+
+  neckClipHelper = new THREE.Group();
+  neckClipHelper.add(planeMesh);
+  neckClipHelper.add(outline);
+  scene.add(neckClipHelper);
+  applyNeckClipUI();
 }
 
 // ==================== 3D SCENE INIT ====================
@@ -203,6 +348,7 @@ function setupLight3() {
 
 // ==================== MODEL ====================
 function removeModel3D() {
+  removeNeckClipHelper();
   if (!currentModel) return;
   scene.remove(currentModel);
   currentModel.traverse(c => {
@@ -239,32 +385,46 @@ function applyVisualMode3D(obj) {
   });
 }
 
-function autoDetectScale(maxDim, prefix) {
-  // maxDim in model units. Heuristic for face/head scans:
-  // 0.05–1.0   → meters   (1 unit = 1000 mm)
-  // 1–50       → centimeters (1 unit = 10 mm) — typical artistic/demo models
-  // 50–1000    → millimeters (1 unit = 1 mm)  — typical photogrammetry scans
-  // >1000      → unknown, ask calibration
+function autoDetectScale(size, prefix) {
+  const dims = sortedDimsFromSize(size);
+  const maxDim = dims[0] || 0;
+  const headEstimate = estimateHeadScale(size);
+
+  if (headEstimate) {
+    scale3dMMperUnit = headEstimate.scale;
+    updateScaleBadge();
+    invalidateVolumeMeasurement();
+    const dimsText = headEstimate.dimsMM.map(v => Math.round(v)).join('×');
+    setStatus3d(`${prefix} Автокалибровка головы: 1 ед. = ${headEstimate.scale.toFixed(2)} мм (${dimsText} мм).`);
+    return;
+  }
+
+  // Fallback for non-head models when bbox does not resemble a head scan.
   if (maxDim > 0.05 && maxDim < 1.0) {
     scale3dMMperUnit = 1000;
     updateScaleBadge();
+    invalidateVolumeMeasurement();
     setStatus3d(`${prefix} Авто-масштаб: 1 ед. = 1000 мм (метры).`);
   } else if (maxDim >= 1.0 && maxDim < 50) {
     scale3dMMperUnit = 10;
     updateScaleBadge();
+    invalidateVolumeMeasurement();
     setStatus3d(`${prefix} Авто-масштаб: 1 ед. = 10 мм (сантиметры).`);
   } else if (maxDim >= 50 && maxDim <= 1000) {
     scale3dMMperUnit = 1;
     updateScaleBadge();
+    invalidateVolumeMeasurement();
     setStatus3d(`${prefix} Авто-масштаб: 1 ед. = 1 мм.`);
   } else {
     scale3dMMperUnit = null;
     updateScaleBadge();
-    setStatus3d(`${prefix} Калибруйте для измерений в мм.`);
+    invalidateVolumeMeasurement();
+    setStatus3d(`${prefix} Не удалось надёжно оценить масштаб. Калибруйте вручную в мм.`);
   }
 }
 
 function loadModel3D(url) {
+  clearNeckClip({ silent: true });
   removeModel3D();
   const loadEl = document.getElementById('loading3d');
   loadEl.classList.add('visible');
@@ -280,8 +440,8 @@ function loadModel3D(url) {
 
     const box = new THREE.Box3().setFromObject(model);
     const size = box.getSize(new THREE.Vector3());
-    const maxDim = Math.max(size.x, size.y, size.z);
-    autoDetectScale(maxDim, 'Модель загружена.');
+    autoDetectScale(size, 'Модель загружена.');
+    updateNeckClipHelper();
   };
 
   const onError = (err) => {
@@ -330,6 +490,7 @@ function loadModel3D(url) {
 }
 
 function loadOBJModel(objFile, mtlFile, allFiles) {
+  clearNeckClip({ silent: true });
   removeModel3D();
   const loadEl = document.getElementById('loading3d');
   loadEl.classList.add('visible');
@@ -380,8 +541,8 @@ function loadOBJModel(objFile, mtlFile, allFiles) {
       // Auto-detect scale
       const box = new THREE.Box3().setFromObject(model);
       const size = box.getSize(new THREE.Vector3());
-      const maxDim = Math.max(size.x, size.y, size.z);
-      autoDetectScale(maxDim, 'OBJ загружен.');
+      autoDetectScale(size, 'OBJ загружен.');
+      updateNeckClipHelper();
     };
 
     const tryFinish = () => { if (--pending <= 0) onAllLoaded(); };
@@ -418,6 +579,30 @@ function updateScaleBadge() {
   }
 }
 
+function invalidateVolumeMeasurement() {
+  const prevLen = plan3dItems.length;
+  plan3dItems = plan3dItems.filter(item => item.type !== 'volume');
+  if (selected3dPlan && !plan3dItems.some(item => item.id === selected3dPlan)) {
+    selected3dPlan = null;
+  }
+  if (prevLen !== plan3dItems.length) {
+    render3dPlanList();
+    update3dSelectedInfo();
+    applyVolumeHealthUI(null);
+  }
+}
+
+function clearNeckClip(options = {}) {
+  const { silent = false, keepVolume = false } = options;
+  const hadClip = Number.isFinite(neckClipPlaneY);
+  neckClipPlaneY = null;
+  removeNeckClipHelper();
+  applyNeckClipUI();
+  if (!keepVolume) invalidateVolumeMeasurement();
+  if (hadClip) save3dProject();
+  if (!silent && hadClip) setStatus3d('Отсечение по шее отключено.');
+}
+
 // ==================== 3D CLICK (CLINICAL TOOLS) ====================
 function raycastMesh(e) {
   if (!currentModel) return null;
@@ -451,6 +636,9 @@ function on3DClick(e) {
       if (Number.isFinite(realMM) && realMM > 0 && unitDist > 0) {
         scale3dMMperUnit = realMM / unitDist;
         updateScaleBadge();
+        applyNeckClipUI();
+        invalidateVolumeMeasurement();
+        save3dProject();
         setStatus3d(`Калибровка установлена: ${scale3dMMperUnit.toFixed(2)} мм/ед.`);
         // Re-render labels with new scale
         rebuildAllVisuals();
@@ -468,6 +656,23 @@ function on3DClick(e) {
     } else {
       setStatus3d('Калибровка: выберите вторую точку...');
     }
+    return;
+  }
+
+  if (tool3dMode === 'neckClip') {
+    neckClipPlaneY = point.y;
+    updateNeckClipHelper();
+    invalidateVolumeMeasurement();
+    save3dProject();
+    tool3dMode = null;
+    updateBtn3DStates();
+    const summary = getNeckClipSummary();
+    const cutText = summary
+      ? (summary.offsetMM != null
+          ? `${summary.offsetMM.toFixed(1)} мм`
+          : `${summary.offsetUnits.toFixed(3)} ед.`)
+      : point.y.toFixed(3);
+    setStatus3d(`Плоскость шеи установлена. Объём будет считаться выше среза (${cutText} от низа модели).`);
     return;
   }
 
@@ -556,6 +761,92 @@ function computeLoopNormal(points) {
     normal.z += (p.x - n.x) * (p.y + n.y);
   }
   return normal;
+}
+
+function interpolateAtPlaneY(a, b, yCut) {
+  const dy = b.y - a.y;
+  if (Math.abs(dy) < 1e-9) return a.clone();
+  const t = (yCut - a.y) / dy;
+  return new THREE.Vector3(
+    THREE.MathUtils.lerp(a.x, b.x, t),
+    yCut,
+    THREE.MathUtils.lerp(a.z, b.z, t)
+  );
+}
+
+function clipPolygonAbovePlaneY(vertices, yCut) {
+  if (!vertices.length) return [];
+  const out = [];
+  const eps = 1e-7;
+  for (let i = 0; i < vertices.length; i += 1) {
+    const current = vertices[i];
+    const next = vertices[(i + 1) % vertices.length];
+    const currentInside = current.y >= yCut - eps;
+    const nextInside = next.y >= yCut - eps;
+
+    if (currentInside && nextInside) {
+      out.push(next.clone());
+    } else if (currentInside && !nextInside) {
+      out.push(interpolateAtPlaneY(current, next, yCut));
+    } else if (!currentInside && nextInside) {
+      out.push(interpolateAtPlaneY(current, next, yCut));
+      out.push(next.clone());
+    }
+  }
+
+  if (out.length < 3) return [];
+  const cleaned = [];
+  for (const point of out) {
+    const prev = cleaned[cleaned.length - 1];
+    if (!prev || prev.distanceToSquared(point) > 1e-12) cleaned.push(point);
+  }
+  if (cleaned.length >= 2 && cleaned[0].distanceToSquared(cleaned[cleaned.length - 1]) <= 1e-12) {
+    cleaned.pop();
+  }
+  return cleaned.length >= 3 ? cleaned : [];
+}
+
+function polygonArea3(vertices) {
+  if (vertices.length < 3) return 0;
+  const origin = vertices[0];
+  let area = 0;
+  for (let i = 1; i < vertices.length - 1; i += 1) {
+    const ab = new THREE.Vector3().subVectors(vertices[i], origin);
+    const ac = new THREE.Vector3().subVectors(vertices[i + 1], origin);
+    area += new THREE.Vector3().crossVectors(ab, ac).length() * 0.5;
+  }
+  return area;
+}
+
+function applyNeckClipToTriangles(vertices, triangles, yCut) {
+  const clippedVertices = [];
+  const clippedTriangles = [];
+  const vertexMap = new Map();
+
+  const getVertexId = point => {
+    const key = `${Math.round(point.x * 1e5)},${Math.round(point.y * 1e5)},${Math.round(point.z * 1e5)}`;
+    let id = vertexMap.get(key);
+    if (id == null) {
+      id = clippedVertices.length;
+      clippedVertices.push(point.clone());
+      vertexMap.set(key, id);
+    }
+    return id;
+  };
+
+  for (const [aId, bId, cId] of triangles) {
+    const polygon = clipPolygonAbovePlaneY([vertices[aId], vertices[bId], vertices[cId]], yCut);
+    if (polygon.length < 3 || polygonArea3(polygon) < 1e-10) continue;
+    const baseId = getVertexId(polygon[0]);
+    for (let i = 1; i < polygon.length - 1; i += 1) {
+      const bClippedId = getVertexId(polygon[i]);
+      const cClippedId = getVertexId(polygon[i + 1]);
+      if (baseId === bClippedId || bClippedId === cClippedId || cClippedId === baseId) continue;
+      clippedTriangles.push([baseId, bClippedId, cClippedId]);
+    }
+  }
+
+  return { vertices: clippedVertices, triangles: clippedTriangles };
 }
 
 function collectBoundaryLoops(boundaryAdj, boundaryEdges) {
@@ -868,10 +1159,23 @@ function analyzeMeshVolume(mesh) {
     }
   }
 
+  const activeNeckClipY = Number.isFinite(neckClipPlaneY) ? neckClipPlaneY : null;
+  let volumeVertices = worldVertices;
+  let volumeTris = useTris;
+  if (activeNeckClipY != null) {
+    const clipped = applyNeckClipToTriangles(worldVertices, useTris, activeNeckClipY);
+    if (clipped.triangles.length >= 4 && clipped.vertices.length >= 4) {
+      volumeVertices = clipped.vertices;
+      volumeTris = clipped.triangles;
+    }
+  }
+
+  if (volumeVertices.length < 3 || volumeTris.length === 0) return null;
+
   // Step 3: Compute mesh center from USED vertices only (for origin-independent signed volume)
   const usedVertIds = new Set();
-  for (const [a, b, c] of useTris) { usedVertIds.add(a); usedVertIds.add(b); usedVertIds.add(c); }
-  const usedVertArray = Array.from(usedVertIds).map(id => worldVertices[id]);
+  for (const [a, b, c] of volumeTris) { usedVertIds.add(a); usedVertIds.add(b); usedVertIds.add(c); }
+  const usedVertArray = Array.from(usedVertIds).map(id => volumeVertices[id]);
   const meshCenter = new THREE.Box3().setFromPoints(usedVertArray).getCenter(new THREE.Vector3());
 
   // Build edge map and compute base signed volume on filtered triangles
@@ -889,14 +1193,13 @@ function analyzeMeshVolume(mesh) {
 
   // For non-indexed meshes (OBJ), normals may be inconsistent.
   // Fix winding: ensure each triangle's normal points away from meshCenter.
-  // Also store corrected triangles for GWN (which needs consistent winding).
   const fixWinding = !index;
   const correctedTris = []; // [aId, bId, cId] with consistent outward winding
 
-  for (const [aId, bId, cId] of useTris) {
-    const a = new THREE.Vector3().subVectors(worldVertices[aId], meshCenter);
-    const b = new THREE.Vector3().subVectors(worldVertices[bId], meshCenter);
-    const c = new THREE.Vector3().subVectors(worldVertices[cId], meshCenter);
+  for (const [aId, bId, cId] of volumeTris) {
+    const a = new THREE.Vector3().subVectors(volumeVertices[aId], meshCenter);
+    const b = new THREE.Vector3().subVectors(volumeVertices[bId], meshCenter);
+    const c = new THREE.Vector3().subVectors(volumeVertices[cId], meshCenter);
 
     if (fixWinding) {
       // Face normal via cross product
@@ -955,7 +1258,7 @@ function analyzeMeshVolume(mesh) {
   const meshDiag = meshBbox.getSize(new THREE.Vector3()).length();
 
   for (const loop of loops) {
-    const points = loop.map(id => worldVertices[id]);
+    const points = loop.map(id => volumeVertices[id]);
     const centroid = points.reduce((acc, p) => acc.add(p), new THREE.Vector3()).multiplyScalar(1 / points.length);
     const normal = computeLoopNormal(points);
     if (normal.lengthSq() < 1e-12) {
@@ -984,9 +1287,11 @@ function analyzeMeshVolume(mesh) {
       continue;
     }
 
+    const isNeckLoop = activeNeckClipY != null && points.every(p => Math.abs(p.y - activeNeckClipY) <= 1e-5);
+
     // Skip capping if mesh is heavily fragmented AND spatial filter was NOT applied
     // (noise fragments create false boundary loops; spatial filter cleans them)
-    if (useComponentFilter && totalComponents > 10 && useTris === allTris) {
+    if (!isNeckLoop && useComponentFilter && totalComponents > 10 && useTris === allTris) {
       rejectedLoops += loops.length - cappedLoops;
       break;
     }
@@ -994,7 +1299,7 @@ function analyzeMeshVolume(mesh) {
     // For spatially-filtered fragmented meshes, use tighter limit (2%) to avoid noise loops
     const loopSize = maxRadius * 2;
     const sizeLimit = (useTris !== allTris && totalComponents > 10) ? meshDiag * 0.02 : meshDiag * 0.05;
-    if (loopSize > sizeLimit) {
+    if (!isNeckLoop && loopSize > sizeLimit) {
       rejectedLoops += 1;
       continue;
     }
@@ -1017,7 +1322,7 @@ function analyzeMeshVolume(mesh) {
     cappedLoops += 1;
 
     // Budget: if cap volume exceeds 15% of base volume, stop capping
-    if (Math.abs(capSignedVolume) > Math.abs(baseSignedVolume) * 0.15) {
+    if (!isNeckLoop && Math.abs(capSignedVolume) > Math.abs(baseSignedVolume) * 0.15) {
       rejectedLoops += loops.length - cappedLoops - rejectedLoops;
       break;
     }
@@ -1057,10 +1362,9 @@ function analyzeMeshVolume(mesh) {
   let volumeUnits = (convexHullVolume != null && rawVolume > convexHullVolume)
     ? convexHullVolume : rawVolume;
 
-  // For non-indexed meshes (OBJ), signed volume is unreliable on open surfaces.
-  // Use Generalized Winding Number (Jacobson et al. SIGGRAPH 2013) for robust inside/outside.
+  // For non-indexed meshes (OBJ), signed volume is less stable on open surfaces.
+  // Use the secondary inside/outside pass for open meshes when needed.
   const isOpenOBJ = !index && boundaryEdges > 0;
-  // Store GWN computation params for async execution
   let gwnParams = null;
   if (isOpenOBJ && convexHullVolume != null && volumeUnits > convexHullVolume * 0.4) {
     const R = 15; // 15³=3375 cells — good balance of accuracy and speed
@@ -1068,19 +1372,15 @@ function analyzeMeshVolume(mesh) {
     const vMinGWN = { x: meshBbox.min.x, y: meshBbox.min.y, z: meshBbox.min.z };
     const cX = vSzGWN.x/R, cY = vSzGWN.y/R, cZ = vSzGWN.z/R;
 
-    // Use ORIGINAL triangles for GWN — OBJ meshes typically have consistent winding
-    // already (just possibly inward-facing). The winding fix for signed volume may
-    // break GWN by flipping normals based on meshCenter (which is ON the surface for open meshes).
-    // No subsampling — winding number scales linearly with triangle count, so
-    // subsampling would proportionally reduce wn below the threshold.
-    const sampleTris = useTris;
+    // Use the original triangle set for the secondary pass on open meshes.
+    const sampleTris = volumeTris;
 
     // Precompute flat triangle vertex array for speed
     const nTris = sampleTris.length;
     const tv = new Float64Array(nTris * 9);
     for (let t = 0; t < nTris; t++) {
       const [aId,bId,cId] = sampleTris[t];
-      const a = worldVertices[aId], b = worldVertices[bId], c = worldVertices[cId];
+      const a = volumeVertices[aId], b = volumeVertices[bId], c = volumeVertices[cId];
       tv[t*9]=a.x; tv[t*9+1]=a.y; tv[t*9+2]=a.z;
       tv[t*9+3]=b.x; tv[t*9+4]=b.y; tv[t*9+5]=b.z;
       tv[t*9+6]=c.x; tv[t*9+7]=c.y; tv[t*9+8]=c.z;
@@ -1103,15 +1403,18 @@ function analyzeMeshVolume(mesh) {
     convexHullVolume,
     filteredBboxSize,
     isOpenOBJ,
-    gwnParams
+    gwnParams,
+    neckClipApplied: activeNeckClipY != null,
+    neckClipPlaneY: activeNeckClipY
   };
 }
 
 function buildVolumeQuality(stats) {
+  const neckClipNote = stats.neckClipApplied ? ' Объём ограничен плоскостью шеи' : '';
   if (stats.nonManifoldEdges === 0 && stats.boundaryEdges === 0) {
     return {
       tag: 'точный по замкнутой сетке',
-      note: 'Замкнутая сетка без открытых контуров',
+      note: `Замкнутая сетка без открытых контуров.${neckClipNote}`,
       approximate: false
     };
   }
@@ -1119,7 +1422,7 @@ function buildVolumeQuality(stats) {
   if (stats.nonManifoldEdges === 0 && stats.rejectedLoops === 0 && stats.unresolvedBoundaryEdges === 0) {
     return {
       tag: 'сетка автозакрыта',
-      note: `Открытый срез закрыт автоматически: ${stats.cappedLoops} контур(ов)`,
+      note: `Открытый срез закрыт автоматически: ${stats.cappedLoops} контур(ов).${neckClipNote}`,
       approximate: false
     };
   }
@@ -1129,9 +1432,112 @@ function buildVolumeQuality(stats) {
     : '';
   return {
     tag: 'приближённо',
-    note: `Открытые контуры: loops ${stats.boundaryLoops}, rejected ${stats.rejectedLoops}, non-manifold ${stats.nonManifoldEdges}.${compNote}`,
+    note: `Открытые контуры: loops ${stats.boundaryLoops}, rejected ${stats.rejectedLoops}, non-manifold ${stats.nonManifoldEdges}.${compNote}${neckClipNote}`,
     approximate: true
   };
+}
+
+function classifyVolumeHealth(volumeUnits, stats, quality) {
+  const mm3 = mm3FromVolumeUnits(volumeUnits);
+  const liters = mm3 != null ? mm3 / 1000000 : null;
+  const reasons = [];
+  let severity = 0;
+
+  if (quality.approximate) {
+    severity += 1;
+    reasons.push('сетка не полностью надёжна');
+  }
+  if (stats.nonManifoldEdges > 0) {
+    severity += 2;
+    reasons.push(`non-manifold: ${stats.nonManifoldEdges}`);
+  }
+  if (stats.rejectedLoops > 0 || stats.unresolvedBoundaryEdges > 0) {
+    severity += 2;
+    reasons.push('остались проблемные открытые контуры');
+  }
+  if (stats.totalComponents > 20 || stats.largestComponentPct < 70) {
+    severity += 2;
+    reasons.push('модель фрагментирована');
+  } else if (stats.totalComponents > 1 || stats.largestComponentPct < 90) {
+    severity += 1;
+    reasons.push('в модели есть лишние фрагменты');
+  }
+  if (stats.maxPlanarityRatio > 0.12) {
+    severity += 1;
+    reasons.push('открытые срезы плохо ложатся в плоскость');
+  }
+
+  if (liters == null) {
+    return {
+      tone: severity >= 3 ? 'warning' : 'info',
+      label: severity >= 3 ? 'Без калибровки' : 'Нужна калибровка',
+      value: formatVolumeUnits(volumeUnits),
+      text: `Сначала откалибруйте модель, чтобы оценивать клинический диапазон.${stats.neckClipApplied ? ' Срез по шее активен.' : ''}${reasons.length ? ' Также: ' + reasons.join(', ') + '.' : ''}`
+    };
+  }
+
+  if (liters < 2.5 || liters > 6.0) {
+    severity += 3;
+    reasons.push(`объём вне ожидаемого диапазона: ${liters.toFixed(2)} л`);
+  } else if (liters < 3.0 || liters > 5.0) {
+    severity += 1;
+    reasons.push(`объём на границе диапазона: ${liters.toFixed(2)} л`);
+  }
+
+  if (severity >= 4) {
+    return {
+      tone: 'danger',
+      label: 'Переснять модель',
+      value: `${liters.toFixed(2)} л`,
+      text: `Объёму доверять нельзя: ${reasons.join(', ')}.${stats.neckClipApplied ? ' Срез по шее активен.' : ''}`
+    };
+  }
+  if (severity >= 2) {
+    return {
+      tone: 'warning',
+      label: 'Сомнительный',
+      value: `${liters.toFixed(2)} л`,
+      text: `Проверить модель и калибровку: ${reasons.join(', ')}.${stats.neckClipApplied ? ' Срез по шее активен.' : ''}`
+    };
+  }
+  return {
+    tone: 'success',
+    label: 'Нормальный',
+    value: `${liters.toFixed(2)} л`,
+    text: `Объём в рабочем диапазоне 3–5 л, топология модели выглядит пригодной.${stats.neckClipApplied ? ' Срез по шее активен.' : ''}`
+  };
+}
+
+function applyVolumeHealthUI(health, item = null) {
+  const card = document.getElementById('volumeHealthCard');
+  const badge = document.getElementById('volumeHealthBadge');
+  const value = document.getElementById('volumeHealthValue');
+  const text = document.getElementById('volumeHealthText');
+  if (!card || !badge || !value || !text) return;
+
+  if (!health) {
+    card.style.display = 'none';
+    badge.className = 'badge';
+    badge.textContent = '—';
+    value.textContent = '—';
+    text.textContent = '—';
+    return;
+  }
+
+  card.style.display = 'block';
+  badge.className = `badge badge-${health.tone}`;
+  badge.textContent = health.label;
+  value.textContent = health.value;
+  text.textContent = item?.note ? `${health.text} ${item.note}` : health.text;
+}
+
+function updateVolumeHealthUI() {
+  const item = plan3dItems.find(x => x.type === 'volume' && x.value != null);
+  if (!item || !item.health) {
+    applyVolumeHealthUI(null);
+    return;
+  }
+  applyVolumeHealthUI(item.health, item);
 }
 
 function upsertVolumeItem(volumeUnits, quality, stats) {
@@ -1150,10 +1556,11 @@ function upsertVolumeItem(volumeUnits, quality, stats) {
   item.boundaryEdges = stats.boundaryEdges;
   item.nonManifoldEdges = stats.nonManifoldEdges;
   item.cappedLoops = stats.cappedLoops;
+  item.health = classifyVolumeHealth(volumeUnits, stats, quality);
   selected3dPlan = item.id;
 }
 
-// Run GWN (Generalized Winding Number) computation asynchronously
+// Run the secondary inside/outside pass asynchronously
 function runGWNAsync(gwnParams) {
   return new Promise(resolve => {
     const { R, vMinGWN, cX, cY, cZ, tv, nTris } = gwnParams;
@@ -1194,7 +1601,7 @@ function runGWNAsync(gwnParams) {
         setTimeout(processSlice, 0);
       } else {
         const gwnVolume = insideCount * cX * cY * cZ;
-        console.log(`[VOL] GWN: ${insideCount}/${R*R*R} inside, vol=${gwnVolume.toFixed(6)}, tris=${nTris}`);
+        console.log(`[VOL] secondary pass: ${insideCount}/${R*R*R} inside, vol=${gwnVolume.toFixed(6)}, tris=${nTris}`);
         resolve(gwnVolume);
       }
     }
@@ -1221,7 +1628,8 @@ async function computeMeshVolume() {
     totalComponents: 0,
     largestComponentPct: 100,
     convexHullVolume: 0,
-    filteredBboxSize: null
+    filteredBboxSize: null,
+    neckClipApplied: false
   };
 
   let pendingGWN = null;
@@ -1243,12 +1651,13 @@ async function computeMeshVolume() {
     stats.largestComponentPct = Math.min(stats.largestComponentPct, meshStats.largestComponentPct);
     if (meshStats.convexHullVolume != null) stats.convexHullVolume += meshStats.convexHullVolume;
     if (meshStats.filteredBboxSize) stats.filteredBboxSize = meshStats.filteredBboxSize;
+    stats.neckClipApplied = stats.neckClipApplied || meshStats.neckClipApplied;
     if (meshStats.gwnParams) pendingGWN = meshStats.gwnParams;
   });
 
-  // Run GWN asynchronously if needed (open OBJ meshes)
+  // Run the secondary pass asynchronously if needed for open OBJ meshes
   if (pendingGWN) {
-    setStatus3d('Вычисление объёма (GWN)... не закрывайте вкладку.');
+    setStatus3d('Вычисление объёма (уточнение открытой сетки)... не закрывайте вкладку.');
     await new Promise(r => setTimeout(r, 50)); // let UI update
     const gwnVolume = await runGWNAsync(pendingGWN);
     if (gwnVolume > 0 && gwnVolume < stats.volumeUnits) {
@@ -1258,6 +1667,12 @@ async function computeMeshVolume() {
 
   if (stats.volumeUnits <= 0) {
     setStatus3d('Не удалось вычислить объём: у модели нет пригодной замкнутой геометрии.');
+    applyVolumeHealthUI({
+      tone: 'danger',
+      label: 'Переснять модель',
+      value: '0.00 л',
+      text: 'Алгоритм не смог собрать пригодный объём из текущего меша.'
+    });
     return;
   }
 
@@ -1269,6 +1684,7 @@ async function computeMeshVolume() {
   const bD = (useBboxSize.z * s).toFixed(0);
   const valueText = formatVolumeUnits(stats.volumeUnits);
   const extra = scale3dMMperUnit == null ? ' Калибруйте модель для клинических единиц.' : '';
+  const clipExtra = stats.neckClipApplied ? ' Считается только часть выше плоскости шеи.' : '';
   const topologyText = quality.approximate
     ? `${quality.tag}; ${quality.note}.`
     : `${quality.tag}; ${quality.note}.`;
@@ -1277,7 +1693,8 @@ async function computeMeshVolume() {
     ? ` | hull: ${formatVolumeUnits(stats.convexHullVolume, false)}`
     : '';
   upsertVolumeItem(stats.volumeUnits, quality, stats);
-  setStatus3d(`Объём: ${valueText}${hullText} | bbox: ${bW}×${bH}×${bD} мм | ${topologyText}${extra}`);
+  updateVolumeHealthUI();
+  setStatus3d(`Объём: ${valueText}${hullText} | bbox: ${bW}×${bH}×${bD} мм | ${topologyText}${clipExtra}${extra}`);
   render3dPlanList();
   update3dSelectedInfo();
   save3dProject();
@@ -1401,6 +1818,7 @@ function clearAll3D() {
   document.getElementById('before3dBadge').style.display = 'none';
   document.getElementById('btn3dToggleBefore').textContent = 'Показать «До»';
   render3dPlanList();
+  applyVolumeHealthUI(null);
   compute3dAsymmetry();
   update3dSelectedInfo();
   save3dProject();
@@ -1437,6 +1855,7 @@ function render3dPlanList() {
   if (!el) return;
   if (plan3dItems.length === 0) {
     el.innerHTML = '<div class="hint">Нет измерений. Выберите инструмент и кликните на модель.</div>';
+    updateVolumeHealthUI();
     return;
   }
   el.innerHTML = plan3dItems.map((m, i) => {
@@ -1460,10 +1879,12 @@ function render3dPlanList() {
         ${showLabel ? ' • <em>' + escHtml(m.label) + '</em>' : ''}
         : ${val}
       </div>
+      ${m.health ? `<div style="margin-top:4px"><span class="badge badge-${m.health.tone}">${escHtml(m.health.label)}</span></div>` : ''}
       ${m.note ? `<div class="hint" style="margin-top:4px">${escHtml(m.note)}</div>` : ''}
       <button class="btn btn-sm btn-danger" onclick="event.stopPropagation(); window._delete3dPlan('${m.id}')" style="margin-top:4px;font-size:10px;">Удалить</button>
     </div>`;
   }).join('');
+  updateVolumeHealthUI();
 }
 
 // Global handlers for onclick in rendered HTML
@@ -1490,7 +1911,8 @@ function update3dSelectedInfo() {
   const valTxt = it.type === 'volume' && it.value != null ? formatVolumeUnits(it.value) : (it.value != null ? formatDist(it.value) : '');
   const degTxt = it.deg != null ? ` • ${it.deg.toFixed(1)}°` : '';
   const noteTxt = it.note ? ` • ${it.note}` : '';
-  el.textContent = `${it.label} (${TYPE_NAMES_RU[it.type] || it.type}) • ${valTxt}${degTxt}${noteTxt}`;
+  const healthTxt = it.health ? ` • ${it.health.label}` : '';
+  el.textContent = `${it.label} (${TYPE_NAMES_RU[it.type] || it.type}) • ${valTxt}${degTxt}${healthTxt}${noteTxt}`;
 }
 
 // ==================== ASYMMETRY (R vs L) ====================
@@ -1925,7 +2347,8 @@ function save3dProject() {
       plan3dItems,
       scale3dMMperUnit,
       before3dSnapshot,
-      show3dBefore
+      show3dBefore,
+      neckClipPlaneY
     };
     localStorage.setItem(LS_KEY_3D, JSON.stringify(payload));
   } catch (e) { /* ignore */ }
@@ -1945,9 +2368,16 @@ function load3dProject() {
     if (typeof data.scale3dMMperUnit === 'number') scale3dMMperUnit = data.scale3dMMperUnit;
     before3dSnapshot = data.before3dSnapshot || null;
     show3dBefore = !!data.show3dBefore;
+    neckClipPlaneY = Number.isFinite(data.neckClipPlaneY) ? data.neckClipPlaneY : null;
     updateScaleBadge();
     // Visuals will be rebuilt once model loads
-    setTimeout(() => { rebuildAllVisuals(); compute3dAsymmetry(); update3dSelectedInfo(); }, 500);
+    setTimeout(() => {
+      rebuildAllVisuals();
+      compute3dAsymmetry();
+      update3dSelectedInfo();
+      updateNeckClipHelper();
+      applyNeckClipUI();
+    }, 500);
   } catch (e) { /* ignore */ }
 }
 
@@ -1956,14 +2386,14 @@ function updateBtn3DStates() {
   document.getElementById('btnWireframe')?.classList.toggle('btn-active', wireframeMode);
   document.getElementById('btnNormals')?.classList.toggle('btn-active', normalsMode);
 
-  const toolBtns = ['btn3dPoint', 'btn3dDistance', 'btn3dAngle', 'btn3dVector', 'btn3dTilt', 'btn3dMeasure', 'btn3dCalibrate'];
+  const toolBtns = ['btn3dPoint', 'btn3dDistance', 'btn3dAngle', 'btn3dVector', 'btn3dTilt', 'btn3dMeasure', 'btn3dCalibrate', 'btn3dNeckClip'];
   toolBtns.forEach(id => document.getElementById(id)?.classList.remove('btn-active'));
 
   if (tool3dMode) {
     const map = {
       point: 'btn3dPoint', distance: 'btn3dDistance', angle: 'btn3dAngle',
       vector: 'btn3dVector', tilt: 'btn3dTilt', measure: 'btn3dMeasure',
-      calibration: 'btn3dCalibrate'
+      calibration: 'btn3dCalibrate', neckClip: 'btn3dNeckClip'
     };
     document.getElementById(map[tool3dMode])?.classList.add('btn-active');
   }
@@ -1982,7 +2412,8 @@ function setTool3D(mode) {
     vector: 'Вектор: выберите 2 точки (откуда → куда).',
     tilt: 'Наклон: выберите 2 точки.',
     measure: 'Измерение: выберите 2 точки.',
-    calibration: 'Калибровка: выберите 2 точки на модели.'
+    calibration: 'Калибровка: выберите 2 точки на модели.',
+    neckClip: 'Отсечение по шее: кликните по уровню среза на модели.'
   };
   if (tool3dMode) setStatus3d(msgs[tool3dMode] || '');
 }
@@ -2018,6 +2449,7 @@ function bindUI3D() {
     }
   });
   document.getElementById('btnDeleteModel').addEventListener('click', () => {
+    clearNeckClip({ silent: true });
     removeModel3D();
     currentModel = null;
     setStatus3d('Модель удалена. Выберите новую модель или загрузите файл.');
@@ -2051,6 +2483,8 @@ function bindUI3D() {
   document.getElementById('btn3dMeasure').addEventListener('click', () => setTool3D('measure'));
   document.getElementById('btn3dVolume').addEventListener('click', computeMeshVolume);
   document.getElementById('btn3dCalibrate').addEventListener('click', () => setTool3D('calibration'));
+  document.getElementById('btn3dNeckClip').addEventListener('click', () => setTool3D('neckClip'));
+  document.getElementById('btn3dClearNeckClip').addEventListener('click', () => clearNeckClip());
 
   // Plan controls
   document.getElementById('btn3dClearAll').addEventListener('click', clearAll3D);

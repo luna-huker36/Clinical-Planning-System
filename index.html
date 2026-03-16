@@ -331,6 +331,16 @@
         </div>
       </div>
 
+      <div class="card">
+        <div class="card-title">✂️ Отсечение головы</div>
+        <div class="form-row" style="align-items:center;gap:6px;flex-wrap:wrap">
+          <button class="btn btn-accent" id="btn3dNeckClip">✂️ Плоскость шеи</button>
+          <button class="btn btn-sm" id="btn3dClearNeckClip">Сброс</button>
+          <span class="badge" id="neckClipBadge">Выкл</span>
+        </div>
+        <div id="neckClipInfo" class="hint" style="margin-top:8px">Объём считается по всей модели.</div>
+      </div>
+
       <!-- Plan -->
       <div class="card">
         <div class="card-title">📋 План операции</div>
@@ -394,6 +404,14 @@
 
       <!-- Status + Export -->
       <div id="status3d" class="status-bar">Выберите инструмент → кликните на модель.</div>
+      <div class="volume-health-card" id="volumeHealthCard" style="display:none">
+        <div class="volume-health-head">
+          <span class="label-sm">Диагностика объёма</span>
+          <span class="badge" id="volumeHealthBadge">—</span>
+        </div>
+        <div id="volumeHealthValue" class="volume-health-value">—</div>
+        <div id="volumeHealthText" class="hint">—</div>
+      </div>
       <div class="export-bar">
         <button class="btn btn-primary" id="btn3dPDF">📄 PDF</button>
         <button class="btn btn-primary" id="btn3dDOCX">📝 DOCX</button>
