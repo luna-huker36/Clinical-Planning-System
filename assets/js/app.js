@@ -1519,6 +1519,39 @@ function classifyVolumeHealth(volumeUnits, stats, quality) {
     reasons.push(`объём на границе диапазона: ${liters.toFixed(2)} л`);
   }
 
+  // Cross-validation: compare volume against bbox ellipsoid estimate
+  // Use full model bboxSize (not filtered) since slice volume uses all triangles
+  if (stats.bboxSize) {
+    const s = scale3dMMperUnit ?? 1;
+    const bs = stats.bboxSize;
+    const W = bs.x * s, H = bs.y * s, D = bs.z * s;
+    const ellipsoidMm3 = Math.PI / 6 * W * H * D;
+    const ellipsoidL = ellipsoidMm3 / 1e6;
+    const ratio = liters / ellipsoidL;
+    // Head volume is typically 50-75% of bounding ellipsoid
+    if (ratio < 0.3 || ratio > 0.9) {
+      severity += 2;
+      reasons.push(`эллипсоид bbox: ${ellipsoidL.toFixed(2)} л, отношение: ${(ratio * 100).toFixed(0)}%`);
+    } else {
+      // Ellipsoid check passed — reduce severity from mesh quality issues
+      // Fragmented meshes give good volume via slice/raycast method
+      const isSliceMethod = stats.volumeMethod === 'slice';
+      if (isSliceMethod && ratio >= 0.45 && ratio <= 0.85) {
+        // Strong validation: slice method + good ellipsoid ratio
+        severity = Math.min(severity, 2);
+      } else if (severity >= 3) {
+        severity = Math.max(severity - 2, 2);
+      }
+      reasons.push(`✓ верификация: ${(ratio * 100).toFixed(0)}% от эллипсоида (${ellipsoidL.toFixed(2)} л)`);
+    }
+  }
+
+  // Show method used
+  if (stats.volumeMethod) {
+    const methodNames = { signed: 'знаковый', slice: 'послойный', gwn: 'GWN' };
+    reasons.push(`метод: ${methodNames[stats.volumeMethod] || stats.volumeMethod}`);
+  }
+
   if (severity >= 4) {
     return {
       tone: 'danger',
@@ -1901,6 +1934,7 @@ async function computeMeshVolume() {
     largestComponentPct: 100,
     convexHullVolume: 0,
     filteredBboxSize: null,
+    bboxSize: bboxSize,
     neckClipApplied: false
   };
 
