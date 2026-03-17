@@ -31,7 +31,7 @@
 }
 </script>
 
-<link rel="stylesheet" href="./assets/css/style.css" />
+<link rel="stylesheet" href="./assets/css/style.css?v=46" />
 </head>
 <body>
 
@@ -312,6 +312,14 @@
           <button class="btn btn-sm" id="btnLight2">🌤 Мягкий</button>
           <button class="btn btn-sm" id="btnLight3">💡 Студия</button>
         </div>
+        <div class="form-row" style="margin-top:8px;align-items:center;gap:6px">
+          <span class="label-sm">Фон</span>
+          <button class="btn btn-sm bg-btn active" data-bg="#ffffff" id="bgWhite" style="background:#fff;border:2px solid #cbd5e1;width:26px;height:26px;padding:0;min-width:0" title="Белый"></button>
+          <button class="btn btn-sm bg-btn" data-bg="#0f172a" id="bgDark" style="background:#0f172a;border:2px solid #334155;width:26px;height:26px;padding:0;min-width:0" title="Тёмный"></button>
+          <button class="btn btn-sm bg-btn" data-bg="#1e293b" id="bgSlate" style="background:#1e293b;border:2px solid #475569;width:26px;height:26px;padding:0;min-width:0" title="Серый"></button>
+          <button class="btn btn-sm bg-btn" data-bg="#f1f5f9" id="bgLight" style="background:#f1f5f9;border:2px solid #cbd5e1;width:26px;height:26px;padding:0;min-width:0" title="Светлый"></button>
+          <input type="color" id="bgCustomColor" value="#ffffff" style="width:26px;height:26px;padding:0;border:2px solid #cbd5e1;border-radius:6px;cursor:pointer" title="Свой цвет">
+        </div>
         <div class="form-row" style="margin-top:8px;align-items:center">
           <button class="btn btn-sm" id="btn3dCalibrate">📏 Калибровка</button>
           <span class="badge" id="scale3dBadge">авто</span>
@@ -347,6 +355,7 @@
         <div class="form-row" style="align-items:center;gap:6px;flex-wrap:wrap">
           <button class="btn btn-accent" id="btn3dBrushErase">🖌 Стирка</button>
           <button class="btn btn-accent" id="btn3dLassoErase">⭕ Лассо</button>
+          <button class="btn btn-accent" id="btn3dFillHoles">📊 Анализ покрытия</button>
           <button class="btn btn-sm" id="btn3dUndoErase">↩ Отмена</button>
           <button class="btn btn-sm" id="btn3dResetMesh">🔄 Сброс</button>
         </div>
@@ -598,7 +607,7 @@
 <script src="./assets/js/11-persistence-init.js"></script>
 
 <!-- ========== APP: tabs + 3D ========== -->
-<script type="module" src="./assets/js/app.js?v=45"></script>
+<script type="module" src="./assets/js/app.js?v=52"></script>
 
 </body>
 </html>

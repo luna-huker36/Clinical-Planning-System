@@ -270,7 +270,7 @@ function init3DScene() {
   container.appendChild(labelRenderer.domElement);
 
   scene = new THREE.Scene();
-  scene.background = new THREE.Color(0x0f172a);
+  scene.background = new THREE.Color(0xffffff);
 
   camera = new THREE.PerspectiveCamera(40, w / h, 0.01, 200);
   camera.position.set(0, 0, 3);
@@ -2832,6 +2832,22 @@ function bindUI3D() {
   document.getElementById('btnLight2').addEventListener('click', setupLight2);
   document.getElementById('btnLight3').addEventListener('click', setupLight3);
 
+  // Background color
+  document.querySelectorAll('.bg-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const hex = btn.dataset.bg;
+      if (scene) scene.background = new THREE.Color(hex);
+      document.querySelectorAll('.bg-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      document.getElementById('bgCustomColor').value = hex;
+    });
+  });
+  document.getElementById('bgCustomColor').addEventListener('input', e => {
+    const hex = e.target.value;
+    if (scene) scene.background = new THREE.Color(hex);
+    document.querySelectorAll('.bg-btn').forEach(b => b.classList.remove('active'));
+  });
+
   // Clinical tools
   document.getElementById('btn3dPoint').addEventListener('click', () => setTool3D('point'));
   document.getElementById('btn3dDistance').addEventListener('click', () => setTool3D('distance'));
@@ -2940,6 +2956,9 @@ function initMeshCleanup() {
 
   btnUndo.addEventListener('click', undoMeshEdit);
   btnReset.addEventListener('click', resetMeshEdits);
+
+  const btnFillHoles = document.getElementById('btn3dFillHoles');
+  if (btnFillHoles) btnFillHoles.addEventListener('click', fillHolesWithPreview);
 
   brushRange.addEventListener('input', () => {
     brushSize = parseInt(brushRange.value);
@@ -3105,32 +3124,405 @@ function applyTriangleDeletion(mesh, triIndices) {
   geo.computeBoundingSphere();
 }
 
+// Save original geometry before first edit
+let originalGeometryData = null; // {meshId -> {index: array, position: array}}
+
+function saveOriginalGeometry() {
+  if (originalGeometryData) return; // already saved
+  originalGeometryData = new Map();
+  if (!currentModel) return;
+  currentModel.traverse(c => {
+    if (!c.isMesh) return;
+    const geo = c.geometry;
+    const data = {};
+    if (geo.index) data.index = geo.index.array.slice();
+    data.position = geo.attributes.position.array.slice();
+    originalGeometryData.set(c.uuid, data);
+  });
+}
+
 function undoMeshEdit() {
   if (meshEditHistory.length === 0) {
     setStatus3d('Нечего отменять.');
     return;
   }
 
-  // To undo, we need to reload the original geometry
-  // Simplest approach: reload the model entirely
-  // Better approach: save original geometry data before first edit
+  // Remove last action
+  const last = meshEditHistory.pop();
 
-  // For now: restore from original by reloading
-  const lastModelUrl = document.querySelector('#modelSelect3d')?.value;
-  if (lastModelUrl) {
+  if (meshEditHistory.length === 0 && originalGeometryData) {
+    // Restore original geometry completely
+    restoreOriginalGeometry();
+  } else {
+    // Replay all remaining actions from original
+    restoreOriginalGeometry();
+    const savedHistory = [...meshEditHistory];
     meshEditHistory = [];
-    // Trigger re-select to reload
-    const sel = document.querySelector('#modelSelect3d');
-    if (sel) {
-      sel.dispatchEvent(new Event('change', { bubbles: true }));
-      setStatus3d('Модель перезагружена. Все правки отменены.');
+    for (const action of savedHistory) {
+      if (action.type === 'fill-holes') {
+        // Coverage analysis doesn't modify mesh, skip replay
+        meshEditHistory.push(action);
+      } else {
+        applyTriangleDeletion(action.mesh, action.deletedIndices);
+        meshEditHistory.push(action);
+      }
     }
   }
+
   updateCleanupInfo();
+  const desc = last.type === 'fill-holes'
+    ? `заполнение дыр (${last.result.trianglesAdded} тр.)`
+    : `${last.deletedIndices ? last.deletedIndices.length : 0} треугольников`;
+  setStatus3d(`Отменено: ${desc}.`);
+}
+
+function restoreOriginalGeometry() {
+  if (!originalGeometryData || !currentModel) return;
+  currentModel.traverse(c => {
+    if (!c.isMesh) return;
+    const data = originalGeometryData.get(c.uuid);
+    if (!data) return;
+    const geo = c.geometry;
+    if (data.index && geo.index) {
+      geo.index.array.set(data.index);
+      geo.index.needsUpdate = true;
+    }
+    geo.attributes.position.array.set(data.position);
+    geo.attributes.position.needsUpdate = true;
+    geo.computeBoundingSphere();
+  });
 }
 
 function resetMeshEdits() {
-  undoMeshEdit();
+  if (!originalGeometryData) {
+    setStatus3d('Нечего сбрасывать.');
+    return;
+  }
+  restoreOriginalGeometry();
+  meshEditHistory = [];
+  updateCleanupInfo();
+  setStatus3d('Меш восстановлен в исходное состояние.');
+}
+
+// ==================== HOLE FILLING (Coverage-Based Estimation) ====================
+
+/**
+ * Analyze mesh coverage: for each horizontal slice, compute what fraction
+ * of the expected elliptical cross-section is actually covered by mesh data.
+ * Then estimate corrected volume by filling gaps with ellipsoid model.
+ */
+function analyzeMeshCoverage(sliceData, numSlices = 200) {
+  const { vertices, triangles, bbox } = sliceData;
+  const yMin = bbox.min.y, yMax = bbox.max.y;
+  const ySpan = yMax - yMin;
+  if (ySpan < 1e-10) return null;
+
+  const dy = ySpan / numSlices;
+
+  // Build Y-bucket index
+  const buckets = new Array(numSlices + 1);
+  for (let i = 0; i <= numSlices; i++) buckets[i] = [];
+  for (let t = 0; t < triangles.length; t++) {
+    const [aId, bId, cId] = triangles[t];
+    const tyMin = Math.min(vertices[aId].y, vertices[bId].y, vertices[cId].y);
+    const tyMax = Math.max(vertices[aId].y, vertices[bId].y, vertices[cId].y);
+    const bStart = Math.max(0, Math.floor((tyMin - yMin) / dy));
+    const bEnd = Math.min(numSlices, Math.floor((tyMax - yMin) / dy));
+    for (let b = bStart; b <= bEnd; b++) buckets[b].push(t);
+  }
+
+  // For each slice: compute actual area AND expected ellipse area from XZ extent
+  const sliceStats = [];
+  for (let s = 0; s <= numSlices; s++) {
+    const yLevel = yMin + s * dy;
+    const bucket = buckets[Math.min(s, numSlices)];
+    const result = rayCastSliceArea(vertices, triangles, bucket, yLevel);
+
+    // Compute XZ bounding extent for this slice's segments
+    const segs = [];
+    for (const tIdx of bucket) {
+      const seg = sliceTriangleAtY(vertices, triangles[tIdx], yLevel);
+      if (seg) segs.push(seg);
+    }
+
+    let xMin = Infinity, xMax = -Infinity, zMin = Infinity, zMax = -Infinity;
+    for (const seg of segs) {
+      xMin = Math.min(xMin, seg.p1.x, seg.p2.x);
+      xMax = Math.max(xMax, seg.p1.x, seg.p2.x);
+      zMin = Math.min(zMin, seg.p1.z, seg.p2.z);
+      zMax = Math.max(zMax, seg.p1.z, seg.p2.z);
+    }
+
+    const xSpan = xMax - xMin;
+    const zSpan = zMax - zMin;
+    // Expected ellipse area at this Y level = π/4 * xSpan * zSpan
+    const ellipseArea = Math.PI / 4 * xSpan * zSpan;
+    const coverage = ellipseArea > 0 ? result.area / ellipseArea : 1;
+
+    sliceStats.push({
+      y: yLevel,
+      actualArea: result.area,
+      ellipseArea: ellipseArea > 0 ? ellipseArea : 0,
+      xSpan, zSpan,
+      coverage: Math.min(coverage, 1.0), // cap at 100%
+      segCount: segs.length
+    });
+  }
+
+  return { sliceStats, dy, numSlices };
+}
+
+/**
+ * Estimate corrected volume by filling gaps with ellipsoid model.
+ * For slices with < 100% coverage, use the ellipse area estimate.
+ */
+function estimateCorrectedVolume(coverage, rawSliceVolume) {
+  if (!coverage) return { corrected: rawSliceVolume, confidence: 0, avgCoverage: 1 };
+
+  const { sliceStats, dy } = coverage;
+  const correctedAreas = new Float64Array(sliceStats.length);
+  let totalCoverage = 0;
+  let validSlices = 0;
+
+  for (let i = 0; i < sliceStats.length; i++) {
+    const s = sliceStats[i];
+    if (s.segCount < 3) {
+      // No data at this level — use ellipse from neighboring slices
+      correctedAreas[i] = 0;
+      continue;
+    }
+
+    if (s.coverage >= 0.85) {
+      // Good coverage — trust actual measurement
+      correctedAreas[i] = s.actualArea;
+    } else {
+      // Partial coverage — blend between actual and ellipse estimate
+      // Use ellipse area (which estimates full cross-section from XZ extent)
+      correctedAreas[i] = s.ellipseArea;
+    }
+
+    totalCoverage += s.coverage;
+    validSlices++;
+  }
+
+  // Fill gaps: interpolate zero-area slices from neighbors
+  for (let i = 0; i < correctedAreas.length; i++) {
+    if (correctedAreas[i] > 0) continue;
+    // Find nearest non-zero above and below
+    let above = -1, below = -1;
+    for (let j = i - 1; j >= 0; j--) { if (correctedAreas[j] > 0) { below = j; break; } }
+    for (let j = i + 1; j < correctedAreas.length; j++) { if (correctedAreas[j] > 0) { above = j; break; } }
+    if (below >= 0 && above >= 0) {
+      const t = (i - below) / (above - below);
+      correctedAreas[i] = correctedAreas[below] * (1 - t) + correctedAreas[above] * t;
+    } else if (below >= 0) {
+      correctedAreas[i] = correctedAreas[below] * 0.5; // taper off
+    } else if (above >= 0) {
+      correctedAreas[i] = correctedAreas[above] * 0.5;
+    }
+  }
+
+  const correctedVolume = simpsonsIntegrate(correctedAreas, dy);
+  const avgCoverage = validSlices > 0 ? totalCoverage / validSlices : 1;
+  const confidence = Math.min(avgCoverage * 100, 100);
+
+  return { corrected: correctedVolume, confidence, avgCoverage };
+}
+
+/**
+ * Run coverage analysis + corrected volume and show results.
+ */
+async function fillHolesWithPreview() {
+  if (!currentModel) { setStatus3d('Нет модели.'); return; }
+
+  setStatus3d('Анализ покрытия меша...');
+  await new Promise(r => setTimeout(r, 50));
+
+  // Get the volume analysis data
+  const info = document.getElementById('meshCleanupInfo');
+
+  // We need the sliceData from the last volume computation
+  // Trigger a volume computation first to get the data
+  try {
+    // Access mesh data directly
+    const meshes = [];
+    currentModel.traverse(c => { if (c.isMesh) meshes.push(c); });
+    if (meshes.length === 0) { setStatus3d('Нет мешей.'); return; }
+
+    // Gather all world-space vertices and triangles
+    const worldVerts = [];
+    const allTris = [];
+    let vertOffset = 0;
+
+    for (const mesh of meshes) {
+      mesh.updateWorldMatrix(true, false);
+      const geo = mesh.geometry;
+      const pos = geo.attributes.position;
+      const idx = geo.index;
+
+      for (let v = 0; v < pos.count; v++) {
+        const p = new THREE.Vector3().fromBufferAttribute(pos, v).applyMatrix4(mesh.matrixWorld);
+        worldVerts.push(p);
+      }
+
+      const triCount = idx ? idx.count / 3 : pos.count / 3;
+      for (let i = 0; i < triCount; i++) {
+        const ai = (idx ? idx.getX(i*3) : i*3) + vertOffset;
+        const bi = (idx ? idx.getX(i*3+1) : i*3+1) + vertOffset;
+        const ci = (idx ? idx.getX(i*3+2) : i*3+2) + vertOffset;
+        if (ai === bi || bi === ci || ci === ai) continue;
+        allTris.push([ai, bi, ci]);
+      }
+      vertOffset += pos.count;
+    }
+
+    const bb = new THREE.Box3();
+    for (const v of worldVerts) bb.expandByPoint(v);
+
+    setStatus3d(`Послойный анализ покрытия (${allTris.length} тр.)...`);
+    await new Promise(r => setTimeout(r, 50));
+
+    const coverage = analyzeMeshCoverage({ vertices: worldVerts, triangles: allTris, bbox: bb }, 200);
+
+    if (!coverage) { setStatus3d('Не удалось проанализировать.'); return; }
+
+    // Compute raw slice volume for comparison
+    const rawAreas = new Float64Array(coverage.sliceStats.length);
+    for (let i = 0; i < coverage.sliceStats.length; i++) {
+      rawAreas[i] = coverage.sliceStats[i].actualArea;
+    }
+    const rawVolume = simpsonsIntegrate(rawAreas, coverage.dy);
+
+    const result = estimateCorrectedVolume(coverage, rawVolume);
+    const s = scale3dMMperUnit ?? 1;
+    const rawL = rawVolume * Math.pow(s, 3) / 1e6;
+    const corrL = result.corrected * Math.pow(s, 3) / 1e6;
+
+    const bboxSize = bb.getSize(new THREE.Vector3());
+    const W = bboxSize.x * s, H = bboxSize.y * s, D = bboxSize.z * s;
+
+    if (info) {
+      info.innerHTML = `
+        <div style="font-size:12px;line-height:1.6">
+          <b>📊 Анализ покрытия:</b><br>
+          Среднее покрытие: <b>${(result.avgCoverage * 100).toFixed(0)}%</b><br>
+          Исходный объём: <b>${rawL.toFixed(2)} л</b> (${(rawVolume * Math.pow(s,3) / 1000).toFixed(0)} см³)<br>
+          Скорр. объём: <b style="color:#2563eb">${corrL.toFixed(2)} л</b> (${(result.corrected * Math.pow(s,3) / 1000).toFixed(0)} см³)<br>
+          Прирост: <b>+${(corrL - rawL).toFixed(2)} л</b> (+${rawL > 0 ? ((corrL/rawL - 1)*100).toFixed(0) : 0}%)<br>
+          Bbox: ${W.toFixed(0)}×${H.toFixed(0)}×${D.toFixed(0)} мм
+        </div>
+      `;
+    }
+
+    setStatus3d(`Покрытие ${(result.avgCoverage*100).toFixed(0)}%. Исходный: ${rawL.toFixed(2)}л → Скорректированный: ${corrL.toFixed(2)}л (+${(corrL-rawL).toFixed(2)}л)`);
+
+  } catch (e) {
+    console.error('[HoleFill] error:', e);
+    setStatus3d(`Ошибка: ${e.message}`);
+  }
+}
+
+// ==================== IndexedDB Persistence ====================
+const MESH_DB_NAME = 'pmas-mesh-edits';
+const MESH_DB_VERSION = 1;
+
+function openMeshDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(MESH_DB_NAME, MESH_DB_VERSION);
+    req.onupgradeneeded = (e) => {
+      const db = e.target.result;
+      if (!db.objectStoreNames.contains('meshes')) {
+        db.createObjectStore('meshes', { keyPath: 'modelUrl' });
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function saveMeshToIDB(modelUrl) {
+  if (!currentModel) return;
+  try {
+    const db = await openMeshDB();
+    const tx = db.transaction('meshes', 'readwrite');
+    const store = tx.objectStore('meshes');
+
+    const meshData = [];
+    currentModel.traverse(c => {
+      if (!c.isMesh) return;
+      const geo = c.geometry;
+      const entry = { uuid: c.uuid };
+      if (geo.index) entry.index = Array.from(geo.index.array);
+      entry.position = Array.from(geo.attributes.position.array);
+      meshData.push(entry);
+    });
+
+    store.put({ modelUrl, meshData, timestamp: Date.now() });
+    await new Promise((resolve, reject) => {
+      tx.oncomplete = resolve;
+      tx.onerror = () => reject(tx.error);
+    });
+    console.log('[IDB] saved mesh edits for', modelUrl);
+  } catch (e) {
+    console.warn('[IDB] save failed:', e);
+  }
+}
+
+async function loadMeshFromIDB(modelUrl) {
+  try {
+    const db = await openMeshDB();
+    const tx = db.transaction('meshes', 'readonly');
+    const store = tx.objectStore('meshes');
+    const req = store.get(modelUrl);
+    return new Promise((resolve, reject) => {
+      req.onsuccess = () => resolve(req.result || null);
+      req.onerror = () => reject(req.error);
+    });
+  } catch (e) {
+    console.warn('[IDB] load failed:', e);
+    return null;
+  }
+}
+
+async function applyMeshFromIDB(modelUrl) {
+  const saved = await loadMeshFromIDB(modelUrl);
+  if (!saved || !currentModel) return false;
+
+  let applied = 0;
+  currentModel.traverse(c => {
+    if (!c.isMesh) return;
+    const entry = saved.meshData.find(m => m.uuid === c.uuid);
+    if (!entry) return;
+    const geo = c.geometry;
+    if (entry.index && geo.index) {
+      geo.index.array.set(new Uint32Array(entry.index));
+      geo.index.needsUpdate = true;
+    }
+    if (entry.position) {
+      geo.attributes.position.array.set(new Float32Array(entry.position));
+      geo.attributes.position.needsUpdate = true;
+    }
+    geo.computeBoundingSphere();
+    applied++;
+  });
+
+  if (applied > 0) {
+    console.log('[IDB] restored mesh edits for', modelUrl);
+    setStatus3d('Загружены сохранённые правки меша.');
+    return true;
+  }
+  return false;
+}
+
+async function clearMeshFromIDB(modelUrl) {
+  try {
+    const db = await openMeshDB();
+    const tx = db.transaction('meshes', 'readwrite');
+    tx.objectStore('meshes').delete(modelUrl);
+    console.log('[IDB] cleared mesh edits for', modelUrl);
+  } catch (e) {
+    console.warn('[IDB] clear failed:', e);
+  }
 }
 
 function updateCleanupInfo() {
