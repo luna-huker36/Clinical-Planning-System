@@ -47,7 +47,7 @@ const raycaster = new THREE.Raycaster();
 const mouse = new THREE.Vector2();
 
 // ==================== 3D CLINICAL STATE ====================
-// Tools: 'point','distance','angle','vector','tilt','measure','calibration','neckClip'
+// Tools: 'point','distance','angle','vector','tilt','measure','neckClip'
 let tool3dMode = null;
 let tool3dPoints = [];
 let markers3d = [];
@@ -321,17 +321,35 @@ function onResize3D() {
 // ==================== LIGHTS ====================
 function clearLights() { lights.forEach(l => scene.remove(l)); lights = []; }
 
+// Default: bright even illumination from 12 directions (like a light box)
 function setupLight1() {
   clearLights();
-  const a = new THREE.AmbientLight(0xffffff, 0.8);
-  const top = new THREE.DirectionalLight(0xffffff, 1.5); top.position.set(0, 5, 0);
-  const bot = new THREE.DirectionalLight(0xffffff, 0.4); bot.position.set(0, -5, 0);
-  const front = new THREE.DirectionalLight(0xffffff, 1.2); front.position.set(0, 0, 5);
-  const back = new THREE.DirectionalLight(0xffffff, 0.5); back.position.set(0, 0, -5);
-  const left = new THREE.DirectionalLight(0xccddff, 0.8); left.position.set(-5, 2, 2);
-  const right = new THREE.DirectionalLight(0xffddcc, 0.8); right.position.set(5, 2, 2);
-  lights.push(a, top, bot, front, back, left, right); lights.forEach(l => scene.add(l));
+  const a = new THREE.AmbientLight(0xffffff, 1.2);
+  // 6 axis-aligned directionals + 6 diagonal fills = 12 sources
+  const dirs = [
+    [0, 5, 0, 1.2],   // top
+    [0, -3, 0, 0.4],  // bottom fill
+    [0, 0, 5, 1.0],   // front
+    [0, 0, -5, 0.5],  // back
+    [-5, 0, 0, 0.8],  // left
+    [5, 0, 0, 0.8],   // right
+    [4, 4, 4, 0.6],   // front-top-right
+    [-4, 4, 4, 0.6],  // front-top-left
+    [4, 4, -4, 0.3],  // back-top-right
+    [-4, 4, -4, 0.3], // back-top-left
+    [3, -2, 3, 0.3],  // front-bottom-right
+    [-3, -2, 3, 0.3], // front-bottom-left
+  ];
+  lights.push(a);
+  for (const [x, y, z, intensity] of dirs) {
+    const d = new THREE.DirectionalLight(0xffffff, intensity);
+    d.position.set(x, y, z);
+    lights.push(d);
+  }
+  lights.forEach(l => scene.add(l));
 }
+
+// Studio: key + fill + rim (portrait photography)
 function setupLight2() {
   clearLights();
   const a = new THREE.AmbientLight(0xffffff, 0.6);
@@ -341,21 +359,44 @@ function setupLight2() {
   const bot = new THREE.DirectionalLight(0xffffff, 0.3); bot.position.set(0, -3, 2);
   lights.push(a, key, fill, rim, bot); lights.forEach(l => scene.add(l));
 }
+
+// Clinical: maximum brightness, no shadows
 function setupLight3() {
   clearLights();
-  const a = new THREE.AmbientLight(0xffffff, 0.7);
-  const top = new THREE.DirectionalLight(0xffffff, 1.2); top.position.set(0, 5, 0);
-  const bot = new THREE.DirectionalLight(0xffffff, 0.4); bot.position.set(0, -5, 0);
-  const front = new THREE.DirectionalLight(0xffffff, 1.0); front.position.set(0, 0, 5);
-  const back = new THREE.DirectionalLight(0xffffff, 0.5); back.position.set(0, 0, -5);
-  const left = new THREE.DirectionalLight(0xccddff, 0.8); left.position.set(-4, 2, 2);
-  const right = new THREE.DirectionalLight(0xffddcc, 0.8); right.position.set(4, 2, 2);
-  lights.push(a, top, bot, front, back, left, right); lights.forEach(x => scene.add(x));
+  const a = new THREE.AmbientLight(0xffffff, 1.5);
+  const dirs = [
+    [0, 6, 0, 1.5], [0, -4, 0, 0.6],
+    [0, 0, 6, 1.3], [0, 0, -6, 0.8],
+    [-6, 2, 0, 1.2], [6, 2, 0, 1.2],
+    [4, 4, 4, 0.8], [-4, 4, 4, 0.8],
+    [4, 4, -4, 0.5], [-4, 4, -4, 0.5],
+    [3, -2, 5, 0.4], [-3, -2, 5, 0.4],
+  ];
+  lights.push(a);
+  for (const [x, y, z, intensity] of dirs) {
+    const d = new THREE.DirectionalLight(0xffffff, intensity);
+    d.position.set(x, y, z);
+    lights.push(d);
+  }
+  lights.forEach(l => scene.add(l));
 }
 
 // ==================== MODEL ====================
 function removeModel3D() {
   removeNeckClipHelper();
+  // Clean up symmetry plane
+  if (symmetryHelperMesh) {
+    symmetryHelperMesh.geometry?.dispose();
+    symmetryHelperMesh.material?.dispose();
+    scene.remove(symmetryHelperMesh);
+    symmetryHelperMesh = null;
+  }
+  // Reset heatmap state
+  heatmapActive = false;
+  heatmapMaterials.clear();
+  const hmLegend = document.getElementById('heatmapLegend');
+  if (hmLegend) hmLegend.style.display = 'none';
+
   if (!currentModel) return;
   scene.remove(currentModel);
   currentModel.traverse(c => {
@@ -1445,29 +1486,26 @@ function analyzeMeshVolume(mesh) {
 }
 
 function buildVolumeQuality(stats) {
-  const neckClipNote = stats.neckClipApplied ? ' Объём ограничен плоскостью шеи' : '';
+  const neckClipNote = stats.neckClipApplied ? ' С отсечением шеи.' : '';
   if (stats.nonManifoldEdges === 0 && stats.boundaryEdges === 0) {
     return {
-      tag: 'точный по замкнутой сетке',
-      note: `Замкнутая сетка без открытых контуров.${neckClipNote}`,
+      tag: 'точный',
+      note: `Замкнутая 3D-модель.${neckClipNote}`,
       approximate: false
     };
   }
 
   if (stats.nonManifoldEdges === 0 && stats.rejectedLoops === 0 && stats.unresolvedBoundaryEdges === 0) {
     return {
-      tag: 'сетка автозакрыта',
-      note: `Открытый срез закрыт автоматически: ${stats.cappedLoops} контур(ов).${neckClipNote}`,
+      tag: 'хороший',
+      note: `Модель автоматически закрыта.${neckClipNote}`,
       approximate: false
     };
   }
 
-  const compNote = stats.totalComponents > 1
-    ? ` Фильтр: осн. компонент ${stats.largestComponentPct}% из ${stats.totalComponents} фрагм.`
-    : '';
   return {
-    tag: 'приближённо',
-    note: `Открытые контуры: loops ${stats.boundaryLoops}, rejected ${stats.rejectedLoops}, non-manifold ${stats.nonManifoldEdges}.${compNote}${neckClipNote}`,
+    tag: 'приблизительный',
+    note: `Скан с открытыми участками.${neckClipNote}`,
     approximate: true
   };
 }
@@ -1475,104 +1513,68 @@ function buildVolumeQuality(stats) {
 function classifyVolumeHealth(volumeUnits, stats, quality) {
   const mm3 = mm3FromVolumeUnits(volumeUnits);
   const liters = mm3 != null ? mm3 / 1000000 : null;
-  const reasons = [];
   let severity = 0;
 
-  if (quality.approximate) {
-    severity += 1;
-    reasons.push('сетка не полностью надёжна');
-  }
-  if (stats.nonManifoldEdges > 0) {
-    severity += 2;
-    reasons.push(`non-manifold: ${stats.nonManifoldEdges}`);
-  }
-  if (stats.rejectedLoops > 0 || stats.unresolvedBoundaryEdges > 0) {
-    severity += 2;
-    reasons.push('остались проблемные открытые контуры');
-  }
-  if (stats.totalComponents > 20 || stats.largestComponentPct < 70) {
-    severity += 2;
-    reasons.push('модель фрагментирована');
-  } else if (stats.totalComponents > 1 || stats.largestComponentPct < 90) {
-    severity += 1;
-    reasons.push('в модели есть лишние фрагменты');
-  }
-  if (stats.maxPlanarityRatio > 0.12) {
-    severity += 1;
-    reasons.push('открытые срезы плохо ложатся в плоскость');
-  }
+  // Internal checks (not shown to user)
+  if (stats.nonManifoldEdges > 0) severity += 2;
+  if (stats.rejectedLoops > 0) severity += 1;
+  if (stats.totalComponents > 20 || stats.largestComponentPct < 70) severity += 1;
 
   if (liters == null) {
     return {
-      tone: severity >= 3 ? 'warning' : 'info',
-      label: severity >= 3 ? 'Без калибровки' : 'Нужна калибровка',
+      tone: 'info',
+      label: 'Авто-калибровка',
       value: formatVolumeUnits(volumeUnits),
-      text: `Сначала откалибруйте модель, чтобы оценивать клинический диапазон.${stats.neckClipApplied ? ' Срез по шее активен.' : ''}${reasons.length ? ' Также: ' + reasons.join(', ') + '.' : ''}`
+      text: 'Масштаб определён автоматически.'
     };
   }
 
-  if (liters < 2.5 || liters > 6.0) {
-    severity += 3;
-    reasons.push(`объём вне ожидаемого диапазона: ${liters.toFixed(2)} л`);
-  } else if (liters < 3.0 || liters > 5.0) {
-    severity += 1;
-    reasons.push(`объём на границе диапазона: ${liters.toFixed(2)} л`);
-  }
-
-  // Cross-validation: compare volume against bbox ellipsoid estimate
-  // Use full model bboxSize (not filtered) since slice volume uses all triangles
+  // Ellipsoid cross-validation
+  let ellipsoidRatio = null;
   if (stats.bboxSize) {
     const s = scale3dMMperUnit ?? 1;
     const bs = stats.bboxSize;
     const W = bs.x * s, H = bs.y * s, D = bs.z * s;
-    const ellipsoidMm3 = Math.PI / 6 * W * H * D;
-    const ellipsoidL = ellipsoidMm3 / 1e6;
-    const ratio = liters / ellipsoidL;
-    // Head volume is typically 50-75% of bounding ellipsoid
-    if (ratio < 0.3 || ratio > 0.9) {
+    const ellipsoidL = (Math.PI / 6 * W * H * D) / 1e6;
+    ellipsoidRatio = liters / ellipsoidL;
+    // Good ratio reduces severity
+    if (ellipsoidRatio >= 0.4 && ellipsoidRatio <= 0.85) {
+      severity = Math.min(severity, 1);
+    } else if (ellipsoidRatio < 0.2 || ellipsoidRatio > 1.0) {
       severity += 2;
-      reasons.push(`эллипсоид bbox: ${ellipsoidL.toFixed(2)} л, отношение: ${(ratio * 100).toFixed(0)}%`);
-    } else {
-      // Ellipsoid check passed — reduce severity from mesh quality issues
-      // Fragmented meshes give good volume via slice/raycast method
-      const isSliceMethod = stats.volumeMethod === 'slice';
-      if (isSliceMethod && ratio >= 0.45 && ratio <= 0.85) {
-        // Strong validation: slice method + good ellipsoid ratio
-        severity = Math.min(severity, 2);
-      } else if (severity >= 3) {
-        severity = Math.max(severity - 2, 2);
-      }
-      reasons.push(`✓ верификация: ${(ratio * 100).toFixed(0)}% от эллипсоида (${ellipsoidL.toFixed(2)} л)`);
     }
   }
 
-  // Show method used
-  if (stats.volumeMethod) {
-    const methodNames = { signed: 'знаковый', slice: 'послойный', gwn: 'GWN' };
-    reasons.push(`метод: ${methodNames[stats.volumeMethod] || stats.volumeMethod}`);
-  }
+  // Range check
+  if (liters < 2.0 || liters > 7.0) severity += 2;
 
-  if (severity >= 4) {
+  // Build clean user-facing text
+  const methodNames = { signed: 'знаковый', slice: 'послойный', gwn: 'GWN', coverage: 'покрытие' };
+  const method = stats.volumeMethod ? (methodNames[stats.volumeMethod] || stats.volumeMethod) : '';
+  const clipNote = stats.neckClipApplied ? ' | Отсечение шеи' : '';
+  const coverageNote = stats.coveragePct ? ` | Покрытие: ${stats.coveragePct}%` : '';
+
+  if (severity >= 3) {
     return {
-      tone: 'danger',
-      label: 'Переснять модель',
+      tone: 'warning',
+      label: 'Проверить',
       value: `${liters.toFixed(2)} л`,
-      text: `Объёму доверять нельзя: ${reasons.join(', ')}.${stats.neckClipApplied ? ' Срез по шее активен.' : ''}`
+      text: `Результат может быть неточным. Рекомендуется улучшить скан.${clipNote}`
     };
   }
   if (severity >= 2) {
     return {
       tone: 'warning',
-      label: 'Сомнительный',
+      label: 'Приблизительно',
       value: `${liters.toFixed(2)} л`,
-      text: `Проверить модель и калибровку: ${reasons.join(', ')}.${stats.neckClipApplied ? ' Срез по шее активен.' : ''}`
+      text: `Метод: ${method}${coverageNote}${clipNote}`
     };
   }
   return {
     tone: 'success',
-    label: 'Нормальный',
+    label: 'OK',
     value: `${liters.toFixed(2)} л`,
-    text: `Объём в рабочем диапазоне 3–5 л, топология модели выглядит пригодной.${stats.neckClipApplied ? ' Срез по шее активен.' : ''}`
+    text: `Метод: ${method}${coverageNote}${clipNote}`
   };
 }
 
@@ -1596,7 +1598,7 @@ function applyVolumeHealthUI(health, item = null) {
   badge.className = `badge badge-${health.tone}`;
   badge.textContent = health.label;
   value.textContent = health.value;
-  text.textContent = item?.note ? `${health.text} ${item.note}` : health.text;
+  text.textContent = health.text;
 }
 
 function updateVolumeHealthUI() {
@@ -1969,6 +1971,17 @@ async function computeMeshVolume() {
     }
   });
 
+  // Apply neck clip to slice data so slice volume respects the clip plane
+  const activeNeckClipYGlobal = Number.isFinite(neckClipPlaneY) ? neckClipPlaneY : null;
+  if (pendingSliceData && activeNeckClipYGlobal != null) {
+    const clipped = applyNeckClipToTriangles(pendingSliceData.vertices, pendingSliceData.triangles, activeNeckClipYGlobal);
+    if (clipped.triangles.length >= 4 && clipped.vertices.length >= 4) {
+      const clippedBbox = new THREE.Box3();
+      for (const v of clipped.vertices) clippedBbox.expandByPoint(v);
+      pendingSliceData = { vertices: clipped.vertices, triangles: clipped.triangles, bbox: clippedBbox };
+    }
+  }
+
   // Run slice-based volume (works well for open meshes)
   let sliceVolume = 0;
   if (pendingSliceData) {
@@ -2015,10 +2028,19 @@ async function computeMeshVolume() {
         }
         vertOff += pos.count;
       }
+      let covVerts = worldVerts;
+      let covTris = allCoverageTris;
+      if (activeNeckClipYGlobal != null) {
+        const clippedCov = applyNeckClipToTriangles(worldVerts, allCoverageTris, activeNeckClipYGlobal);
+        if (clippedCov.triangles.length >= 4 && clippedCov.vertices.length >= 4) {
+          covVerts = clippedCov.vertices;
+          covTris = clippedCov.triangles;
+        }
+      }
       const covBB = new THREE.Box3();
-      for (const v of worldVerts) covBB.expandByPoint(v);
+      for (const v of covVerts) covBB.expandByPoint(v);
 
-      const coverage = analyzeMeshCoverage({ vertices: worldVerts, triangles: allCoverageTris, bbox: covBB }, 200);
+      const coverage = analyzeMeshCoverage({ vertices: covVerts, triangles: covTris, bbox: covBB }, 200);
       if (coverage) {
         coverageResult = estimateCorrectedVolume(coverage, 0);
         coverageVolume = coverageResult.corrected;
@@ -2093,7 +2115,7 @@ async function computeMeshVolume() {
   const clipExtra = stats.neckClipApplied ? ' Считается только часть выше плоскости шеи.' : '';
   const methodNames = { signed: 'знаковый', slice: 'послойный', gwn: 'GWN' };
   const methodLabel = stats.volumeMethod ? ` [${methodNames[stats.volumeMethod] || stats.volumeMethod}]` : '';
-  const topologyText = `${quality.tag}; ${quality.note}.`;
+  // quality.tag used internally only
 
   const hullText = stats.convexHullVolume > 0
     ? ` | hull: ${formatVolumeUnits(stats.convexHullVolume, false)}`
@@ -2103,7 +2125,9 @@ async function computeMeshVolume() {
     : '';
   upsertVolumeItem(stats.volumeUnits, quality, stats);
   updateVolumeHealthUI();
-  setStatus3d(`Объём: ${valueText}${methodLabel}${hullText}${covText} | bbox: ${bW}×${bH}×${bD} мм | ${topologyText}${clipExtra}${extra}`);
+  const covPct = stats.coverageAvg != null ? ` | Покрытие: ${(stats.coverageAvg * 100).toFixed(0)}%` : '';
+  const clipInfo = stats.neckClipApplied ? ' | Отсечение шеи' : '';
+  setStatus3d(`Объём: ${valueText} | bbox: ${bW}×${bH}×${bD} мм${covPct}${clipInfo}`);
   render3dPlanList();
   update3dSelectedInfo();
   save3dProject();
@@ -2262,6 +2286,9 @@ function finalizePlanItem(type, label, points, value = null, deg = null) {
 function render3dPlanList() {
   const el = document.getElementById('measurements3d');
   if (!el) return;
+  // Update plan count badge
+  const badge = document.getElementById('plan3dCountBadge');
+  if (badge) badge.textContent = plan3dItems.length;
   if (plan3dItems.length === 0) {
     el.innerHTML = '<div class="hint">Нет измерений. Выберите инструмент и кликните на модель.</div>';
     updateVolumeHealthUI();
@@ -2445,19 +2472,76 @@ function apply3dShift() {
 }
 
 // ==================== EXPORT ====================
+// --- Helpers for report data ---
+function gatherReportData() {
+  const patient = document.getElementById('patientName3d')?.value || '—';
+  const date = document.getElementById('examDate3d')?.value || '—';
+  const procedure = document.getElementById('procedure3d')?.value || '—';
+  const goal = document.getElementById('goal3d')?.value || '—';
+  const notes = document.getElementById('notes3d')?.value || '';
+
+  // Volume item
+  const volItem = plan3dItems.find(it => it.type === 'volume');
+  const volText = volItem ? formatVolumeUnits(volItem.value) : null;
+
+  // Symmetry
+  const symEl = document.getElementById('symmetryResult');
+  const symmetryText = symEl ? symEl.innerText : null;
+  const hasSymmetry = symmetryText && !symmetryText.includes('Нажмите');
+
+  // Scale
+  const scaleText = scale3dMMperUnit != null ? `${scale3dMMperUnit.toFixed(2)} мм/ед.` : 'авто';
+
+  return { patient, date, procedure, goal, notes, volText, symmetryText: hasSymmetry ? symmetryText : null, scaleText };
+}
+
+function generateQRDataUrl(text) {
+  try {
+    if (!window.QRCode) return null;
+    const div = document.createElement('div');
+    div.style.cssText = 'position:fixed;top:-9999px;left:-9999px;';
+    document.body.appendChild(div);
+    new QRCode(div, { text, width: 128, height: 128, colorDark: '#1e40af', colorLight: '#ffffff' });
+    const canvas = div.querySelector('canvas');
+    const url = canvas ? canvas.toDataURL('image/png') : null;
+    document.body.removeChild(div);
+    return url;
+  } catch (e) { return null; }
+}
+
+async function captureHeatmapScreenshot() {
+  // If heatmap not active, temporarily activate, capture, restore
+  const wasActive = heatmapActive;
+  if (!wasActive) {
+    toggleHeatmap();
+    await new Promise(r => setTimeout(r, 100));
+    renderer.render(scene, camera);
+  }
+  const dataUrl = renderer.domElement.toDataURL('image/png');
+  if (!wasActive) {
+    toggleHeatmap(); // restore
+  }
+  return dataUrl;
+}
+
 async function export3dPDF() {
   try {
     setStatus3d('Генерация PDF...');
     const { jsPDF } = window.jspdf;
-
-    const patient = document.getElementById('patientName3d')?.value || '—';
-    const date = document.getElementById('examDate3d')?.value || '—';
-    const procedure = document.getElementById('procedure3d')?.value || '—';
-    const goal = document.getElementById('goal3d')?.value || '—';
-    const notes = document.getElementById('notes3d')?.value || '';
+    const data = gatherReportData();
 
     const canvas3d = renderer.domElement;
     const screenDataUrl = canvas3d.toDataURL('image/png');
+
+    // Capture heatmap view if model exists
+    let heatmapDataUrl = null;
+    if (currentModel) {
+      heatmapDataUrl = await captureHeatmapScreenshot();
+    }
+
+    // Generate QR code with report summary
+    const qrText = `PMAS Report | ${data.patient} | ${data.date} | ${data.procedure}${data.volText ? ' | Vol: ' + data.volText : ''}`;
+    const qrDataUrl = generateQRDataUrl(qrText);
 
     // Build beautiful report HTML
     const reportDiv = document.createElement('div');
@@ -2466,16 +2550,22 @@ async function export3dPDF() {
     let html = '';
     // Header bar
     html += `<div style="background:linear-gradient(135deg,#1e40af,#3b82f6);color:#fff;padding:24px 30px;border-radius:0 0 12px 12px;">`;
+    html += `<div style="display:flex;align-items:center;justify-content:space-between;">`;
+    html += `<div>`;
     html += `<div style="font-size:24px;font-weight:700;letter-spacing:0.5px;">PMAS — 3D Клинический протокол</div>`;
     html += `<div style="margin-top:6px;font-size:13px;opacity:0.85;">Планирование медицинских и эстетических процедур</div>`;
     html += `</div>`;
+    if (qrDataUrl) {
+      html += `<img src="${qrDataUrl}" style="width:80px;height:80px;border-radius:8px;border:2px solid rgba(255,255,255,0.3);">`;
+    }
+    html += `</div></div>`;
 
     // Patient info cards
     html += `<div style="padding:20px 30px 0;">`;
     html += `<div style="display:flex;gap:12px;flex-wrap:wrap;">`;
     const infoItems = [
-      ['Пациент', patient], ['Дата обследования', date],
-      ['Процедура', procedure], ['Цель', goal]
+      ['Пациент', data.patient], ['Дата обследования', data.date],
+      ['Процедура', data.procedure], ['Цель', data.goal]
     ];
     for (const [lbl, val] of infoItems) {
       html += `<div style="flex:1;min-width:170px;background:#f1f5f9;border-radius:8px;padding:12px 16px;border-left:3px solid #3b82f6;">`;
@@ -2490,6 +2580,44 @@ async function export3dPDF() {
     html += `<div style="background:#0f172a;border-radius:10px;padding:8px;box-shadow:0 2px 8px rgba(0,0,0,0.15);">`;
     html += `<img src="${screenDataUrl}" style="width:100%;border-radius:6px;display:block;">`;
     html += `</div></div>`;
+
+    // Volume summary (if available)
+    if (data.volText) {
+      html += `<div style="padding:0 30px 12px;">`;
+      html += `<div style="background:linear-gradient(135deg,#eff6ff,#dbeafe);border-radius:10px;padding:16px 20px;border:1px solid #93c5fd;">`;
+      html += `<div style="display:flex;align-items:center;gap:12px;">`;
+      html += `<div style="font-size:32px;">🧊</div>`;
+      html += `<div>`;
+      html += `<div style="font-size:11px;text-transform:uppercase;color:#3b82f6;font-weight:700;letter-spacing:0.5px;">Объём модели</div>`;
+      html += `<div style="font-size:22px;font-weight:800;color:#1e40af;">${data.volText}</div>`;
+      html += `</div></div></div></div>`;
+    }
+
+    // Symmetry & Heatmap side by side
+    if (data.symmetryText || heatmapDataUrl) {
+      html += `<div style="padding:0 30px 12px;">`;
+      html += `<div style="font-size:16px;font-weight:700;color:#1e40af;margin-bottom:10px;padding-bottom:6px;border-bottom:2px solid #dbeafe;">🔬 Клинический анализ</div>`;
+      html += `<div style="display:flex;gap:16px;flex-wrap:wrap;">`;
+
+      // Symmetry box
+      if (data.symmetryText) {
+        html += `<div style="flex:1;min-width:250px;background:#f0fdf4;border:1px solid #86efac;border-radius:8px;padding:14px 16px;">`;
+        html += `<div style="font-size:11px;text-transform:uppercase;color:#16a34a;font-weight:700;margin-bottom:6px;">🪞 Анализ симметрии</div>`;
+        html += `<div style="font-size:13px;color:#14532d;white-space:pre-line;">${escHtml(data.symmetryText)}</div>`;
+        html += `</div>`;
+      }
+
+      // Heatmap thumbnail
+      if (heatmapDataUrl) {
+        html += `<div style="flex:1;min-width:250px;background:#fef2f2;border:1px solid #fca5a5;border-radius:8px;padding:14px 16px;">`;
+        html += `<div style="font-size:11px;text-transform:uppercase;color:#dc2626;font-weight:700;margin-bottom:6px;">🌡 Тепловая карта отклонений</div>`;
+        html += `<img src="${heatmapDataUrl}" style="width:100%;border-radius:6px;border:1px solid #e2e8f0;">`;
+        html += `<div style="display:flex;justify-content:space-between;font-size:10px;color:#991b1b;margin-top:4px;"><span>0 мм (симметрично)</span><span>5 мм (асимметрия)</span></div>`;
+        html += `</div>`;
+      }
+
+      html += `</div></div>`;
+    }
 
     // Measurements section
     if (plan3dItems.length > 0) {
@@ -2506,11 +2634,12 @@ async function export3dPDF() {
         const typeName = TYPE_NAMES_RU[item.type] || item.type;
         const icon = TYPE_ICONS[item.type] || '';
         const label = (item.label && item.label !== item.type && item.label !== typeName) ? item.label : '—';
+        const note = item.note ? ` (${item.note})` : '';
         const bg = i % 2 === 0 ? '#fff' : '#f8fafc';
         html += `<tr style="background:${bg};border-bottom:1px solid #e2e8f0;">`;
         html += `<td style="padding:7px 10px;color:#94a3b8;">${i + 1}</td>`;
         html += `<td style="padding:7px 10px;">${icon} ${typeName}</td>`;
-        html += `<td style="padding:7px 10px;color:#475569;">${escHtml(label)}</td>`;
+        html += `<td style="padding:7px 10px;color:#475569;">${escHtml(label)}${note ? `<span style="color:#94a3b8;font-size:11px">${escHtml(note)}</span>` : ''}</td>`;
         html += `<td style="padding:7px 10px;text-align:right;font-weight:600;color:#1e40af;">${val}</td>`;
         html += `</tr>`;
       });
@@ -2518,16 +2647,16 @@ async function export3dPDF() {
     }
 
     // Notes
-    if (notes) {
+    if (data.notes) {
       html += `<div style="padding:0 30px 12px;">`;
       html += `<div style="font-size:16px;font-weight:700;color:#1e40af;margin-bottom:8px;padding-bottom:6px;border-bottom:2px solid #dbeafe;">📝 Заметки</div>`;
-      html += `<div style="background:#fffbeb;border-left:3px solid #f59e0b;padding:10px 14px;border-radius:0 6px 6px 0;font-size:13px;color:#78350f;white-space:pre-wrap;">${escHtml(notes)}</div>`;
+      html += `<div style="background:#fffbeb;border-left:3px solid #f59e0b;padding:10px 14px;border-radius:0 6px 6px 0;font-size:13px;color:#78350f;white-space:pre-wrap;">${escHtml(data.notes)}</div>`;
       html += `</div>`;
     }
 
     // Footer
     html += `<div style="padding:12px 30px;text-align:center;color:#94a3b8;font-size:10px;border-top:1px solid #e2e8f0;margin-top:8px;">`;
-    html += `PMAS v1.0 • Масштаб: ${scale3dMMperUnit != null ? scale3dMMperUnit.toFixed(2) + ' мм/ед.' : 'авто'} • Сформировано: ${new Date().toLocaleDateString('ru-RU')}`;
+    html += `PMAS v1.0 • Масштаб: ${data.scaleText} • Сформировано: ${new Date().toLocaleDateString('ru-RU')}`;
     html += `</div>`;
 
     reportDiv.innerHTML = html;
@@ -2570,11 +2699,7 @@ async function export3dDOCX() {
             Table, TableRow, TableCell, WidthType, BorderStyle, AlignmentType,
             ShadingType, TableLayoutType } = D;
 
-    const patient = document.getElementById('patientName3d')?.value || '—';
-    const date = document.getElementById('examDate3d')?.value || '—';
-    const procedure = document.getElementById('procedure3d')?.value || '—';
-    const goal = document.getElementById('goal3d')?.value || '—';
-    const notes = document.getElementById('notes3d')?.value || '—';
+    const data = gatherReportData();
 
     // Capture 3D screenshot
     const canvas3d = renderer.domElement;
@@ -2583,6 +2708,16 @@ async function export3dDOCX() {
     const imgBytes = Uint8Array.from(atob(base64), c => c.charCodeAt(0));
     const imgW = 520;
     const imgH = Math.round((canvas3d.height / canvas3d.width) * imgW);
+
+    // Capture heatmap
+    let heatmapBytes = null, heatmapW = 0, heatmapH = 0;
+    if (currentModel) {
+      const hmUrl = await captureHeatmapScreenshot();
+      const hmBase64 = hmUrl.split(',')[1];
+      heatmapBytes = Uint8Array.from(atob(hmBase64), c => c.charCodeAt(0));
+      heatmapW = 250;
+      heatmapH = Math.round((canvas3d.height / canvas3d.width) * heatmapW);
+    }
 
     const blueBorder = { style: BorderStyle.SINGLE, size: 1, color: '3B82F6' };
     const noBorder = { style: BorderStyle.NONE, size: 0 };
@@ -2627,8 +2762,8 @@ async function export3dDOCX() {
       layout: TableLayoutType ? TableLayoutType.FIXED : undefined,
       borders: { top: noBorder, bottom: noBorder, left: noBorder, right: noBorder, insideHorizontal: { style: BorderStyle.SINGLE, size: 1, color: 'E2E8F0' }, insideVertical: { style: BorderStyle.SINGLE, size: 1, color: 'E2E8F0' } },
       rows: [
-        new TableRow({ children: [infoCell('ПАЦИЕНТ', patient), infoCell('ДАТА ОБСЛЕДОВАНИЯ', date)] }),
-        new TableRow({ children: [infoCell('ПРОЦЕДУРА', procedure), infoCell('ЦЕЛЬ', goal)] }),
+        new TableRow({ children: [infoCell('ПАЦИЕНТ', data.patient), infoCell('ДАТА ОБСЛЕДОВАНИЯ', data.date)] }),
+        new TableRow({ children: [infoCell('ПРОЦЕДУРА', data.procedure), infoCell('ЦЕЛЬ', data.goal)] }),
       ]
     }));
     children.push(new Paragraph({ spacing: { after: 200 }, children: [] }));
@@ -2639,6 +2774,52 @@ async function export3dDOCX() {
       children: [new ImageRun({ data: imgBytes, transformation: { width: imgW, height: imgH }, type: 'png' })]
     }));
     children.push(new Paragraph({ spacing: { after: 200 }, children: [] }));
+
+    // Volume summary
+    if (data.volText) {
+      children.push(new Paragraph({
+        spacing: { after: 120 },
+        shading: { type: ShadingType.CLEAR, fill: 'EFF6FF' },
+        children: [
+          new TextRun({ text: '🧊  Объём модели:  ', size: 24, bold: true, color: '3B82F6', font: 'Segoe UI' }),
+          new TextRun({ text: data.volText, size: 28, bold: true, color: '1E40AF', font: 'Segoe UI' })
+        ]
+      }));
+    }
+
+    // Symmetry analysis
+    if (data.symmetryText) {
+      children.push(new Paragraph({
+        spacing: { after: 80 },
+        children: [new TextRun({ text: '🪞  Анализ симметрии', size: 28, bold: true, color: '1E40AF', font: 'Segoe UI' })]
+      }));
+      for (const line of data.symmetryText.split('\n')) {
+        if (line.trim()) {
+          children.push(new Paragraph({
+            spacing: { after: 40 },
+            children: [new TextRun({ text: line, size: 22, color: '14532D', font: 'Segoe UI' })]
+          }));
+        }
+      }
+      children.push(new Paragraph({ spacing: { after: 120 }, children: [] }));
+    }
+
+    // Heatmap screenshot
+    if (heatmapBytes) {
+      children.push(new Paragraph({
+        spacing: { after: 80 },
+        children: [new TextRun({ text: '🌡  Тепловая карта отклонений', size: 28, bold: true, color: '1E40AF', font: 'Segoe UI' })]
+      }));
+      children.push(new Paragraph({
+        alignment: AlignmentType.CENTER,
+        children: [new ImageRun({ data: heatmapBytes, transformation: { width: heatmapW, height: heatmapH }, type: 'png' })]
+      }));
+      children.push(new Paragraph({
+        spacing: { after: 200 },
+        alignment: AlignmentType.CENTER,
+        children: [new TextRun({ text: '0 мм (симметрично) ← → 5 мм (асимметрия)', size: 16, color: '94A3B8', font: 'Segoe UI' })]
+      }));
+    }
 
     // Measurements table
     if (plan3dItems.length > 0) {
@@ -2700,7 +2881,7 @@ async function export3dDOCX() {
     }
 
     // Notes
-    if (notes && notes !== '—') {
+    if (data.notes && data.notes !== '—') {
       children.push(new Paragraph({
         spacing: { after: 120 },
         children: [new TextRun({ text: '📝  Заметки', size: 28, bold: true, color: '1E40AF', font: 'Segoe UI' })]
@@ -2708,7 +2889,7 @@ async function export3dDOCX() {
       children.push(new Paragraph({
         spacing: { after: 200 },
         border: { left: { style: BorderStyle.SINGLE, size: 6, color: 'F59E0B', space: 8 } },
-        children: [new TextRun({ text: notes, size: 22, color: '78350F', font: 'Segoe UI' })]
+        children: [new TextRun({ text: data.notes, size: 22, color: '78350F', font: 'Segoe UI' })]
       }));
     }
 
@@ -2718,14 +2899,14 @@ async function export3dDOCX() {
       border: { top: { style: BorderStyle.SINGLE, size: 1, color: 'E2E8F0', space: 8 } },
       alignment: AlignmentType.CENTER,
       children: [
-        new TextRun({ text: `PMAS v1.0  •  Масштаб: ${scale3dMMperUnit != null ? scale3dMMperUnit.toFixed(2) + ' мм/ед.' : 'авто'}  •  ${new Date().toLocaleDateString('ru-RU')}`, size: 16, color: '94A3B8', font: 'Segoe UI' })
+        new TextRun({ text: `PMAS v1.0  •  Масштаб: ${data.scaleText}  •  ${new Date().toLocaleDateString('ru-RU')}`, size: 16, color: '94A3B8', font: 'Segoe UI' })
       ]
     }));
 
     const doc = new Document({ sections: [{ children }] });
 
     const blob = await Packer.toBlob(doc);
-    const fname = `PMAS_3D_Protocol_${patient.replace(/[^a-zA-Z0-9а-яА-Я _-]+/g, '') || 'Patient'}.docx`;
+    const fname = `PMAS_3D_Protocol_${data.patient.replace(/[^a-zA-Z0-9а-яА-Я _-]+/g, '') || 'Patient'}.docx`;
     if (window.saveAs) {
       window.saveAs(blob, fname);
     } else {
@@ -2795,14 +2976,14 @@ function updateBtn3DStates() {
   document.getElementById('btnWireframe')?.classList.toggle('btn-active', wireframeMode);
   document.getElementById('btnNormals')?.classList.toggle('btn-active', normalsMode);
 
-  const toolBtns = ['btn3dPoint', 'btn3dDistance', 'btn3dAngle', 'btn3dVector', 'btn3dTilt', 'btn3dMeasure', 'btn3dCalibrate', 'btn3dNeckClip'];
+  const toolBtns = ['btn3dPoint', 'btn3dDistance', 'btn3dAngle', 'btn3dVector', 'btn3dTilt', 'btn3dMeasure', 'btn3dNeckClip'];
   toolBtns.forEach(id => document.getElementById(id)?.classList.remove('btn-active'));
 
   if (tool3dMode) {
     const map = {
       point: 'btn3dPoint', distance: 'btn3dDistance', angle: 'btn3dAngle',
       vector: 'btn3dVector', tilt: 'btn3dTilt', measure: 'btn3dMeasure',
-      calibration: 'btn3dCalibrate', neckClip: 'btn3dNeckClip'
+      neckClip: 'btn3dNeckClip'
     };
     document.getElementById(map[tool3dMode])?.classList.add('btn-active');
   }
@@ -2907,7 +3088,6 @@ function bindUI3D() {
   document.getElementById('btn3dTilt').addEventListener('click', () => setTool3D('tilt'));
   document.getElementById('btn3dMeasure').addEventListener('click', () => setTool3D('measure'));
   document.getElementById('btn3dVolume').addEventListener('click', computeMeshVolume);
-  document.getElementById('btn3dCalibrate').addEventListener('click', () => setTool3D('calibration'));
   document.getElementById('btn3dNeckClip').addEventListener('click', () => setTool3D('neckClip'));
   document.getElementById('btn3dClearNeckClip').addEventListener('click', () => clearNeckClip());
 
@@ -2998,6 +3178,20 @@ let heatmapMaterials = new Map(); // mesh uuid -> original material
 function analyzeSymmetry() {
   if (!currentModel) { setStatus3d('Загрузите модель.'); return; }
 
+  // Toggle off if already showing
+  if (symmetryHelperMesh) {
+    symmetryHelperMesh.geometry?.dispose();
+    symmetryHelperMesh.material?.dispose();
+    scene.remove(symmetryHelperMesh);
+    symmetryHelperMesh = null;
+    if (heatmapActive) toggleHeatmap(); // also reset heatmap
+    document.getElementById('symmetryResult').textContent = 'Нажмите «Симметрия» для анализа.';
+    document.getElementById('heatmapLegend').style.display = 'none';
+    document.getElementById('btn3dSymmetry')?.classList.remove('btn-active');
+    setStatus3d('Симметрия отключена.');
+    return;
+  }
+
   setStatus3d('Анализ симметрии...');
 
   const meshes = [];
@@ -3085,12 +3279,18 @@ function analyzeSymmetry() {
     </div>
   `;
 
+  document.getElementById('btn3dSymmetry')?.classList.add('btn-active');
   setStatus3d(`Симметрия: ${grade}. Среднее Δ${mean.toFixed(2)} мм, P95 ${p95.toFixed(2)} мм`);
 }
 
 function showSymmetryPlane(center, size) {
-  // Remove old plane
-  if (symmetryHelperMesh) { scene.remove(symmetryHelperMesh); symmetryHelperMesh = null; }
+  // Remove old plane (dispose to prevent GPU memory leak)
+  if (symmetryHelperMesh) {
+    symmetryHelperMesh.geometry?.dispose();
+    symmetryHelperMesh.material?.dispose();
+    scene.remove(symmetryHelperMesh);
+    symmetryHelperMesh = null;
+  }
 
   const planeH = size.y * 1.1;
   const planeW = size.z * 1.1;
@@ -3120,6 +3320,7 @@ function toggleHeatmap() {
     heatmapMaterials.clear();
     heatmapActive = false;
     document.getElementById('heatmapLegend').style.display = 'none';
+    document.getElementById('btn3dHeatmap')?.classList.remove('btn-active');
     setStatus3d('Тепловая карта выключена.');
     return;
   }
@@ -3201,6 +3402,7 @@ function toggleHeatmap() {
   heatmapActive = true;
   document.getElementById('heatmapLegend').style.display = 'block';
   document.getElementById('heatmapMaxLabel').textContent = `${maxDevMM} мм`;
+  document.getElementById('btn3dHeatmap')?.classList.add('btn-active');
   setStatus3d('Тепловая карта: отклонение от зеркальной симметрии (0=зелёный, 5мм=красный)');
 }
 
@@ -3306,16 +3508,14 @@ function applyOperationTemplate() {
 }
 
 // ==================== MESH CLEANUP (PHASE 2) ====================
-let meshCleanupMode = null; // 'brush' | 'lasso' | null
+let meshCleanupMode = null; // 'brush' | null
 let brushSize = 25; // screen pixels
 let meshEditHistory = []; // stack of {mesh, deletedIndices[]}
-let lassoPoints = []; // screen-space points for lasso
 let isErasing = false;
 let brushCircle = null; // visual brush cursor
 
 function initMeshCleanup() {
   const btnBrush = document.getElementById('btn3dBrushErase');
-  const btnLasso = document.getElementById('btn3dLassoErase');
   const btnUndo = document.getElementById('btn3dUndoErase');
   const btnReset = document.getElementById('btn3dResetMesh');
   const brushRange = document.getElementById('brushSizeRange');
@@ -3329,16 +3529,8 @@ function initMeshCleanup() {
     activateCleanup('brush');
   });
 
-  btnLasso.addEventListener('click', () => {
-    if (meshCleanupMode === 'lasso') { deactivateCleanup(); return; }
-    activateCleanup('lasso');
-  });
-
   btnUndo.addEventListener('click', undoMeshEdit);
   btnReset.addEventListener('click', resetMeshEdits);
-
-  const btnFillHoles = document.getElementById('btn3dFillHoles');
-  if (btnFillHoles) btnFillHoles.addEventListener('click', fillHolesWithPreview);
 
   brushRange.addEventListener('input', () => {
     brushSize = parseInt(brushRange.value);
@@ -3356,36 +3548,26 @@ function activateCleanup(mode) {
   controls.enabled = false;
 
   const btnBrush = document.getElementById('btn3dBrushErase');
-  const btnLasso = document.getElementById('btn3dLassoErase');
   const info = document.getElementById('meshCleanupInfo');
 
   btnBrush.classList.toggle('active', mode === 'brush');
-  btnLasso.classList.toggle('active', mode === 'lasso');
 
-  if (mode === 'brush') {
-    info.textContent = 'Зажмите ЛКМ и рисуйте по модели для удаления треугольников.';
-    createBrushCursor();
-  } else {
-    info.textContent = 'Обведите область для удаления. ЛКМ = точки, двойной клик = замкнуть.';
-    removeBrushCursor();
-  }
+  info.textContent = 'Зажмите ЛКМ и рисуйте по модели для удаления треугольников.';
+  createBrushCursor();
 
   const container = document.getElementById('canvas3d-container');
-  container.style.cursor = mode === 'brush' ? 'none' : 'crosshair';
+  container.style.cursor = 'none';
 }
 
 function deactivateCleanup() {
   meshCleanupMode = null;
   controls.enabled = true;
   isErasing = false;
-  lassoPoints = [];
 
   const btnBrush = document.getElementById('btn3dBrushErase');
-  const btnLasso = document.getElementById('btn3dLassoErase');
   const info = document.getElementById('meshCleanupInfo');
 
   if (btnBrush) btnBrush.classList.remove('active');
-  if (btnLasso) btnLasso.classList.remove('active');
   if (info) info.textContent = 'Выберите инструмент и рисуйте на модели для удаления шума.';
 
   removeBrushCursor();
@@ -3413,6 +3595,8 @@ function removeBrushCursor() {
 // Erase triangles near a screen-space point
 function eraseAtScreenPoint(e) {
   if (!currentModel) return;
+  // Save original geometry before first edit for undo support
+  if (meshEditHistory.length === 0) saveOriginalGeometry();
   const container = document.getElementById('canvas3d-container');
   const rect = container.getBoundingClientRect();
 
@@ -3709,98 +3893,6 @@ function estimateCorrectedVolume(coverage, rawSliceVolume) {
   return { corrected: correctedVolume, confidence, avgCoverage };
 }
 
-/**
- * Run coverage analysis + corrected volume and show results.
- */
-async function fillHolesWithPreview() {
-  if (!currentModel) { setStatus3d('Нет модели.'); return; }
-
-  setStatus3d('Анализ покрытия меша...');
-  await new Promise(r => setTimeout(r, 50));
-
-  // Get the volume analysis data
-  const info = document.getElementById('meshCleanupInfo');
-
-  // We need the sliceData from the last volume computation
-  // Trigger a volume computation first to get the data
-  try {
-    // Access mesh data directly
-    const meshes = [];
-    currentModel.traverse(c => { if (c.isMesh) meshes.push(c); });
-    if (meshes.length === 0) { setStatus3d('Нет мешей.'); return; }
-
-    // Gather all world-space vertices and triangles
-    const worldVerts = [];
-    const allTris = [];
-    let vertOffset = 0;
-
-    for (const mesh of meshes) {
-      mesh.updateWorldMatrix(true, false);
-      const geo = mesh.geometry;
-      const pos = geo.attributes.position;
-      const idx = geo.index;
-
-      for (let v = 0; v < pos.count; v++) {
-        const p = new THREE.Vector3().fromBufferAttribute(pos, v).applyMatrix4(mesh.matrixWorld);
-        worldVerts.push(p);
-      }
-
-      const triCount = idx ? idx.count / 3 : pos.count / 3;
-      for (let i = 0; i < triCount; i++) {
-        const ai = (idx ? idx.getX(i*3) : i*3) + vertOffset;
-        const bi = (idx ? idx.getX(i*3+1) : i*3+1) + vertOffset;
-        const ci = (idx ? idx.getX(i*3+2) : i*3+2) + vertOffset;
-        if (ai === bi || bi === ci || ci === ai) continue;
-        allTris.push([ai, bi, ci]);
-      }
-      vertOffset += pos.count;
-    }
-
-    const bb = new THREE.Box3();
-    for (const v of worldVerts) bb.expandByPoint(v);
-
-    setStatus3d(`Послойный анализ покрытия (${allTris.length} тр.)...`);
-    await new Promise(r => setTimeout(r, 50));
-
-    const coverage = analyzeMeshCoverage({ vertices: worldVerts, triangles: allTris, bbox: bb }, 200);
-
-    if (!coverage) { setStatus3d('Не удалось проанализировать.'); return; }
-
-    // Compute raw slice volume for comparison
-    const rawAreas = new Float64Array(coverage.sliceStats.length);
-    for (let i = 0; i < coverage.sliceStats.length; i++) {
-      rawAreas[i] = coverage.sliceStats[i].actualArea;
-    }
-    const rawVolume = simpsonsIntegrate(rawAreas, coverage.dy);
-
-    const result = estimateCorrectedVolume(coverage, rawVolume);
-    const s = scale3dMMperUnit ?? 1;
-    const rawL = rawVolume * Math.pow(s, 3) / 1e6;
-    const corrL = result.corrected * Math.pow(s, 3) / 1e6;
-
-    const bboxSize = bb.getSize(new THREE.Vector3());
-    const W = bboxSize.x * s, H = bboxSize.y * s, D = bboxSize.z * s;
-
-    if (info) {
-      info.innerHTML = `
-        <div style="font-size:12px;line-height:1.6">
-          <b>📊 Анализ покрытия:</b><br>
-          Среднее покрытие: <b>${(result.avgCoverage * 100).toFixed(0)}%</b><br>
-          Исходный объём: <b>${rawL.toFixed(2)} л</b> (${(rawVolume * Math.pow(s,3) / 1000).toFixed(0)} см³)<br>
-          Скорр. объём: <b style="color:#2563eb">${corrL.toFixed(2)} л</b> (${(result.corrected * Math.pow(s,3) / 1000).toFixed(0)} см³)<br>
-          Прирост: <b>+${(corrL - rawL).toFixed(2)} л</b> (+${rawL > 0 ? ((corrL/rawL - 1)*100).toFixed(0) : 0}%)<br>
-          Bbox: ${W.toFixed(0)}×${H.toFixed(0)}×${D.toFixed(0)} мм
-        </div>
-      `;
-    }
-
-    setStatus3d(`Покрытие ${(result.avgCoverage*100).toFixed(0)}%. Исходный: ${rawL.toFixed(2)}л → Скорректированный: ${corrL.toFixed(2)}л (+${(corrL-rawL).toFixed(2)}л)`);
-
-  } catch (e) {
-    console.error('[HoleFill] error:', e);
-    setStatus3d(`Ошибка: ${e.message}`);
-  }
-}
 
 // ==================== IndexedDB Persistence ====================
 const MESH_DB_NAME = 'pmas-mesh-edits';
@@ -3908,95 +4000,10 @@ async function clearMeshFromIDB(modelUrl) {
 function updateCleanupInfo() {
   const info = document.getElementById('meshCleanupInfo');
   if (!info) return;
-  const totalDeleted = meshEditHistory.reduce((s, h) => s + h.deletedIndices.length, 0);
+  const totalDeleted = meshEditHistory.reduce((acc, h) => acc + (h.deletedIndices ? h.deletedIndices.length : 0), 0);
   if (totalDeleted > 0) {
     info.textContent = `Удалено ${totalDeleted} треугольников (${meshEditHistory.length} действий). Пересчитайте объём.`;
   }
-}
-
-// Lasso erase: collect screen points, then find all triangles inside polygon
-function eraseInsideLasso() {
-  if (lassoPoints.length < 3 || !currentModel) return;
-
-  const container = document.getElementById('canvas3d-container');
-  const rect = container.getBoundingClientRect();
-
-  const meshes = [];
-  currentModel.traverse(c => { if (c.isMesh) meshes.push(c); });
-
-  for (const mesh of meshes) {
-    const geo = mesh.geometry;
-    const pos = geo.attributes.position;
-    const idx = geo.index;
-    const triCount = idx ? idx.count / 3 : pos.count / 3;
-
-    mesh.updateWorldMatrix(true, false);
-    const deletedIndices = [];
-    const v = new THREE.Vector3();
-
-    for (let i = 0; i < triCount; i++) {
-      const ai = idx ? idx.getX(i * 3) : i * 3;
-      const bi = idx ? idx.getX(i * 3 + 1) : i * 3 + 1;
-      const ci = idx ? idx.getX(i * 3 + 2) : i * 3 + 2;
-
-      // Project triangle center to screen
-      v.fromBufferAttribute(pos, ai);
-      const va = v.clone().applyMatrix4(mesh.matrixWorld);
-      v.fromBufferAttribute(pos, bi);
-      const vb = v.clone().applyMatrix4(mesh.matrixWorld);
-      v.fromBufferAttribute(pos, ci);
-      const vcc = v.clone().applyMatrix4(mesh.matrixWorld);
-
-      const center = va.add(vb).add(vcc).multiplyScalar(1/3);
-      center.project(camera);
-
-      const sx = (center.x * 0.5 + 0.5) * rect.width + rect.left;
-      const sy = (-center.y * 0.5 + 0.5) * rect.height + rect.top;
-
-      if (center.z > 0 && center.z < 1 && pointInPolygon(sx, sy, lassoPoints)) {
-        deletedIndices.push(i);
-      }
-    }
-
-    if (deletedIndices.length > 0) {
-      applyTriangleDeletion(mesh, deletedIndices);
-      meshEditHistory.push({ mesh, deletedIndices, type: 'lasso' });
-    }
-  }
-
-  lassoPoints = [];
-  removeLassoOverlay();
-  updateCleanupInfo();
-}
-
-function pointInPolygon(x, y, polygon) {
-  let inside = false;
-  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
-    const xi = polygon[i].x, yi = polygon[i].y;
-    const xj = polygon[j].x, yj = polygon[j].y;
-    if (((yi > y) !== (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi)) {
-      inside = !inside;
-    }
-  }
-  return inside;
-}
-
-// Lasso visual overlay
-let lassoSvg = null;
-
-function updateLassoOverlay() {
-  if (!lassoSvg) {
-    lassoSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-    lassoSvg.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:9998';
-    document.body.appendChild(lassoSvg);
-  }
-  if (lassoPoints.length < 2) return;
-  const pts = lassoPoints.map(p => `${p.x},${p.y}`).join(' ');
-  lassoSvg.innerHTML = `<polyline points="${pts}" fill="rgba(255,80,80,0.15)" stroke="rgba(255,80,80,0.8)" stroke-width="2" stroke-dasharray="6,3"/>`;
-}
-
-function removeLassoOverlay() {
-  if (lassoSvg) { lassoSvg.remove(); lassoSvg = null; }
 }
 
 // Wire up mouse events for mesh cleanup
@@ -4011,9 +4018,6 @@ function setupCleanupEvents() {
       isErasing = true;
       controls.enabled = false;
       eraseAtScreenPoint(e);
-    } else if (meshCleanupMode === 'lasso') {
-      lassoPoints.push({ x: e.clientX, y: e.clientY });
-      updateLassoOverlay();
     }
   });
 
@@ -4033,13 +4037,6 @@ function setupCleanupEvents() {
   container.addEventListener('pointerup', (e) => {
     if (meshCleanupMode === 'brush') {
       isErasing = false;
-    }
-  });
-
-  container.addEventListener('dblclick', (e) => {
-    if (meshCleanupMode === 'lasso' && lassoPoints.length >= 3) {
-      eraseInsideLasso();
-      setStatus3d(`Лассо: удалено. Пересчитайте объём.`);
     }
   });
 
