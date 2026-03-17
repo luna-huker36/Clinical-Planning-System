@@ -1997,10 +1997,11 @@ async function computeMeshVolume() {
       // For slice method on fragmented meshes, hull is from filtered data and too small
       // Use bbox ellipsoid as upper bound instead
       if (c.method === 'slice' && pendingSliceData) {
+        // Use bbox volume as upper bound (not ellipsoid — too strict for non-spherical objects)
         const sb = pendingSliceData.bbox;
         const sz = sb.getSize(new THREE.Vector3());
-        const ellipsoidVol = Math.PI / 6 * sz.x * sz.y * sz.z;
-        return c.vol <= ellipsoidVol * 1.1;
+        const bboxVol = sz.x * sz.y * sz.z;
+        return c.vol <= bboxVol * 1.05;
       }
       return c.vol <= hullVol * 1.05;
     });
