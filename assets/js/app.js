@@ -109,7 +109,14 @@ function estimateHeadScale(size) {
   const dims = sortedDimsFromSize(size);
   if (dims.length !== 3) return null;
 
-  const candidates = [0.1, 1, 10, 100, 1000];
+  // Base candidates (powers of 10 cover most standard unit systems)
+  let candidates = [0.1, 1, 10, 100, 1000];
+  // For very small models (bbox < 2 units), add intermediate scales
+  // These cover phone photogrammetry (KIRI etc) which use arbitrary small units
+  const maxDim = Math.max(...dims);
+  if (maxDim < 2) {
+    candidates = [0.1, 1, 10, 100, 200, 333, 500, 1000];
+  }
   const target = [240, 190, 160];
   const min = [170, 130, 110];
   const max = [320, 260, 220];
@@ -1049,6 +1056,18 @@ function analyzeMeshVolume(mesh) {
     allTris.push([aId, bId, cId]);
   }
 
+  // Build UNFILTERED triangles for slice-based volume (all fragments, no component filter)
+  const unfilteredTris = [];
+  if (useComponentFilter && filteredRawTris !== rawTris) {
+    for (const [ai, bi, ci2] of rawTris) {
+      const aId = getVertexId(ai);
+      const bId = getVertexId(bi);
+      const cId = getVertexId(ci2);
+      if (aId === bId || bId === cId || cId === aId) continue;
+      unfilteredTris.push([aId, bId, cId]);
+    }
+  }
+
   if (worldVertices.length < 3) return null;
 
   // Step 2b: Spatial density filtering using 3D voxel grid
@@ -1156,6 +1175,14 @@ function analyzeMeshVolume(mesh) {
 
     if (spatialTris.length > 100 && spatialPct < 95) {
       useTris = spatialTris;
+    }
+    // Also apply spatial filter to unfiltered tris (for slice method)
+    if (unfilteredTris.length > 0 && keepVert) {
+      const spatialUnfiltered = unfilteredTris.filter(([a, b, c]) => keepVert[a] && keepVert[b] && keepVert[c]);
+      if (spatialUnfiltered.length > 100) {
+        unfilteredTris.length = 0;
+        unfilteredTris.push(...spatialUnfiltered);
+      }
     }
   }
 
@@ -1389,6 +1416,10 @@ function analyzeMeshVolume(mesh) {
     gwnParams = { R, vMinGWN, cX, cY, cZ, tv, nTris };
   }
 
+  // Compute bounding box of the volume vertices (for slice-based method)
+  const volBbox = new THREE.Box3();
+  for (const id of usedVertIds) volBbox.expandByPoint(volumeVertices[id]);
+
   return {
     volumeUnits,
     boundaryEdges,
@@ -1405,7 +1436,11 @@ function analyzeMeshVolume(mesh) {
     isOpenOBJ,
     gwnParams,
     neckClipApplied: activeNeckClipY != null,
-    neckClipPlaneY: activeNeckClipY
+    neckClipPlaneY: activeNeckClipY,
+    // Exported for slice-based volume (corrected tris = filtered)
+    sliceData: { vertices: volumeVertices, triangles: correctedTris, bbox: volBbox },
+    // ALL triangles (before component/spatial filter) for slice envelope method
+    allSliceData: { vertices: worldVertices, triangles: unfilteredTris.length > 0 ? unfilteredTris : allTris, bbox: new THREE.Box3().setFromPoints(worldVertices) }
   };
 }
 
@@ -1560,6 +1595,243 @@ function upsertVolumeItem(volumeUnits, quality, stats) {
   selected3dPlan = item.id;
 }
 
+// ==================== SLICE-BASED VOLUME ====================
+// Slices mesh with horizontal planes, computes 2D cross-section areas,
+// integrates with Simpson's rule. Works well for open photogrammetry meshes.
+
+function sliceTriangleAtY(verts, tri, yLevel) {
+  const [aId, bId, cId] = tri;
+  const a = verts[aId], b = verts[bId], c = verts[cId];
+  const da = a.y - yLevel, db = b.y - yLevel, dc = c.y - yLevel;
+  const eps = 1e-9;
+  const sa = Math.abs(da) < eps ? 0 : (da > 0 ? 1 : -1);
+  const sb = Math.abs(db) < eps ? 0 : (db > 0 ? 1 : -1);
+  const sc = Math.abs(dc) < eps ? 0 : (dc > 0 ? 1 : -1);
+
+  // All on same side — no intersection
+  if (sa >= 0 && sb >= 0 && sc >= 0 && (sa + sb + sc) >= 2) return null;
+  if (sa <= 0 && sb <= 0 && sc <= 0 && (sa + sb + sc) <= -2) return null;
+
+  const pts = [];
+  const edges = [[a, b, da, db], [b, c, db, dc], [c, a, dc, da]];
+  for (const [va, vb, dA, dB] of edges) {
+    if (dA === 0 && dB === 0) {
+      // Edge lies on plane — add both endpoints
+      pts.push({ x: va.x, z: va.z }, { x: vb.x, z: vb.z });
+    } else if (dA * dB < 0) {
+      // Edge crosses plane
+      const t = dA / (dA - dB);
+      pts.push({ x: va.x + t * (vb.x - va.x), z: va.z + t * (vb.z - va.z) });
+    } else if (Math.abs(dA) < eps) {
+      pts.push({ x: va.x, z: va.z });
+    }
+  }
+
+  if (pts.length < 2) return null;
+  // Deduplicate close points
+  const uniq = [pts[0]];
+  for (let i = 1; i < pts.length; i++) {
+    const p = pts[i];
+    let dup = false;
+    for (const u of uniq) {
+      if ((p.x - u.x) ** 2 + (p.z - u.z) ** 2 < 1e-14) { dup = true; break; }
+    }
+    if (!dup) uniq.push(p);
+  }
+  if (uniq.length < 2) return null;
+  return { p1: uniq[0], p2: uniq[1] };
+}
+
+function chainSliceSegments(segments) {
+  if (segments.length === 0) return [];
+  // Quantize to grid for endpoint matching
+  const Q = 1e6;
+  const key = p => `${Math.round(p.x * Q)}_${Math.round(p.z * Q)}`;
+
+  const adj = new Map();
+  const addAdj = (k, segIdx, end) => {
+    if (!adj.has(k)) adj.set(k, []);
+    adj.get(k).push({ segIdx, end });
+  };
+  for (let i = 0; i < segments.length; i++) {
+    addAdj(key(segments[i].p1), i, 1);
+    addAdj(key(segments[i].p2), i, 2);
+  }
+
+  const used = new Uint8Array(segments.length);
+  const loops = [];
+
+  for (let start = 0; start < segments.length; start++) {
+    if (used[start]) continue;
+    used[start] = 1;
+    const loop = [segments[start].p1, segments[start].p2];
+    let curKey = key(loop[loop.length - 1]);
+    const startKey = key(loop[0]);
+
+    for (let iter = 0; iter < segments.length; iter++) {
+      if (curKey === startKey && loop.length > 2) break; // closed
+      const neighbors = adj.get(curKey);
+      if (!neighbors) break;
+      let found = false;
+      for (const nb of neighbors) {
+        if (used[nb.segIdx]) continue;
+        used[nb.segIdx] = 1;
+        const seg = segments[nb.segIdx];
+        const nextPt = nb.end === 1 ? seg.p2 : seg.p1;
+        loop.push(nextPt);
+        curKey = key(nextPt);
+        found = true;
+        break;
+      }
+      if (!found) break;
+    }
+
+    // Check if closed
+    if (loop.length >= 3 && key(loop[loop.length - 1]) === startKey) {
+      loop.pop(); // remove duplicate closing point
+      loops.push(loop);
+    }
+  }
+  return loops;
+}
+
+function shoelaceArea2D(pts) {
+  let area = 0;
+  const n = pts.length;
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    area += pts[i].x * pts[j].z - pts[j].x * pts[i].z;
+  }
+  return area / 2;
+}
+
+function simpsonsIntegrate(areas, dy) {
+  const N = areas.length - 1;
+  if (N <= 0) return 0;
+  if (N === 1) return (areas[0] + areas[1]) * dy / 2;
+
+  // Composite Simpson's rule (needs even N; handle odd with trapezoidal tail)
+  const evenN = N % 2 === 0 ? N : N - 1;
+  let sum = areas[0] + areas[evenN];
+  for (let i = 1; i < evenN; i++) {
+    sum += (i % 2 === 1 ? 4 : 2) * areas[i];
+  }
+  let vol = sum * dy / 3;
+
+  if (N % 2 === 1) {
+    vol += (areas[N - 1] + areas[N]) * dy / 2;
+  }
+  return vol;
+}
+
+// For fragmented meshes: estimate cross-section area via ray casting in XZ plane
+function rayCastSliceArea(vertices, triangles, bucket, yLevel) {
+  const segs = [];
+  for (const tIdx of bucket) {
+    const seg = sliceTriangleAtY(vertices, triangles[tIdx], yLevel);
+    if (seg) segs.push(seg);
+  }
+  if (segs.length < 3) return { area: 0, method: 'none' };
+
+  // Try contour chaining first
+  const loops = chainSliceSegments(segs);
+  let contourArea = 0;
+  for (const loop of loops) contourArea += Math.abs(shoelaceArea2D(loop));
+  const chainedPts = loops.reduce((s, l) => s + l.length, 0);
+  const chainRatio = segs.length > 0 ? chainedPts / segs.length : 0;
+
+  // If >60% segments formed closed contours, trust contour method
+  if (chainRatio > 0.6 && contourArea > 0) {
+    return { area: contourArea, method: 'contour' };
+  }
+
+  // Fallback: ray casting in XZ plane
+  let xMin = Infinity, xMax = -Infinity, zMin = Infinity, zMax = -Infinity;
+  for (const seg of segs) {
+    xMin = Math.min(xMin, seg.p1.x, seg.p2.x);
+    xMax = Math.max(xMax, seg.p1.x, seg.p2.x);
+    zMin = Math.min(zMin, seg.p1.z, seg.p2.z);
+    zMax = Math.max(zMax, seg.p1.z, seg.p2.z);
+  }
+  const xSpan = xMax - xMin, zSpan = zMax - zMin;
+  if (xSpan < 1e-10 || zSpan < 1e-10) return { area: 0, method: 'none' };
+
+  const numRays = 80;
+  const dx = xSpan / numRays;
+  let totalInsideZ = 0;
+
+  for (let i = 0; i < numRays; i++) {
+    const rx = xMin + (i + 0.5) * dx;
+    const zHits = [];
+    for (const seg of segs) {
+      const x1 = seg.p1.x, z1 = seg.p1.z, x2 = seg.p2.x, z2 = seg.p2.z;
+      if ((x1 <= rx && x2 >= rx) || (x2 <= rx && x1 >= rx)) {
+        const dxSeg = x2 - x1;
+        if (Math.abs(dxSeg) < 1e-12) continue;
+        const t = (rx - x1) / dxSeg;
+        if (t >= 0 && t <= 1) zHits.push(z1 + t * (z2 - z1));
+      }
+    }
+    if (zHits.length < 2) continue;
+    zHits.sort((a, b) => a - b);
+    // For fragmented meshes: use first-to-last span (envelope)
+    // rather than alternating in/out which fails with gaps
+    totalInsideZ += zHits[zHits.length - 1] - zHits[0];
+  }
+
+  const rayArea = totalInsideZ * dx;
+  const finalArea = Math.max(contourArea, rayArea);
+  return { area: finalArea, method: rayArea > contourArea ? 'raycast' : 'contour' };
+}
+
+function computeSliceVolumeAsync(sliceData, numSlices = 250) {
+  return new Promise(resolve => {
+    const { vertices, triangles, bbox } = sliceData;
+    const yMin = bbox.min.y;
+    const yMax = bbox.max.y;
+    const ySpan = yMax - yMin;
+    if (ySpan < 1e-10 || triangles.length === 0) { resolve(0); return; }
+
+    const dy = ySpan / numSlices;
+    // Build Y-bucket index
+    const buckets = new Array(numSlices + 1);
+    for (let i = 0; i <= numSlices; i++) buckets[i] = [];
+    for (let t = 0; t < triangles.length; t++) {
+      const [aId, bId, cId] = triangles[t];
+      const tyMin = Math.min(vertices[aId].y, vertices[bId].y, vertices[cId].y);
+      const tyMax = Math.max(vertices[aId].y, vertices[bId].y, vertices[cId].y);
+      const bStart = Math.max(0, Math.floor((tyMin - yMin) / dy));
+      const bEnd = Math.min(numSlices, Math.floor((tyMax - yMin) / dy));
+      for (let b = bStart; b <= bEnd; b++) buckets[b].push(t);
+    }
+
+    const areas = new Float64Array(numSlices + 1);
+    let currentSlice = 0;
+    let contourCount = 0, raycastCount = 0;
+
+    function processChunk() {
+      const endSlice = Math.min(currentSlice + 15, numSlices + 1);
+      for (let s = currentSlice; s < endSlice; s++) {
+        const yLevel = yMin + s * dy;
+        const bucket = buckets[Math.min(s, numSlices)];
+        const result = rayCastSliceArea(vertices, triangles, bucket, yLevel);
+        areas[s] = result.area;
+        if (result.method === 'contour') contourCount++;
+        else if (result.method === 'raycast') raycastCount++;
+      }
+      currentSlice = endSlice;
+      if (currentSlice <= numSlices) {
+        setTimeout(processChunk, 0);
+      } else {
+        const volume = simpsonsIntegrate(areas, dy);
+        console.log(`[VOL] slice-based: ${numSlices} slices, vol=${volume.toFixed(6)}, contour=${contourCount}, raycast=${raycastCount}`);
+        resolve(volume);
+      }
+    }
+    processChunk();
+  });
+}
+
 // Run the secondary inside/outside pass asynchronously
 function runGWNAsync(gwnParams) {
   return new Promise(resolve => {
@@ -1633,6 +1905,7 @@ async function computeMeshVolume() {
   };
 
   let pendingGWN = null;
+  let pendingSliceData = null;
 
   currentModel.traverse(child => {
     if (!child.isMesh) return;
@@ -1653,16 +1926,66 @@ async function computeMeshVolume() {
     if (meshStats.filteredBboxSize) stats.filteredBboxSize = meshStats.filteredBboxSize;
     stats.neckClipApplied = stats.neckClipApplied || meshStats.neckClipApplied;
     if (meshStats.gwnParams) pendingGWN = meshStats.gwnParams;
+    // Always use ALL triangles for slice method (before component/spatial filter)
+    // Slice+raycast handles noise better than filtered-only data
+    if (meshStats.allSliceData) {
+      pendingSliceData = meshStats.allSliceData;
+    } else if (meshStats.sliceData) {
+      pendingSliceData = meshStats.sliceData;
+    }
   });
 
-  // Run the secondary pass asynchronously if needed for open OBJ meshes
+  // Run slice-based volume (works well for open meshes)
+  let sliceVolume = 0;
+  if (pendingSliceData) {
+    setStatus3d('Вычисление объёма (послойный метод)...');
+    await new Promise(r => setTimeout(r, 30));
+    sliceVolume = await computeSliceVolumeAsync(pendingSliceData, 300);
+  }
+
+  // Run the secondary GWN pass asynchronously if needed for open OBJ meshes
+  let gwnVolume = 0;
   if (pendingGWN) {
     setStatus3d('Вычисление объёма (уточнение открытой сетки)... не закрывайте вкладку.');
-    await new Promise(r => setTimeout(r, 50)); // let UI update
-    const gwnVolume = await runGWNAsync(pendingGWN);
-    if (gwnVolume > 0 && gwnVolume < stats.volumeUnits) {
-      stats.volumeUnits = gwnVolume;
+    await new Promise(r => setTimeout(r, 50));
+    gwnVolume = await runGWNAsync(pendingGWN);
+  }
+
+  // Pick best volume: compare signed, slice, GWN; prefer slice for open meshes
+  const signedVol = stats.volumeUnits;
+  const hullVol = stats.convexHullVolume || Infinity;
+  const candidates = [
+    { method: 'signed', vol: signedVol },
+    { method: 'slice', vol: sliceVolume },
+    { method: 'gwn', vol: gwnVolume }
+  ].filter(c => {
+      if (c.vol <= 0) return false;
+      // For slice method on fragmented meshes, hull is from filtered data and too small
+      // Use bbox ellipsoid as upper bound instead
+      if (c.method === 'slice' && pendingSliceData) {
+        const sb = pendingSliceData.bbox;
+        const sz = sb.getSize(new THREE.Vector3());
+        const ellipsoidVol = Math.PI / 6 * sz.x * sz.y * sz.z;
+        return c.vol <= ellipsoidVol * 1.1;
+      }
+      return c.vol <= hullVol * 1.05;
+    });
+
+  if (candidates.length > 0) {
+    // For open meshes prefer slice; for closed prefer signed
+    const isOpen = stats.boundaryEdges > 0;
+    let best;
+    if (isOpen) {
+      // Prefer slice, then GWN, then signed
+      best = candidates.find(c => c.method === 'slice')
+          || candidates.find(c => c.method === 'gwn')
+          || candidates[0];
+    } else {
+      best = candidates.find(c => c.method === 'signed') || candidates[0];
     }
+    stats.volumeUnits = best.vol;
+    stats.volumeMethod = best.method;
+    console.log(`[VOL] method selection: signed=${signedVol.toFixed(6)}, slice=${sliceVolume.toFixed(6)}, gwn=${gwnVolume.toFixed(6)} → ${best.method}=${best.vol.toFixed(6)}, hull=${hullVol === Infinity ? 'N/A' : hullVol.toFixed(6)}`);
   }
 
   if (stats.volumeUnits <= 0) {
@@ -1685,16 +2008,16 @@ async function computeMeshVolume() {
   const valueText = formatVolumeUnits(stats.volumeUnits);
   const extra = scale3dMMperUnit == null ? ' Калибруйте модель для клинических единиц.' : '';
   const clipExtra = stats.neckClipApplied ? ' Считается только часть выше плоскости шеи.' : '';
-  const topologyText = quality.approximate
-    ? `${quality.tag}; ${quality.note}.`
-    : `${quality.tag}; ${quality.note}.`;
+  const methodNames = { signed: 'знаковый', slice: 'послойный', gwn: 'GWN' };
+  const methodLabel = stats.volumeMethod ? ` [${methodNames[stats.volumeMethod] || stats.volumeMethod}]` : '';
+  const topologyText = `${quality.tag}; ${quality.note}.`;
 
   const hullText = stats.convexHullVolume > 0
     ? ` | hull: ${formatVolumeUnits(stats.convexHullVolume, false)}`
     : '';
   upsertVolumeItem(stats.volumeUnits, quality, stats);
   updateVolumeHealthUI();
-  setStatus3d(`Объём: ${valueText}${hullText} | bbox: ${bW}×${bH}×${bD} мм | ${topologyText}${clipExtra}${extra}`);
+  setStatus3d(`Объём: ${valueText}${methodLabel}${hullText} | bbox: ${bW}×${bH}×${bD} мм | ${topologyText}${clipExtra}${extra}`);
   render3dPlanList();
   update3dSelectedInfo();
   save3dProject();
