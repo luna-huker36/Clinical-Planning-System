@@ -428,6 +428,37 @@
         </div>
       </div>
 
+      <!-- Symmetry & Heatmap -->
+      <div class="card">
+        <div class="card-title">🔬 Клинический анализ</div>
+        <div class="btn-grid">
+          <button class="btn btn-accent" id="btn3dSymmetry">🪞 Симметрия</button>
+          <button class="btn btn-accent" id="btn3dHeatmap">🌡 Тепловая карта</button>
+        </div>
+        <div id="symmetryResult" class="hint" style="margin-top:8px">Нажмите «Симметрия» для анализа.</div>
+        <div id="heatmapLegend" style="display:none;margin-top:8px">
+          <div style="display:flex;align-items:center;gap:4px;font-size:11px">
+            <span>0 мм</span>
+            <div style="flex:1;height:10px;border-radius:4px;background:linear-gradient(to right,#22c55e,#eab308,#ef4444)"></div>
+            <span id="heatmapMaxLabel">5 мм</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Operation Templates -->
+      <div class="card">
+        <div class="card-title">📋 Шаблоны операций</div>
+        <select id="operationTemplate" class="flex-grow" style="width:100%">
+          <option value="">Выберите шаблон...</option>
+          <option value="rhinoplasty">Ринопластика</option>
+          <option value="blepharoplasty">Блефаропластика</option>
+          <option value="facelift">Фейслифтинг</option>
+          <option value="genioplasty">Гениопластика</option>
+          <option value="otoplasty">Отопластика</option>
+        </select>
+        <div id="templateInfo" class="hint" style="margin-top:6px">Шаблон добавит стандартные точки измерений для выбранной операции.</div>
+      </div>
+
       <!-- Status + Export -->
       <div id="status3d" class="status-bar">Выберите инструмент → кликните на модель.</div>
       <div class="volume-health-card" id="volumeHealthCard" style="display:none">
@@ -607,7 +638,7 @@
 <script src="./assets/js/11-persistence-init.js"></script>
 
 <!-- ========== APP: tabs + 3D ========== -->
-<script type="module" src="./assets/js/app.js?v=53"></script>
+<script type="module" src="./assets/js/app.js?v=54"></script>
 
 </body>
 </html>

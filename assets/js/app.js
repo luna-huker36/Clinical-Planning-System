@@ -2923,6 +2923,11 @@ function bindUI3D() {
   // Shift
   document.getElementById('btn3dApplyShift').addEventListener('click', apply3dShift);
 
+  // Clinical analysis
+  document.getElementById('btn3dSymmetry')?.addEventListener('click', analyzeSymmetry);
+  document.getElementById('btn3dHeatmap')?.addEventListener('click', toggleHeatmap);
+  document.getElementById('operationTemplate')?.addEventListener('change', applyOperationTemplate);
+
   // Export
   document.getElementById('btn3dPDF').addEventListener('click', export3dPDF);
   document.getElementById('btn3dDOCX').addEventListener('click', export3dDOCX);
@@ -2975,6 +2980,330 @@ window._3d = {
     return hits.length > 0 ? hits[0].point.clone() : null;
   }
 };
+
+// ==================== PHASE 4: CLINICAL ANALYSIS ====================
+
+// --- Symmetry Analysis ---
+let symmetryPlane = null; // {normal, point} — mid-sagittal plane
+let symmetryHelperMesh = null;
+let heatmapActive = false;
+let heatmapMaterials = new Map(); // mesh uuid -> original material
+
+/**
+ * Analyze facial symmetry by:
+ * 1. Finding the mid-sagittal plane (X=0 or PCA-based)
+ * 2. Measuring deviation of left vs right side
+ * 3. Showing results
+ */
+function analyzeSymmetry() {
+  if (!currentModel) { setStatus3d('Загрузите модель.'); return; }
+
+  setStatus3d('Анализ симметрии...');
+
+  const meshes = [];
+  currentModel.traverse(c => { if (c.isMesh) meshes.push(c); });
+  if (meshes.length === 0) return;
+
+  // Collect all world vertices
+  const allPts = [];
+  for (const mesh of meshes) {
+    mesh.updateWorldMatrix(true, false);
+    const pos = mesh.geometry.attributes.position;
+    for (let i = 0; i < pos.count; i++) {
+      const p = new THREE.Vector3().fromBufferAttribute(pos, i).applyMatrix4(mesh.matrixWorld);
+      allPts.push(p);
+    }
+  }
+
+  if (allPts.length < 100) { setStatus3d('Слишком мало вершин.'); return; }
+
+  // Find bounding box center
+  const bbox = new THREE.Box3();
+  for (const p of allPts) bbox.expandByPoint(p);
+  const center = bbox.getCenter(new THREE.Vector3());
+  const size = bbox.getSize(new THREE.Vector3());
+
+  // Mid-sagittal plane: assume X axis is left-right (most common convention)
+  // The plane passes through center with normal = (1, 0, 0)
+  symmetryPlane = { normal: new THREE.Vector3(1, 0, 0), point: center.clone() };
+
+  // Measure deviation: for each vertex, find closest vertex on mirrored side
+  // Sample a subset for speed (max 5000 points)
+  const sampleStep = Math.max(1, Math.floor(allPts.length / 5000));
+  const leftPts = [], rightPts = [];
+
+  for (let i = 0; i < allPts.length; i += sampleStep) {
+    const p = allPts[i];
+    const relX = p.x - center.x;
+    if (relX > 0.01 * size.x) rightPts.push(p);
+    else if (relX < -0.01 * size.x) leftPts.push(p);
+  }
+
+  // For each left point, find closest right point (mirrored)
+  const deviations = [];
+  for (const lp of leftPts) {
+    // Mirror the left point to right side
+    const mirrored = new THREE.Vector3(2 * center.x - lp.x, lp.y, lp.z);
+
+    // Find closest right point
+    let minDist = Infinity;
+    for (const rp of rightPts) {
+      const d = mirrored.distanceTo(rp);
+      if (d < minDist) minDist = d;
+    }
+    if (minDist < Infinity) deviations.push(minDist);
+  }
+
+  if (deviations.length === 0) {
+    document.getElementById('symmetryResult').textContent = 'Не удалось проанализировать. Проверьте ориентацию модели.';
+    return;
+  }
+
+  deviations.sort((a, b) => a - b);
+  const s = scale3dMMperUnit ?? 1;
+  const mean = deviations.reduce((s, d) => s + d, 0) / deviations.length * s;
+  const median = deviations[Math.floor(deviations.length / 2)] * s;
+  const p95 = deviations[Math.floor(deviations.length * 0.95)] * s;
+  const max = deviations[deviations.length - 1] * s;
+
+  // Classify symmetry
+  let grade, gradeColor;
+  if (mean < 1.0) { grade = 'Отличная'; gradeColor = '#22c55e'; }
+  else if (mean < 2.0) { grade = 'Хорошая'; gradeColor = '#84cc16'; }
+  else if (mean < 3.5) { grade = 'Умеренная асимметрия'; gradeColor = '#eab308'; }
+  else { grade = 'Выраженная асимметрия'; gradeColor = '#ef4444'; }
+
+  // Show symmetry plane
+  showSymmetryPlane(center, size);
+
+  const result = document.getElementById('symmetryResult');
+  result.innerHTML = `
+    <div style="font-size:12px;line-height:1.6">
+      <b style="color:${gradeColor}">${grade}</b> (${leftPts.length}↔${rightPts.length} точек)<br>
+      Среднее отклонение: <b>${mean.toFixed(2)} мм</b><br>
+      Медиана: ${median.toFixed(2)} мм | P95: ${p95.toFixed(2)} мм | Макс: ${max.toFixed(2)} мм
+    </div>
+  `;
+
+  setStatus3d(`Симметрия: ${grade}. Среднее Δ${mean.toFixed(2)} мм, P95 ${p95.toFixed(2)} мм`);
+}
+
+function showSymmetryPlane(center, size) {
+  // Remove old plane
+  if (symmetryHelperMesh) { scene.remove(symmetryHelperMesh); symmetryHelperMesh = null; }
+
+  const planeH = size.y * 1.1;
+  const planeW = size.z * 1.1;
+  const geo = new THREE.PlaneGeometry(planeW, planeH);
+  const mat = new THREE.MeshBasicMaterial({
+    color: 0x3b82f6, transparent: true, opacity: 0.15,
+    side: THREE.DoubleSide, depthWrite: false
+  });
+  symmetryHelperMesh = new THREE.Mesh(geo, mat);
+  symmetryHelperMesh.position.copy(center);
+  // Rotate plane to face X axis (sagittal plane = YZ plane)
+  symmetryHelperMesh.rotation.y = Math.PI / 2;
+  scene.add(symmetryHelperMesh);
+}
+
+// --- Heatmap (Deviation Coloring) ---
+function toggleHeatmap() {
+  if (!currentModel) { setStatus3d('Загрузите модель.'); return; }
+
+  if (heatmapActive) {
+    // Restore original materials
+    currentModel.traverse(c => {
+      if (!c.isMesh) return;
+      const orig = heatmapMaterials.get(c.uuid);
+      if (orig) c.material = orig;
+    });
+    heatmapMaterials.clear();
+    heatmapActive = false;
+    document.getElementById('heatmapLegend').style.display = 'none';
+    setStatus3d('Тепловая карта выключена.');
+    return;
+  }
+
+  setStatus3d('Построение тепловой карты...');
+
+  const meshes = [];
+  currentModel.traverse(c => { if (c.isMesh) meshes.push(c); });
+  if (meshes.length === 0) return;
+
+  // Use bbox center as symmetry plane
+  const bbox = new THREE.Box3().setFromObject(currentModel);
+  const center = bbox.getCenter(new THREE.Vector3());
+  const size = bbox.getSize(new THREE.Vector3());
+
+  // Max deviation for color scale
+  const s = scale3dMMperUnit ?? 1;
+  const maxDevMM = 5.0; // 5mm = full red
+  const maxDevUnits = maxDevMM / s;
+
+  for (const mesh of meshes) {
+    mesh.updateWorldMatrix(true, false);
+    const geo = mesh.geometry;
+    const pos = geo.attributes.position;
+
+    // Save original material
+    heatmapMaterials.set(mesh.uuid, mesh.material);
+
+    // Create per-vertex colors
+    const colors = new Float32Array(pos.count * 3);
+
+    // Collect all mirrored vertices for this mesh
+    const worldPts = [];
+    for (let i = 0; i < pos.count; i++) {
+      worldPts.push(new THREE.Vector3().fromBufferAttribute(pos, i).applyMatrix4(mesh.matrixWorld));
+    }
+
+    for (let i = 0; i < pos.count; i++) {
+      const p = worldPts[i];
+      // Mirror across X=center.x
+      const mirrored = new THREE.Vector3(2 * center.x - p.x, p.y, p.z);
+
+      // Find closest point (simple brute-force on same mesh, sample for speed)
+      let minDist = Infinity;
+      const step = Math.max(1, Math.floor(pos.count / 3000));
+      for (let j = 0; j < pos.count; j += step) {
+        const d = mirrored.distanceTo(worldPts[j]);
+        if (d < minDist) minDist = d;
+      }
+
+      // Map deviation to color: green → yellow → red
+      const t = Math.min(minDist / maxDevUnits, 1.0);
+      let r, g, b;
+      if (t < 0.5) {
+        // Green to Yellow
+        const tt = t * 2;
+        r = tt; g = 1.0; b = 0;
+      } else {
+        // Yellow to Red
+        const tt = (t - 0.5) * 2;
+        r = 1.0; g = 1.0 - tt; b = 0;
+      }
+      colors[i * 3] = r;
+      colors[i * 3 + 1] = g;
+      colors[i * 3 + 2] = b;
+    }
+
+    geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+    // Create material with vertex colors
+    mesh.material = new THREE.MeshStandardMaterial({
+      vertexColors: true,
+      roughness: 0.6,
+      metalness: 0.1,
+      side: THREE.DoubleSide
+    });
+  }
+
+  heatmapActive = true;
+  document.getElementById('heatmapLegend').style.display = 'block';
+  document.getElementById('heatmapMaxLabel').textContent = `${maxDevMM} мм`;
+  setStatus3d('Тепловая карта: отклонение от зеркальной симметрии (0=зелёный, 5мм=красный)');
+}
+
+// --- Operation Templates ---
+const OPERATION_TEMPLATES = {
+  rhinoplasty: {
+    name: 'Ринопластика',
+    measurements: [
+      { type: 'distance', label: 'Длина носа', desc: 'Nasion → Tip' },
+      { type: 'distance', label: 'Ширина носа', desc: 'Alar R → Alar L' },
+      { type: 'distance', label: 'Проекция кончика', desc: 'Alar base → Tip' },
+      { type: 'angle', label: 'Назолабиальный угол', desc: 'Columella-Lip-Subnasale' },
+      { type: 'angle', label: 'Назофронтальный угол', desc: 'Glabella-Nasion-Dorsum' },
+      { type: 'distance', label: 'Отклонение от средней линии', desc: 'Tip → Mid-sagittal' },
+    ]
+  },
+  blepharoplasty: {
+    name: 'Блефаропластика',
+    measurements: [
+      { type: 'distance', label: 'Длина глазной щели (R)', desc: 'Медиальный → латеральный угол правого глаза' },
+      { type: 'distance', label: 'Длина глазной щели (L)', desc: 'Медиальный → латеральный угол левого глаза' },
+      { type: 'distance', label: 'MRD1 (R)', desc: 'Верх. край зрачка → верх. веко' },
+      { type: 'distance', label: 'MRD1 (L)', desc: 'Верх. край зрачка → верх. веко' },
+      { type: 'distance', label: 'Межзрачковое расстояние', desc: 'Зрачок R → Зрачок L' },
+    ]
+  },
+  facelift: {
+    name: 'Фейслифтинг',
+    measurements: [
+      { type: 'distance', label: 'Ширина лица (скулы)', desc: 'Zygoma R → Zygoma L' },
+      { type: 'distance', label: 'Ширина ниж. челюсти', desc: 'Gonion R → Gonion L' },
+      { type: 'distance', label: 'Высота лица', desc: 'Trichion → Menton' },
+      { type: 'distance', label: 'Высота средней трети', desc: 'Glabella → Subnasale' },
+      { type: 'distance', label: 'Высота нижней трети', desc: 'Subnasale → Menton' },
+      { type: 'vector', label: 'Вектор подтяжки (R)', desc: 'Направление SMAS-подтяжки справа' },
+      { type: 'vector', label: 'Вектор подтяжки (L)', desc: 'Направление SMAS-подтяжки слева' },
+    ]
+  },
+  genioplasty: {
+    name: 'Гениопластика',
+    measurements: [
+      { type: 'distance', label: 'Проекция подбородка', desc: 'Subnasale → Pogonion (горизонт.)' },
+      { type: 'distance', label: 'Высота подбородка', desc: 'Labrale inf. → Menton' },
+      { type: 'angle', label: 'Цервико-ментальный угол', desc: 'Угол шея-подбородок' },
+      { type: 'distance', label: 'Отклонение подбородка', desc: 'Menton → Mid-sagittal' },
+    ]
+  },
+  otoplasty: {
+    name: 'Отопластика',
+    measurements: [
+      { type: 'distance', label: 'Ушная раковина (R)', desc: 'Длина правого уха' },
+      { type: 'distance', label: 'Ушная раковина (L)', desc: 'Длина левого уха' },
+      { type: 'distance', label: 'Отстояние (R)', desc: 'Helix R → Mastoid R' },
+      { type: 'distance', label: 'Отстояние (L)', desc: 'Helix L → Mastoid L' },
+      { type: 'angle', label: 'Ауриколоцефальный угол (R)', desc: 'Угол правого уха к черепу' },
+      { type: 'angle', label: 'Ауриколоцефальный угол (L)', desc: 'Угол левого уха к черепу' },
+    ]
+  }
+};
+
+function applyOperationTemplate() {
+  const sel = document.getElementById('operationTemplate');
+  const templateKey = sel.value;
+  if (!templateKey) return;
+
+  const template = OPERATION_TEMPLATES[templateKey];
+  if (!template) return;
+
+  const info = document.getElementById('templateInfo');
+
+  // Add measurements as plan items with descriptions
+  let added = 0;
+  for (const m of template.measurements) {
+    // Check if already exists by label
+    const exists = plan3dItems.some(it => it.label === m.label);
+    if (exists) continue;
+
+    const item = {
+      id: nextId3d(),
+      type: m.type,
+      label: m.label,
+      points: [],
+      value: null,
+      deg: null,
+      note: m.desc
+    };
+    plan3dItems.push(item);
+    added++;
+  }
+
+  render3dPlanList();
+  save3dProject();
+  sel.value = '';
+
+  if (info) {
+    info.innerHTML = `
+      <b>${template.name}</b>: добавлено ${added} измерений.<br>
+      <span style="color:var(--text-muted);font-size:11px">Выберите элемент из списка → нажмите на модель для размещения точек.</span>
+    `;
+  }
+
+  setStatus3d(`Шаблон «${template.name}»: ${added} измерений добавлено. Кликните элемент в плане → расставьте точки.`);
+}
 
 // ==================== MESH CLEANUP (PHASE 2) ====================
 let meshCleanupMode = null; // 'brush' | 'lasso' | null
