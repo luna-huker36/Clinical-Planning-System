@@ -2908,3 +2908,381 @@ window._3d = {
     return hits.length > 0 ? hits[0].point.clone() : null;
   }
 };
+
+// ==================== MESH CLEANUP (PHASE 2) ====================
+let meshCleanupMode = null; // 'brush' | 'lasso' | null
+let brushSize = 25; // screen pixels
+let meshEditHistory = []; // stack of {mesh, deletedIndices[]}
+let lassoPoints = []; // screen-space points for lasso
+let isErasing = false;
+let brushCircle = null; // visual brush cursor
+
+function initMeshCleanup() {
+  const btnBrush = document.getElementById('btn3dBrushErase');
+  const btnLasso = document.getElementById('btn3dLassoErase');
+  const btnUndo = document.getElementById('btn3dUndoErase');
+  const btnReset = document.getElementById('btn3dResetMesh');
+  const brushRange = document.getElementById('brushSizeRange');
+  const brushLabel = document.getElementById('brushSizeLabel');
+  const info = document.getElementById('meshCleanupInfo');
+
+  if (!btnBrush) return;
+
+  btnBrush.addEventListener('click', () => {
+    if (meshCleanupMode === 'brush') { deactivateCleanup(); return; }
+    activateCleanup('brush');
+  });
+
+  btnLasso.addEventListener('click', () => {
+    if (meshCleanupMode === 'lasso') { deactivateCleanup(); return; }
+    activateCleanup('lasso');
+  });
+
+  btnUndo.addEventListener('click', undoMeshEdit);
+  btnReset.addEventListener('click', resetMeshEdits);
+
+  brushRange.addEventListener('input', () => {
+    brushSize = parseInt(brushRange.value);
+    brushLabel.textContent = brushSize;
+    if (brushCircle) {
+      brushCircle.style.width = brushSize * 2 + 'px';
+      brushCircle.style.height = brushSize * 2 + 'px';
+    }
+  });
+}
+
+function activateCleanup(mode) {
+  meshCleanupMode = mode;
+  tool3dMode = null; // disable other tools
+  controls.enabled = false;
+
+  const btnBrush = document.getElementById('btn3dBrushErase');
+  const btnLasso = document.getElementById('btn3dLassoErase');
+  const info = document.getElementById('meshCleanupInfo');
+
+  btnBrush.classList.toggle('active', mode === 'brush');
+  btnLasso.classList.toggle('active', mode === 'lasso');
+
+  if (mode === 'brush') {
+    info.textContent = 'Зажмите ЛКМ и рисуйте по модели для удаления треугольников.';
+    createBrushCursor();
+  } else {
+    info.textContent = 'Обведите область для удаления. ЛКМ = точки, двойной клик = замкнуть.';
+    removeBrushCursor();
+  }
+
+  const container = document.getElementById('canvas3d-container');
+  container.style.cursor = mode === 'brush' ? 'none' : 'crosshair';
+}
+
+function deactivateCleanup() {
+  meshCleanupMode = null;
+  controls.enabled = true;
+  isErasing = false;
+  lassoPoints = [];
+
+  const btnBrush = document.getElementById('btn3dBrushErase');
+  const btnLasso = document.getElementById('btn3dLassoErase');
+  const info = document.getElementById('meshCleanupInfo');
+
+  if (btnBrush) btnBrush.classList.remove('active');
+  if (btnLasso) btnLasso.classList.remove('active');
+  if (info) info.textContent = 'Выберите инструмент и рисуйте на модели для удаления шума.';
+
+  removeBrushCursor();
+  const container = document.getElementById('canvas3d-container');
+  if (container) container.style.cursor = '';
+}
+
+function createBrushCursor() {
+  removeBrushCursor();
+  brushCircle = document.createElement('div');
+  brushCircle.id = 'brushCursor';
+  brushCircle.style.cssText = `
+    position: fixed; pointer-events: none; z-index: 9999;
+    width: ${brushSize * 2}px; height: ${brushSize * 2}px;
+    border: 2px solid rgba(255,80,80,0.8); border-radius: 50%;
+    transform: translate(-50%, -50%); display: none;
+  `;
+  document.body.appendChild(brushCircle);
+}
+
+function removeBrushCursor() {
+  if (brushCircle) { brushCircle.remove(); brushCircle = null; }
+}
+
+// Erase triangles near a screen-space point
+function eraseAtScreenPoint(e) {
+  if (!currentModel) return;
+  const container = document.getElementById('canvas3d-container');
+  const rect = container.getBoundingClientRect();
+
+  // Raycast to find intersection
+  mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+  mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+  raycaster.setFromCamera(mouse, camera);
+
+  const meshes = [];
+  currentModel.traverse(c => { if (c.isMesh) meshes.push(c); });
+  const hits = raycaster.intersectObjects(meshes, false);
+  if (hits.length === 0) return;
+
+  const hit = hits[0];
+  const mesh = hit.object;
+  const hitPoint = hit.point;
+
+  // Calculate world-space brush radius from screen pixels
+  const camDist = camera.position.distanceTo(hitPoint);
+  const fovRad = camera.fov * Math.PI / 180;
+  const screenH = rect.height;
+  const pixelSize = (2 * camDist * Math.tan(fovRad / 2)) / screenH;
+  const worldRadius = brushSize * pixelSize;
+
+  // Find and delete triangles within radius
+  const geo = mesh.geometry;
+  const pos = geo.attributes.position;
+  const idx = geo.index;
+  const triCount = idx ? idx.count / 3 : pos.count / 3;
+
+  // Transform hit point to local space
+  const invMatrix = new THREE.Matrix4().copy(mesh.matrixWorld).invert();
+  const localHit = hitPoint.clone().applyMatrix4(invMatrix);
+  const localRadiusSq = worldRadius * worldRadius;
+
+  const deletedIndices = [];
+  const va = new THREE.Vector3(), vb = new THREE.Vector3(), vc = new THREE.Vector3();
+  const center = new THREE.Vector3();
+
+  for (let i = 0; i < triCount; i++) {
+    const ai = idx ? idx.getX(i * 3) : i * 3;
+    const bi = idx ? idx.getX(i * 3 + 1) : i * 3 + 1;
+    const ci = idx ? idx.getX(i * 3 + 2) : i * 3 + 2;
+
+    va.fromBufferAttribute(pos, ai);
+    vb.fromBufferAttribute(pos, bi);
+    vc.fromBufferAttribute(pos, ci);
+    center.copy(va).add(vb).add(vc).multiplyScalar(1/3);
+
+    if (center.distanceToSquared(localHit) < localRadiusSq) {
+      deletedIndices.push(i);
+    }
+  }
+
+  if (deletedIndices.length === 0) return;
+
+  // Delete by collapsing triangles to degenerate (set all verts to same point)
+  applyTriangleDeletion(mesh, deletedIndices);
+
+  // Save to history
+  meshEditHistory.push({ mesh, deletedIndices, type: 'erase' });
+  updateCleanupInfo();
+}
+
+function applyTriangleDeletion(mesh, triIndices) {
+  const geo = mesh.geometry;
+  const pos = geo.attributes.position;
+  const idx = geo.index;
+
+  for (const i of triIndices) {
+    if (idx) {
+      // For indexed geometry: set all three indices to the same vertex (degenerate)
+      const ai = idx.getX(i * 3);
+      idx.setX(i * 3, ai);
+      idx.setX(i * 3 + 1, ai);
+      idx.setX(i * 3 + 2, ai);
+    } else {
+      // For non-indexed: collapse triangle vertices to centroid (degenerate)
+      const base = i * 3;
+      const ax = pos.getX(base), ay = pos.getY(base), az = pos.getZ(base);
+      for (let v = 0; v < 3; v++) {
+        pos.setXYZ(base + v, ax, ay, az);
+      }
+    }
+  }
+
+  if (idx) idx.needsUpdate = true;
+  pos.needsUpdate = true;
+  geo.computeBoundingSphere();
+}
+
+function undoMeshEdit() {
+  if (meshEditHistory.length === 0) {
+    setStatus3d('Нечего отменять.');
+    return;
+  }
+
+  // To undo, we need to reload the original geometry
+  // Simplest approach: reload the model entirely
+  // Better approach: save original geometry data before first edit
+
+  // For now: restore from original by reloading
+  const lastModelUrl = document.querySelector('#modelSelect3d')?.value;
+  if (lastModelUrl) {
+    meshEditHistory = [];
+    // Trigger re-select to reload
+    const sel = document.querySelector('#modelSelect3d');
+    if (sel) {
+      sel.dispatchEvent(new Event('change', { bubbles: true }));
+      setStatus3d('Модель перезагружена. Все правки отменены.');
+    }
+  }
+  updateCleanupInfo();
+}
+
+function resetMeshEdits() {
+  undoMeshEdit();
+}
+
+function updateCleanupInfo() {
+  const info = document.getElementById('meshCleanupInfo');
+  if (!info) return;
+  const totalDeleted = meshEditHistory.reduce((s, h) => s + h.deletedIndices.length, 0);
+  if (totalDeleted > 0) {
+    info.textContent = `Удалено ${totalDeleted} треугольников (${meshEditHistory.length} действий). Пересчитайте объём.`;
+  }
+}
+
+// Lasso erase: collect screen points, then find all triangles inside polygon
+function eraseInsideLasso() {
+  if (lassoPoints.length < 3 || !currentModel) return;
+
+  const container = document.getElementById('canvas3d-container');
+  const rect = container.getBoundingClientRect();
+
+  const meshes = [];
+  currentModel.traverse(c => { if (c.isMesh) meshes.push(c); });
+
+  for (const mesh of meshes) {
+    const geo = mesh.geometry;
+    const pos = geo.attributes.position;
+    const idx = geo.index;
+    const triCount = idx ? idx.count / 3 : pos.count / 3;
+
+    mesh.updateWorldMatrix(true, false);
+    const deletedIndices = [];
+    const v = new THREE.Vector3();
+
+    for (let i = 0; i < triCount; i++) {
+      const ai = idx ? idx.getX(i * 3) : i * 3;
+      const bi = idx ? idx.getX(i * 3 + 1) : i * 3 + 1;
+      const ci = idx ? idx.getX(i * 3 + 2) : i * 3 + 2;
+
+      // Project triangle center to screen
+      v.fromBufferAttribute(pos, ai);
+      const va = v.clone().applyMatrix4(mesh.matrixWorld);
+      v.fromBufferAttribute(pos, bi);
+      const vb = v.clone().applyMatrix4(mesh.matrixWorld);
+      v.fromBufferAttribute(pos, ci);
+      const vcc = v.clone().applyMatrix4(mesh.matrixWorld);
+
+      const center = va.add(vb).add(vcc).multiplyScalar(1/3);
+      center.project(camera);
+
+      const sx = (center.x * 0.5 + 0.5) * rect.width + rect.left;
+      const sy = (-center.y * 0.5 + 0.5) * rect.height + rect.top;
+
+      if (center.z > 0 && center.z < 1 && pointInPolygon(sx, sy, lassoPoints)) {
+        deletedIndices.push(i);
+      }
+    }
+
+    if (deletedIndices.length > 0) {
+      applyTriangleDeletion(mesh, deletedIndices);
+      meshEditHistory.push({ mesh, deletedIndices, type: 'lasso' });
+    }
+  }
+
+  lassoPoints = [];
+  removeLassoOverlay();
+  updateCleanupInfo();
+}
+
+function pointInPolygon(x, y, polygon) {
+  let inside = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const xi = polygon[i].x, yi = polygon[i].y;
+    const xj = polygon[j].x, yj = polygon[j].y;
+    if (((yi > y) !== (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi)) {
+      inside = !inside;
+    }
+  }
+  return inside;
+}
+
+// Lasso visual overlay
+let lassoSvg = null;
+
+function updateLassoOverlay() {
+  if (!lassoSvg) {
+    lassoSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    lassoSvg.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:9998';
+    document.body.appendChild(lassoSvg);
+  }
+  if (lassoPoints.length < 2) return;
+  const pts = lassoPoints.map(p => `${p.x},${p.y}`).join(' ');
+  lassoSvg.innerHTML = `<polyline points="${pts}" fill="rgba(255,80,80,0.15)" stroke="rgba(255,80,80,0.8)" stroke-width="2" stroke-dasharray="6,3"/>`;
+}
+
+function removeLassoOverlay() {
+  if (lassoSvg) { lassoSvg.remove(); lassoSvg = null; }
+}
+
+// Wire up mouse events for mesh cleanup
+function setupCleanupEvents() {
+  const container = document.getElementById('canvas3d-container');
+  if (!container) return;
+
+  container.addEventListener('pointerdown', (e) => {
+    if (!meshCleanupMode || e.button !== 0) return;
+
+    if (meshCleanupMode === 'brush') {
+      isErasing = true;
+      controls.enabled = false;
+      eraseAtScreenPoint(e);
+    } else if (meshCleanupMode === 'lasso') {
+      lassoPoints.push({ x: e.clientX, y: e.clientY });
+      updateLassoOverlay();
+    }
+  });
+
+  container.addEventListener('pointermove', (e) => {
+    if (meshCleanupMode === 'brush') {
+      if (brushCircle) {
+        brushCircle.style.display = 'block';
+        brushCircle.style.left = e.clientX + 'px';
+        brushCircle.style.top = e.clientY + 'px';
+      }
+      if (isErasing) {
+        eraseAtScreenPoint(e);
+      }
+    }
+  });
+
+  container.addEventListener('pointerup', (e) => {
+    if (meshCleanupMode === 'brush') {
+      isErasing = false;
+    }
+  });
+
+  container.addEventListener('dblclick', (e) => {
+    if (meshCleanupMode === 'lasso' && lassoPoints.length >= 3) {
+      eraseInsideLasso();
+      setStatus3d(`Лассо: удалено. Пересчитайте объём.`);
+    }
+  });
+
+  // ESC to cancel
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && meshCleanupMode) {
+      deactivateCleanup();
+    }
+  });
+}
+
+// Initialize on load
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', () => { initMeshCleanup(); setupCleanupEvents(); });
+} else {
+  initMeshCleanup();
+  setupCleanupEvents();
+}

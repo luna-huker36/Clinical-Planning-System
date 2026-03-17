@@ -179,6 +179,7 @@ textarea { resize: vertical; min-height: 60px; }
 
 .btn-accent { background: var(--accent-light); color: var(--accent); border-color: transparent; }
 .btn-accent:hover { background: var(--accent); color: #fff; }
+.btn-accent.active { background: #ef4444; color: #fff; border-color: #ef4444; box-shadow: 0 0 0 3px rgba(239,68,68,0.3); }
 
 .btn-danger { background: var(--danger-light); color: var(--danger); border-color: transparent; }
 .btn-danger:hover { background: var(--danger); color: #fff; }

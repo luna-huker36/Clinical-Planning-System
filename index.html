@@ -342,6 +342,22 @@
         <div id="neckClipInfo" class="hint" style="margin-top:8px">Объём считается по всей модели.</div>
       </div>
 
+      <div class="card" id="meshCleanupCard">
+        <div class="card-title">🧹 Очистка меша</div>
+        <div class="form-row" style="align-items:center;gap:6px;flex-wrap:wrap">
+          <button class="btn btn-accent" id="btn3dBrushErase">🖌 Стирка</button>
+          <button class="btn btn-accent" id="btn3dLassoErase">⭕ Лассо</button>
+          <button class="btn btn-sm" id="btn3dUndoErase">↩ Отмена</button>
+          <button class="btn btn-sm" id="btn3dResetMesh">🔄 Сброс</button>
+        </div>
+        <div class="form-row" style="align-items:center;gap:6px;margin-top:6px">
+          <label style="font-size:11px;font-weight:600">РАЗМЕР</label>
+          <input type="range" id="brushSizeRange" min="5" max="80" value="25" style="flex:1">
+          <span id="brushSizeLabel" style="font-size:11px">25</span>
+        </div>
+        <div id="meshCleanupInfo" class="hint" style="margin-top:8px">Выберите инструмент и рисуйте на модели для удаления шума.</div>
+      </div>
+
       <!-- Plan -->
       <div class="card">
         <div class="card-title">📋 План операции</div>
@@ -582,7 +598,7 @@
 <script src="./assets/js/11-persistence-init.js"></script>
 
 <!-- ========== APP: tabs + 3D ========== -->
-<script type="module" src="./assets/js/app.js?v=44"></script>
+<script type="module" src="./assets/js/app.js?v=45"></script>
 
 </body>
 </html>
