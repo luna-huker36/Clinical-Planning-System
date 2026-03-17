@@ -1985,34 +1985,81 @@ async function computeMeshVolume() {
     gwnVolume = await runGWNAsync(pendingGWN);
   }
 
-  // Pick best volume: compare signed, slice, GWN; prefer slice for open meshes
+  // === Coverage-based volume (uses ALL triangles, no component filter) ===
+  let coverageVolume = 0;
+  let coverageResult = null;
+  {
+    setStatus3d('Анализ покрытия (все треугольники)...');
+    await new Promise(r => setTimeout(r, 30));
+    try {
+      const meshes = [];
+      currentModel.traverse(c => { if (c.isMesh) meshes.push(c); });
+      const worldVerts = [];
+      const allCoverageTris = [];
+      let vertOff = 0;
+      for (const mesh of meshes) {
+        mesh.updateWorldMatrix(true, false);
+        const geo = mesh.geometry;
+        const pos = geo.attributes.position;
+        const idx = geo.index;
+        for (let v = 0; v < pos.count; v++) {
+          worldVerts.push(new THREE.Vector3().fromBufferAttribute(pos, v).applyMatrix4(mesh.matrixWorld));
+        }
+        const tc = idx ? idx.count / 3 : pos.count / 3;
+        for (let i = 0; i < tc; i++) {
+          const ai = (idx ? idx.getX(i*3) : i*3) + vertOff;
+          const bi = (idx ? idx.getX(i*3+1) : i*3+1) + vertOff;
+          const ci = (idx ? idx.getX(i*3+2) : i*3+2) + vertOff;
+          if (ai === bi || bi === ci || ci === ai) continue;
+          allCoverageTris.push([ai, bi, ci]);
+        }
+        vertOff += pos.count;
+      }
+      const covBB = new THREE.Box3();
+      for (const v of worldVerts) covBB.expandByPoint(v);
+
+      const coverage = analyzeMeshCoverage({ vertices: worldVerts, triangles: allCoverageTris, bbox: covBB }, 200);
+      if (coverage) {
+        coverageResult = estimateCorrectedVolume(coverage, 0);
+        coverageVolume = coverageResult.corrected;
+        console.log(`[VOL] coverage: avgCov=${(coverageResult.avgCoverage*100).toFixed(0)}%, corrVol=${coverageVolume.toFixed(6)}`);
+      }
+    } catch (e) {
+      console.warn('[VOL] coverage analysis failed:', e);
+    }
+  }
+
+  // Pick best volume: compare signed, slice, GWN, coverage
   const signedVol = stats.volumeUnits;
   const hullVol = stats.convexHullVolume || Infinity;
   const candidates = [
     { method: 'signed', vol: signedVol },
     { method: 'slice', vol: sliceVolume },
-    { method: 'gwn', vol: gwnVolume }
+    { method: 'gwn', vol: gwnVolume },
+    { method: 'coverage', vol: coverageVolume }
   ].filter(c => {
       if (c.vol <= 0) return false;
-      // For slice method on fragmented meshes, hull is from filtered data and too small
-      // Use bbox ellipsoid as upper bound instead
       if (c.method === 'slice' && pendingSliceData) {
-        // Use bbox volume as upper bound (not ellipsoid — too strict for non-spherical objects)
         const sb = pendingSliceData.bbox;
         const sz = sb.getSize(new THREE.Vector3());
         const bboxVol = sz.x * sz.y * sz.z;
         return c.vol <= bboxVol * 1.05;
       }
+      if (c.method === 'coverage') {
+        // Coverage uses bbox implicitly, sanity check against bbox volume
+        const bv = bboxSize.x * bboxSize.y * bboxSize.z;
+        return c.vol <= bv * 1.05 && c.vol > 0;
+      }
       return c.vol <= hullVol * 1.05;
     });
 
   if (candidates.length > 0) {
-    // For open meshes prefer slice; for closed prefer signed
     const isOpen = stats.boundaryEdges > 0;
     let best;
     if (isOpen) {
-      // Prefer slice, then GWN, then signed
-      best = candidates.find(c => c.method === 'slice')
+      // For open/fragmented meshes: prefer coverage (uses all tris + ellipsoid correction)
+      best = candidates.find(c => c.method === 'coverage')
+          || candidates.find(c => c.method === 'slice')
           || candidates.find(c => c.method === 'gwn')
           || candidates[0];
     } else {
@@ -2020,7 +2067,8 @@ async function computeMeshVolume() {
     }
     stats.volumeUnits = best.vol;
     stats.volumeMethod = best.method;
-    console.log(`[VOL] method selection: signed=${signedVol.toFixed(6)}, slice=${sliceVolume.toFixed(6)}, gwn=${gwnVolume.toFixed(6)} → ${best.method}=${best.vol.toFixed(6)}, hull=${hullVol === Infinity ? 'N/A' : hullVol.toFixed(6)}`);
+    if (coverageResult) stats.coverageAvg = coverageResult.avgCoverage;
+    console.log(`[VOL] method selection: signed=${signedVol.toFixed(6)}, slice=${sliceVolume.toFixed(6)}, gwn=${gwnVolume.toFixed(6)}, coverage=${coverageVolume.toFixed(6)} → ${best.method}=${best.vol.toFixed(6)}, hull=${hullVol === Infinity ? 'N/A' : hullVol.toFixed(6)}`);
   }
 
   if (stats.volumeUnits <= 0) {
@@ -2050,9 +2098,12 @@ async function computeMeshVolume() {
   const hullText = stats.convexHullVolume > 0
     ? ` | hull: ${formatVolumeUnits(stats.convexHullVolume, false)}`
     : '';
+  const covText = stats.coverageAvg != null
+    ? ` | покрытие: ${(stats.coverageAvg * 100).toFixed(0)}%`
+    : '';
   upsertVolumeItem(stats.volumeUnits, quality, stats);
   updateVolumeHealthUI();
-  setStatus3d(`Объём: ${valueText}${methodLabel}${hullText} | bbox: ${bW}×${bH}×${bD} мм | ${topologyText}${clipExtra}${extra}`);
+  setStatus3d(`Объём: ${valueText}${methodLabel}${hullText}${covText} | bbox: ${bW}×${bH}×${bD} мм | ${topologyText}${clipExtra}${extra}`);
   render3dPlanList();
   update3dSelectedInfo();
   save3dProject();
