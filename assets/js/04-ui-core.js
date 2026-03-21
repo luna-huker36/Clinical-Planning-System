@@ -1,6 +1,4 @@
-/** ================================
- *  UI / Mode
- *  ================================ */
+
 function setStatus(msg){ statusEl.textContent = msg; }
 
 function setZoom(z){
@@ -98,7 +96,7 @@ function computePlanItem(type, label, p1, p2, p3=null){
 
   let deg = null;
   if(type === "vector" || type === "measure" || type === "tilt"){
-    deg = angleDeg(p1, p2); // orientation relative to horizontal
+    deg = angleDeg(p1, p2);
   } else if(type === "angle3"){
     if(p3){
       const v1x = p1.x - p2.x, v1y = p1.y - p2.y;
@@ -118,8 +116,6 @@ function computePlanItem(type, label, p1, p2, p3=null){
 function renderPlanList(){
   const el = document.getElementById("planList");
   const parts = [];
-
-  // Plan items
   if(planItems && planItems.length){
     parts.push(planItems.map(it=>{
       const mmTxt = (scaleMMperPx && it.mm!=null) ? (it.mm.toFixed(2)+' мм (' + it.px.toFixed(1)+' px)') : (it.px.toFixed(1)+' px');
@@ -136,8 +132,6 @@ function renderPlanList(){
       </div>`;
     }).join(""));
   }
-
-  // Zones
   if(planZones && planZones.length){
     const zHtml = planZones.map(z=>{
       const areaPx2 = polygonAreaPx2(z.points);
@@ -198,7 +192,6 @@ function isSelectedPlanId(id){ return selectedPlan && selectedPlan.kind==="plan"
 function isSelectedZoneId(id){ return selectedPlan && selectedPlan.kind==="zone" && selectedPlan.id===id; }
 
 function clearPlanForNewPhoto(){
-  // Clears overlays so previous patient's plan doesn't appear on a new photo
   planItems = [];
   planZones = [];
   selectedPlan = null;
@@ -244,8 +237,6 @@ function updateSelectedInfo(){
 function computeAsymmetry(){
   const box = document.getElementById("asymmetryBox");
   if(!box){ return; }
-
-  // Helper: normalize label without side suffix
   function normLabel(lbl){
     return String(lbl||"").replace(/\s*\((R|L)\)\s*$/i,"").replace(/\s*•\s*(R|L)\s*$/i,"").trim();
   }
@@ -253,13 +244,10 @@ function computeAsymmetry(){
     const s = String(lbl||"");
     if(/\(R\)\s*$/i.test(s) || /\s•\s*.*\(R\)/i.test(s) || /\s\(R\)/i.test(s) || /\s\bR\b\)?\s*$/i.test(s)) return "R";
     if(/\(L\)\s*$/i.test(s) || /\s\bL\b\)?\s*$/i.test(s)) return "L";
-    // also handle ' (R)' in our presets using " (R)" or " (L)" within label
     if(/\(R\)/i.test(s)) return "R";
     if(/\(L\)/i.test(s)) return "L";
     return null;
   }
-
-  // Vectors/items asymmetry: pair by normalized label and type among vector/guide/tilt/measure
   const pairs = {};
   for(const it of (planItems||[])){
     const side = sideFromLabel(it.label);
@@ -283,8 +271,6 @@ function computeAsymmetry(){
     if(degDiff!=null) parts.push(`Δугол ${degDiff.toFixed(1)}°`);
     if(parts.length) lines.push(`<div>• <b>${escapeHtml(name)}</b>: ${parts.join(" • ")}</div>`);
   }
-
-  // Zones asymmetry: pair by normalized label removing side markers (R/L)
   const zpairs = {};
   for(const z of (planZones||[])){
     const side = sideFromLabel(z.label);

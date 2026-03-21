@@ -1,6 +1,4 @@
-/** ================================
- *  File loading (image + DICOM meta)
- *  ================================ */
+
 document.getElementById("imageLoader").addEventListener("change", (e)=>{
   const file = e.target.files?.[0];
   if(!file) return;
@@ -33,7 +31,6 @@ document.getElementById("imageLoader").addEventListener("change", (e)=>{
 });
 
 photo.onload = ()=>{
-  // keep aspect ratio via object-fit:contain; overlay matches viewport in CSS pixels
   resizeOverlay();
   redraw();
     clearPlanForNewPhoto();

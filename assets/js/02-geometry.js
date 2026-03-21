@@ -1,8 +1,4 @@
-/** ================================
- *  Geometry helpers (NO distortion)
- *  We store points in IMAGE pixel coords (naturalWidth/naturalHeight).
- *  Display uses object-fit: contain within viewport; we map both ways.
- *  ================================ */
+
 function getFit(){
   const vw = overlay.clientWidth;
   const vh = overlay.clientHeight;
@@ -21,10 +17,8 @@ function getFit(){
 function clientToImage(cx, cy){
   const fit = getFit();
   if(!fit) return null;
-  // account for zoom transform
   const x = cx / zoom;
   const y = cy / zoom;
-  // inside fitted image box?
   const ix = (x - fit.offsetX) / fit.scale;
   const iy = (y - fit.offsetY) / fit.scale;
   return { x: ix, y: iy };
@@ -33,7 +27,6 @@ function clientToImage(cx, cy){
 function imageToClient(ix, iy){
   const fit = getFit();
   if(!fit) return null;
-  // NOTE: we draw in unzoomed canvas coords; CSS transform scales the canvas visually
   const x = (fit.offsetX + ix * fit.scale);
   const y = (fit.offsetY + iy * fit.scale);
   return { x, y };
@@ -50,7 +43,6 @@ function distPx(p1, p2){
 }
 
 function lineFromPoints(p1, p2){
-  // returns ax + by + c = 0
   const a = p2.y - p1.y;
   const b = p1.x - p2.x;
   const c = -(a*p1.x + b*p1.y);
@@ -58,7 +50,6 @@ function lineFromPoints(p1, p2){
   return { a: a/norm, b: b/norm, c: c/norm, p1, p2 };
 }
 function signedDistanceToLine(line, p){
-  // since normalized, distance in pixels
   return line.a*p.x + line.b*p.y + line.c;
 }
 function angleDeg(p1,p2){
@@ -66,7 +57,6 @@ function angleDeg(p1,p2){
 }
 
 function polygonAreaPx2(pts){
-  // Shoelace formula, absolute area in px^2
   let a = 0;
   for(let i=0;i<pts.length;i++){
     const j = (i+1)%pts.length;
@@ -75,7 +65,6 @@ function polygonAreaPx2(pts){
   return Math.abs(a)/2;
 }
 function polygonCentroid(pts){
-  // centroid for non-self-intersecting polygon
   let cx=0, cy=0, a=0;
   for(let i=0;i<pts.length;i++){
     const j=(i+1)%pts.length;
@@ -86,7 +75,6 @@ function polygonCentroid(pts){
   }
   a = a/2;
   if(Math.abs(a) < 1e-6){
-    // fallback average
     const n = pts.length || 1;
     return { x: pts.reduce((s,p)=>s+p.x,0)/n, y: pts.reduce((s,p)=>s+p.y,0)/n };
   }
@@ -95,7 +83,6 @@ function polygonCentroid(pts){
 }
 
 function pointToSegmentDist(px, py, ax, ay, bx, by){
-  // distance from point P to segment AB in canvas coords (already zoom-normalized)
   const vx = bx-ax, vy = by-ay;
   const wx = px-ax, wy = py-ay;
   const c1 = vx*wx + vy*wy;
@@ -108,7 +95,6 @@ function pointToSegmentDist(px, py, ax, ay, bx, by){
   return Math.hypot(px-projx, py-projy);
 }
 function pointInPolygon(pt, poly){
-  // Ray casting. pt and poly in image coords.
   let inside = false;
   for(let i=0, j=poly.length-1; i<poly.length; j=i++){
     const xi = poly[i].x, yi = poly[i].y;

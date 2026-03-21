@@ -1,6 +1,4 @@
-/** ================================
- *  Auto-save project (localStorage)
- *  ================================ */
+
 const LS_KEY = "pmas_ultimate_project_v2";
 
 function saveProject(){
@@ -22,7 +20,7 @@ function saveProject(){
       notes: document.getElementById("notes")?.value || ""
     };
     localStorage.setItem(LS_KEY, JSON.stringify(payload));
-  }catch(e){ /* ignore */ }
+  }catch(e){  }
 }
 
 function loadProject(){
@@ -53,7 +51,7 @@ function loadProject(){
       setStatus("Проект восстановлен. Если нужно — обновите калибровку.");
     }
     computeAndRender();
-  }catch(e){ /* ignore */ }
+  }catch(e){  }
 }
 
 document.getElementById("patientName").addEventListener("input", saveProject);
@@ -91,14 +89,10 @@ document.getElementById("btnApplyShift").addEventListener("click", ()=>{
     }
 
     const oldMM = (it.mm!=null ? it.mm : (it.px!=null ? mmFromPx(it.px) : null));
-
-    // Adjust p2 so that |p1->p2| == v mm along current direction
     const targetPx = v / scaleMMperPx;
     let dx = it.p2.x - it.p1.x;
     let dy = it.p2.y - it.p1.y;
     let cur = Math.hypot(dx,dy);
-
-    // If direction is undefined (points coincide), default to upward direction
     if(!isFinite(cur) || cur < 1e-3){
       dx = 0; dy = -1;
       cur = 1;
@@ -106,8 +100,6 @@ document.getElementById("btnApplyShift").addEventListener("click", ()=>{
 
     const ux = dx/cur, uy = dy/cur;
     it.p2 = clampPointToImage({ x: it.p1.x + ux*targetPx, y: it.p1.y + uy*targetPx });
-
-    // recompute
     it.px = distPx(it.p1, it.p2);
     it.mm = mmFromPx(it.px);
     if(it.type === "vector" || it.type === "tilt") it.deg = angleDeg(it.p1, it.p2);
@@ -120,7 +112,6 @@ document.getElementById("btnApplyShift").addEventListener("click", ()=>{
     if(!z || !z.points || z.points.length<3){ setStatus("Зона не найдена."); return; }
     const cen = polygonCentroid(z.points);
     if(!z.liftTo){
-      // create default liftTo above centroid
       z.liftTo = clampPointToImage({ x: cen.x, y: cen.y - 50 });
     }
 
@@ -208,7 +199,6 @@ document.getElementById("btnResetToBefore").addEventListener("click", resetToBef
 
 loadProject();
 renderPlanList();
-// restore before-compare UI
 try{
   const bb = document.getElementById('beforeBadge');
   const bt = document.getElementById('btnToggleBefore');

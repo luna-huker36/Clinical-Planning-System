@@ -1,6 +1,4 @@
-/** ================================
- *  Buttons
- *  ================================ */
+
 document.getElementById("btnCal").addEventListener("click", ()=>{
   planMode = null; planPending = []; aiPickPending = []; aiPickMode = false; document.getElementById("aiPickBadge").style.display="none";
   if(!photo.src){ setStatus("Сначала загрузите фото."); return; }
@@ -69,12 +67,8 @@ document.getElementById("btnClearPlan").addEventListener("click", ()=>{
   planItems = [];
   planZones = [];
   selectedPlan = null;
-
-  // clear compare mode
   beforeSnapshot = null;
   showBefore = false;
-
-  // clear any in-progress placement
   pendingPoints = [];
   planPending = [];
   aiPickPending = [];

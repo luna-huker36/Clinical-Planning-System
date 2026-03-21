@@ -1,6 +1,4 @@
-/** ================================
- *  AI landmarks (FaceMesh) — shows points on overlay
- *  ================================ */
+
 document.getElementById("btnAI").addEventListener("click", runAI);
 
 let faceModel = null;
@@ -13,14 +11,10 @@ async function ensureFaceModel(){
   if(typeof faceLandmarksDetection === "undefined"){
     throw new Error("face-landmarks-detection не загрузился");
   }
-
-  // Newer API: createDetector + SupportedModels.MediaPipeFaceMesh
   const model = faceLandmarksDetection.SupportedModels?.MediaPipeFaceMesh;
   if(!model){
     throw new Error("Нет SupportedModels.MediaPipeFaceMesh (обновите скрипт / проверьте CDN)");
   }
-
-  // Use MediaPipe runtime (fast + stable in browser)
   faceModel = await faceLandmarksDetection.createDetector(model, {
     runtime: "mediapipe",
     solutionPath: "https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4",
@@ -36,8 +30,6 @@ async function runAI(){
   try{
     setStatus("AI: загрузка детектора и поиск ориентиров… (нужен интернет)");
     const detector = await ensureFaceModel();
-
-    // Draw image into tmp canvas at native resolution
     const tmp = document.createElement("canvas");
     tmp.width = photo.naturalWidth;
     tmp.height = photo.naturalHeight;
@@ -51,8 +43,6 @@ async function runAI(){
       setStatus("AI: лицо не найдено. Попробуйте другое фото (фронтально, хорошее освещение).");
       return;
     }
-
-    // Landmarks: array of {x,y,z}
     const keypoints = faces[0].keypoints || faces[0].keypoints3D || [];
     lastAIKeypoints = keypoints;
     if(!keypoints.length){
@@ -61,14 +51,10 @@ async function runAI(){
       setStatus("AI: ориентиры не получены.");
       return;
     }
-
-    // Helper to pick by name when available
     function pickByName(name){
       const kp = keypoints.find(k => k.name === name);
       return kp ? { x: kp.x, y: kp.y, label: name } : null;
     }
-
-    // A small clinically useful-ish set (names depend on runtime; fallback to indices if missing)
     const picked = [];
     const byName = [
       "noseTip",
@@ -82,24 +68,19 @@ async function runAI(){
       const p = pickByName(n);
       if(p) picked.push(p);
     }
-
-    // Fallback: use first N points if names aren't present in this build
     if(picked.length < 4){
-      const idxs = [1, 33, 263, 152, 13, 14]; // FaceMesh-ish indices; approximate mapping
+      const idxs = [1, 33, 263, 152, 13, 14];
       for(const i of idxs){
         const kp = keypoints[i];
         if(kp) picked.push({ x: kp.x, y: kp.y, label: "p"+i });
       }
     }
-
-    // Deduplicate by near-equality
     const uniq = [];
     for(const p of picked){
       if(!uniq.some(u => Math.hypot(u.x-p.x,u.y-p.y) < 0.5)) uniq.push(p);
     }
 
     aiPoints = uniq;
-    // Build guides & metrics
     buildGuidesAndMetricsFromDetector(faces[0], keypoints);
     redraw();
     renderAiMetrics();
@@ -129,14 +110,10 @@ function pickKeypoint(keypoints, wantedNames, fallbackIndex){
 }
 
 function buildGuidesAndMetricsFromDetector(face, keypoints){
-  // Core anchor points (try by name, then by index fallback)
-  // Names vary by runtime; these are common in MediaPipe runtime.
   const leftEyeOuter  = pickKeypoint(keypoints, ["leftEyeOuter"], 263);
   const rightEyeOuter = pickKeypoint(keypoints, ["rightEyeOuter"], 33);
   const noseTip       = pickKeypoint(keypoints, ["noseTip"], 1);
   const chin          = pickKeypoint(keypoints, ["chin"], 152);
-
-  // Forehead/hairline proxy: use named "forehead" if present else choose minimum y among keypoints (top-most point)
   let topMost = null;
   for(const kp of keypoints){
     if(!kp || typeof kp.x!=="number" || typeof kp.y!=="number") continue;
@@ -148,54 +125,35 @@ function buildGuidesAndMetricsFromDetector(face, keypoints){
     : null);
 
   const subnasale = pickKeypoint(keypoints, ["noseBottom"], 2) || pickKeypoint(keypoints, ["noseTip"], 1);
-
-  // Build guides (in image coords)
   guides.eyeline = (leftEyeOuter && rightEyeOuter) ? { p1: rightEyeOuter, p2: leftEyeOuter } : null;
-
-  // Midline: through glabella (or mid-eyes) down to chin; fallback: noseTip->chin
   const midTop = glabella || noseTip || topMost;
   const midBottom = chin || noseTip;
   guides.midline = (midTop && midBottom) ? { p1: midTop, p2: midBottom } : null;
-
-  // Thirds (classic anthropometry): Trichion -> Glabella -> Subnasale -> Menton
   const topY = (trichionPoint && typeof trichionPoint.y === "number") ? trichionPoint.y : (topMost ? topMost.y : (glabella ? glabella.y - 120 : 0));
   const glabY = glabella ? glabella.y : (noseTip ? noseTip.y - 80 : topY + 120);
   const subY = subnasale ? subnasale.y : (noseTip ? noseTip.y + 60 : glabY + 120);
   const chinY = chin ? chin.y : (subY + 180);
 
   guides.thirds = { topY, glabellaY: glabY, subnasaleY: subY, chinY };
-
-  // Metrics
-  // Eye tilt
   let eyeTiltDeg = 0;
   if(leftEyeOuter && rightEyeOuter){
-    eyeTiltDeg = angleDeg(rightEyeOuter, leftEyeOuter); // horizontal ideal = 0
+    eyeTiltDeg = angleDeg(rightEyeOuter, leftEyeOuter);
   }
-
-  // Symmetry based on midline: compare signed distances of paired landmarks to midline
   let symScore = 0, eyesAsymMM = 0, noseOffsetMM = 0;
   if(guides.midline && scaleMMperPx){
     const line = lineFromPoints(guides.midline.p1, guides.midline.p2);
-
-    // Nose offset from midline
     if(noseTip){
       noseOffsetMM = Math.abs(signedDistanceToLine(line, noseTip)) * scaleMMperPx;
     }
-
-    // Eyes asymmetry: compare absolute distances for left/right outer eye
     if(leftEyeOuter && rightEyeOuter){
       const dL = Math.abs(signedDistanceToLine(line, leftEyeOuter));
       const dR = Math.abs(signedDistanceToLine(line, rightEyeOuter));
       eyesAsymMM = Math.abs(dL - dR) * scaleMMperPx;
     }
-
-    // Normalize asymmetry: use face width proxy = distance between eye outers in mm
     let faceW = (leftEyeOuter && rightEyeOuter) ? distPx(leftEyeOuter, rightEyeOuter) * scaleMMperPx : 60;
     const asymNorm = (eyesAsymMM + noseOffsetMM) / Math.max(faceW, 1);
-    symScore = Math.max(0, 100 - asymNorm * 220); // heuristic scaling
+    symScore = Math.max(0, 100 - asymNorm * 220);
   }
-
-  // Thirds proportions
   const upperPx = Math.max(1, glabY - topY);
   const middlePx = Math.max(1, subY - glabY);
   const lowerPx = Math.max(1, chinY - subY);
@@ -203,8 +161,6 @@ function buildGuidesAndMetricsFromDetector(face, keypoints){
   const upperRatio = upperPx / totalPx;
   const middleRatio = middlePx / totalPx;
   const lowerRatio = lowerPx / totalPx;
-
-  // Deviation from ideal 1/3 each
   const dev = Math.abs(upperRatio - 1/3) + Math.abs(middleRatio - 1/3) + Math.abs(lowerRatio - 1/3);
   const thirdsScore = Math.max(0, 100 - dev * 300);
 
@@ -212,10 +168,7 @@ function buildGuidesAndMetricsFromDetector(face, keypoints){
   const upperMM = upperPx * px2mm;
   const middleMM = middlePx * px2mm;
   const lowerMM = lowerPx * px2mm;
-
-  // Harmony index (simple composite, 0..100)
-  // penalties: thirds deviation, eye tilt, asymmetry
-  const tiltPenalty = Math.min(30, Math.abs(eyeTiltDeg) * 2.0); // 0..30
+  const tiltPenalty = Math.min(30, Math.abs(eyeTiltDeg) * 2.0);
   const thirdsPenalty = Math.min(45, (100 - thirdsScore) * 0.45);
   const symPenalty = (scaleMMperPx ? Math.min(35, (100 - symScore) * 0.35) : 10);
 
@@ -312,8 +265,6 @@ function applyPreset(presetId){
     if(!lip || !chin){ setStatus("Пресет не найден: точки подбородка/губ недоступны."); return; }
     item = computePlanItem("tilt", label, lip, chin);
   }
-
-  // ===== Facelift techniques: vectors + zones =====
   if(presetId === "facelift_lines" || presetId === "facelift_smas" || presetId === "facelift_deepplane" || presetId === "facelift_macs"){
     const rEye = getAIKeypoint(["rightEyeOuter"], 33);
     const lEye = getAIKeypoint(["leftEyeOuter"], 263);
@@ -327,8 +278,6 @@ function applyPreset(presetId){
     }
 
     const faceW = Math.hypot(lEye.x - rEye.x, lEye.y - rEye.y) || 200;
-
-    // Common anchors (approx)
     const rTemp = { x: rEye.x - 0.45*faceW, y: rEye.y - 0.20*faceW };
     const lTemp = { x: lEye.x + 0.45*faceW, y: lEye.y - 0.20*faceW };
     const rEar  = { x: rEye.x - 0.55*faceW, y: rEye.y + 0.15*faceW };
@@ -357,8 +306,6 @@ function applyPreset(presetId){
       const z = { id: nextId(), label: labelZ, side, points: pts.map(clamp), liftTo: liftTo ? clamp(liftTo) : null };
       planZones.push(z);
     }
-
-    // Technique-specific vectors
     const base = (label || "Facelift");
 
     if(presetId === "facelift_lines"){
@@ -373,7 +320,6 @@ function applyPreset(presetId){
     }
 
     if(presetId === "facelift_smas"){
-      // shorter, more controlled superolateral vectors
       const rTemp2 = { x: rEye.x - 0.38*faceW, y: rEye.y - 0.16*faceW };
       const lTemp2 = { x: lEye.x + 0.38*faceW, y: lEye.y - 0.16*faceW };
       addItems([
@@ -385,7 +331,6 @@ function applyPreset(presetId){
     }
 
     if(presetId === "facelift_deepplane"){
-      // stronger malar lift + neck/jawline lift
       const rTemp3 = { x: rEye.x - 0.50*faceW, y: rEye.y - 0.24*faceW };
       const lTemp3 = { x: lEye.x + 0.50*faceW, y: lEye.y - 0.24*faceW };
       const rNeckAnchor = { x: rEar.x, y: rEar.y + 0.25*faceW };
@@ -403,7 +348,6 @@ function applyPreset(presetId){
     }
 
     if(presetId === "facelift_macs"){
-      // MACS: 2–3 purse-string vectors to temporal fascia
       const rTemp4 = { x: rEye.x - 0.42*faceW, y: rEye.y - 0.22*faceW };
       const lTemp4 = { x: lEye.x + 0.42*faceW, y: lEye.y - 0.22*faceW };
       const rMidCheek = { x: (rMalar.x + rJowl.x)/2, y: (rMalar.y + rJowl.y)/2 };
@@ -417,12 +361,7 @@ function applyPreset(presetId){
         computePlanItem("vector", base + " • MACS jowl (L)", lJowl, lTemp4),
       ]);
     }
-
-    // Zones: create simple quadrilateral polygons around malar/jowl/neck each side, plus displacement to anchor
-    // These are approximations for planning visualization (can be adjusted via drag & drop).
     const zOff = 0.10*faceW;
-
-    // Right side zones
     addZone(base + " • MALAR (R)", "R", [
       {x:rEye.x - 0.12*faceW, y:rEye.y + 0.02*faceW},
       {x:rEye.x - 0.30*faceW, y:rEye.y + 0.12*faceW},
@@ -443,8 +382,6 @@ function applyPreset(presetId){
       {x:(rEar.x + chin.x)/2, y:rEar.y + 0.55*faceW},
       {x:(rJowl.x + chin.x)/2, y:rJowl.y + 0.45*faceW},
     ], {x:rEar.x, y:rEar.y + 0.20*faceW});
-
-    // Left side zones
     addZone(base + " • MALAR (L)", "L", [
       {x:lEye.x + 0.12*faceW, y:lEye.y + 0.02*faceW},
       {x:lEye.x + 0.30*faceW, y:lEye.y + 0.12*faceW},

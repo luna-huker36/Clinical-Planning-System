@@ -3,26 +3,26 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>PMAS — Clinical Planning System</title>
+<title>Clinical Planning System</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='28' font-size='28'>🏥</text></svg>">
 
-<!-- Export helpers -->
+
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://unpkg.com/docx@8.5.0/build/index.umd.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 
-<!-- DICOM -->
+
 <script src="https://unpkg.com/dicom-parser/dist/dicomParser.min.js"></script>
 
-<!-- AI: TensorFlow + FaceMesh -->
+
 <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.16.0/dist/tf.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-backend-webgl@4.16.0/dist/tf-backend-webgl.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4/face_mesh.js"></script>
 <script src="https://unpkg.com/@tensorflow-models/face-landmarks-detection/dist/face-landmarks-detection.min.js"></script>
 
-<!-- Three.js -->
+
 <script type="importmap">
 {
   "imports": {
@@ -32,16 +32,16 @@
 }
 </script>
 
-<link rel="stylesheet" href="./assets/css/style.css?v=46" />
+<link rel="stylesheet" href="./assets/css/style.css?v=48" />
 </head>
 <body>
 
-<!-- ========== HEADER ========== -->
+
 <header class="app-header">
   <div class="header-left">
     <div class="logo">
       <span class="logo-icon">⬡</span>
-      <span class="logo-text">PMAS</span>
+      <span class="logo-text">Clinical Planning System</span>
     </div>
     <span class="header-subtitle">Система клинического планирования</span>
   </div>
@@ -66,13 +66,13 @@
   </button>
 </header>
 
-<!-- ========== TAB: 2D ANALYSIS ========== -->
+
 <div class="tab-content active" id="tab2d">
   <div class="layout">
-    <!-- SIDEBAR -->
+    
     <aside class="sidebar" id="sidebar2d">
 
-      <!-- Patient Info -->
+      
       <div class="card">
         <div class="card-title">👤 Пациент</div>
         <div class="form-row">
@@ -94,7 +94,7 @@
         </div>
       </div>
 
-      <!-- Measurements & Zoom -->
+      
       <div class="card">
         <div class="card-title">📐 Измерения</div>
         <div class="btn-grid">
@@ -118,7 +118,7 @@
         </div>
       </div>
 
-      <!-- Plan Instruments -->
+      
       <div class="card">
         <div class="card-title">🛠 Инструменты плана</div>
         <div class="btn-grid">
@@ -129,7 +129,7 @@
         </div>
       </div>
 
-      <!-- Plan Details -->
+      
       <div class="card">
         <div class="card-title">📋 План операции</div>
         <div class="form-row">
@@ -176,40 +176,52 @@
         <span class="badge badge-info" id="aiPickBadge" style="display:none">Выбор AI-точек</span>
       </div>
 
-      <!-- Plan Items -->
+      
       <div class="card">
         <div class="card-title">📑 Элементы плана <span class="badge" id="planCountBadge">0</span></div>
         <div id="planList" class="plan-list"></div>
         <textarea id="notes" rows="2" placeholder="Заметки..." style="margin-top:8px"></textarea>
       </div>
 
-      <!-- Shift Planning -->
-      <div class="card">
+      
+      <div class="card shift-card">
         <div class="card-title">↔ Смещение и асимметрия</div>
-        <div class="form-row align-end">
-          <div class="form-group flex-grow">
-            <label>Элемент</label>
-            <div id="selectedItemInfo" class="hint">—</div>
+        <div class="shift-section">
+          <div class="shift-meta">
+            <div class="form-group flex-grow">
+              <label>Элемент</label>
+              <div id="selectedItemInfo" class="shift-selected hint">—</div>
+            </div>
           </div>
-          <div class="form-group">
-            <label>мм</label>
-            <input type="number" id="plannedShiftMM" step="0.1" placeholder="6.0" style="width:70px" />
+
+          <div class="shift-input-row">
+            <div class="form-group flex-grow">
+              <label for="plannedShiftMM">Смещение, мм</label>
+              <input type="number" id="plannedShiftMM" step="0.1" placeholder="6.0" />
+            </div>
+            <button class="btn btn-primary" id="btnApplyShift">Применить</button>
           </div>
-          <button class="btn btn-primary btn-sm" id="btnApplyShift">OK</button>
         </div>
-        <div class="form-row" style="margin-top:6px">
-          <button class="btn btn-sm" id="btnSnapshotBefore">💾 До</button>
-          <button class="btn btn-sm" id="btnToggleBefore">👁 Показать</button>
+
+        <div class="shift-actions">
+          <button class="btn btn-sm" id="btnSnapshotBefore">💾 Сохранить «До»</button>
+          <button class="btn btn-sm" id="btnToggleBefore">👁 Показать «До»</button>
           <button class="btn btn-danger btn-sm" id="btnResetToBefore">↩ Откатить</button>
         </div>
-        <span class="badge badge-info" id="beforeBadge" style="display:none">Показ «До»</span>
-        <div style="margin-top:8px">
+
+        <div class="shift-before-state">
+          <span class="badge badge-info" id="beforeBadge" style="display:none">Показ «До»</span>
+        </div>
+
+        <div class="shift-divider"></div>
+
+        <div class="shift-asymmetry">
           <span class="label-sm">Асимметрия</span>
-          <div id="asymmetryBox" class="hint">—</div>
+          <div id="asymmetryBox" class="shift-asymmetry-box hint">—</div>
         </div>
       </div>
 
-      <!-- Metrics -->
+      
       <div class="card">
         <div class="card-title">📊 Метрики</div>
         <div class="metrics-row">
@@ -232,7 +244,7 @@
         </div>
       </div>
 
-      <!-- Status + Export -->
+      
       <div id="status" class="status-bar">Загрузите фото для начала работы</div>
       <div class="export-bar">
         <button class="btn btn-primary" id="btnPDF">📄 PDF</button>
@@ -241,7 +253,7 @@
       </div>
     </aside>
 
-    <!-- VIEWPORT 2D -->
+    
     <main class="viewport-wrap">
       <div id="viewport">
         <img id="photo" alt="patient photo" />
@@ -251,13 +263,13 @@
   </div>
 </div>
 
-<!-- ========== TAB: 3D MODEL ========== -->
+
 <div class="tab-content" id="tab3d">
   <div class="layout">
-    <!-- SIDEBAR 3D -->
+    
     <aside class="sidebar" id="sidebar3d">
 
-      <!-- Patient Info -->
+      
       <div class="card">
         <div class="card-title">👤 Пациент</div>
         <div class="form-row">
@@ -272,14 +284,23 @@
         </div>
       </div>
 
-      <!-- Model Selection -->
+      
       <div class="card">
         <div class="card-title">🧊 Модель</div>
-        <div class="form-row" style="gap:4px">
-          <select id="modelSelect" class="flex-grow">
+        <div class="model-picker">
+          <div class="form-group flex-grow">
+            <label for="modelSelect">Выбрать модель</label>
+            <select id="modelSelect" class="flex-grow">
             <option value="models/LeePerrySmith.glb">Lee Perry-Smith</option>
-          </select>
-          <button class="btn btn-danger btn-sm" id="btnDeleteModel" title="Удалить модель">✕</button>
+            </select>
+          </div>
+          <div class="model-picker-actions">
+            <button class="btn btn-sm" id="btnSaveModel" title="Сохранить текущую модель и правки">💾 Сохранить</button>
+            <button class="btn btn-danger btn-sm" id="btnDeleteModel" title="Удалить модель">✕ Удалить</button>
+          </div>
+        </div>
+        <div id="modelStorageHint" class="hint" style="margin-top:8px">
+          Для встроенных и загруженных моделей можно сохранить локальные правки меша и восстановить их при повторной загрузке.
         </div>
         <div class="file-upload" style="margin-top:8px">
           <input type="file" id="fileInput3d" accept=".glb,.gltf,.obj,.mtl,.png,.jpg,.jpeg" multiple />
@@ -297,7 +318,7 @@
         </div>
       </div>
 
-      <!-- Display & Lighting -->
+      
       <div class="card">
         <div class="card-title">🎨 Отображение</div>
         <div class="btn-grid">
@@ -323,7 +344,7 @@
         </div>
       </div>
 
-      <!-- 3D Instruments -->
+      
       <div class="card">
         <div class="card-title">🛠 Инструменты</div>
         <div class="btn-grid">
@@ -362,7 +383,7 @@
         <div id="meshCleanupInfo" class="hint" style="margin-top:8px">Выберите инструмент и рисуйте на модели для удаления шума.</div>
       </div>
 
-      <!-- Plan -->
+      
       <div class="card">
         <div class="card-title">📋 План операции</div>
         <div class="form-row">
@@ -390,40 +411,52 @@
         </div>
       </div>
 
-      <!-- Plan Items 3D -->
+      
       <div class="card">
         <div class="card-title">📑 Элементы плана <span class="badge" id="plan3dCountBadge">0</span></div>
         <div id="measurements3d" class="plan-list"></div>
         <textarea id="notes3d" rows="2" placeholder="Заметки..." style="margin-top:8px"></textarea>
       </div>
 
-      <!-- Shift 3D -->
-      <div class="card">
+      
+      <div class="card shift-card">
         <div class="card-title">↔ Смещение и асимметрия</div>
-        <div class="form-row align-end">
-          <div class="form-group flex-grow">
-            <label>Элемент</label>
-            <div id="selectedItem3dInfo" class="hint">—</div>
+        <div class="shift-section">
+          <div class="shift-meta">
+            <div class="form-group flex-grow">
+              <label>Элемент</label>
+              <div id="selectedItem3dInfo" class="shift-selected hint">—</div>
+            </div>
           </div>
-          <div class="form-group">
-            <label>мм</label>
-            <input type="number" id="plannedShift3dMM" step="0.1" placeholder="6.0" style="width:70px" />
+
+          <div class="shift-input-row">
+            <div class="form-group flex-grow">
+              <label for="plannedShift3dMM">Смещение, мм</label>
+              <input type="number" id="plannedShift3dMM" step="0.1" placeholder="6.0" />
+            </div>
+            <button class="btn btn-primary" id="btn3dApplyShift">Применить</button>
           </div>
-          <button class="btn btn-primary btn-sm" id="btn3dApplyShift">OK</button>
         </div>
-        <div class="form-row" style="margin-top:6px">
-          <button class="btn btn-sm" id="btn3dSnapshotBefore">💾 До</button>
-          <button class="btn btn-sm" id="btn3dToggleBefore">👁 Показать</button>
+
+        <div class="shift-actions">
+          <button class="btn btn-sm" id="btn3dSnapshotBefore">💾 Сохранить «До»</button>
+          <button class="btn btn-sm" id="btn3dToggleBefore">👁 Показать «До»</button>
           <button class="btn btn-danger btn-sm" id="btn3dResetToBefore">↩ Откатить</button>
         </div>
-        <span class="badge badge-info" id="before3dBadge" style="display:none">Показ «До»</span>
-        <div style="margin-top:8px">
+
+        <div class="shift-before-state">
+          <span class="badge badge-info" id="before3dBadge" style="display:none">Показ «До»</span>
+        </div>
+
+        <div class="shift-divider"></div>
+
+        <div class="shift-asymmetry">
           <span class="label-sm">Асимметрия</span>
-          <div id="asymmetry3dBox" class="hint">—</div>
+          <div id="asymmetry3dBox" class="shift-asymmetry-box hint">—</div>
         </div>
       </div>
 
-      <!-- Symmetry & Heatmap -->
+      
       <div class="card">
         <div class="card-title">🔬 Клинический анализ</div>
         <div class="btn-grid">
@@ -440,7 +473,7 @@
         </div>
       </div>
 
-      <!-- Operation Templates -->
+      
       <div class="card">
         <div class="card-title">📋 Шаблоны операций</div>
         <select id="operationTemplate" class="flex-grow" style="width:100%">
@@ -454,7 +487,7 @@
         <div id="templateInfo" class="hint" style="margin-top:6px">Шаблон добавит стандартные точки измерений для выбранной операции.</div>
       </div>
 
-      <!-- Status + Export -->
+      
       <div id="status3d" class="status-bar">Выберите инструмент → кликните на модель.</div>
       <div class="volume-health-card" id="volumeHealthCard" style="display:none">
         <div class="volume-health-head">
@@ -473,7 +506,7 @@
       </div>
     </aside>
 
-    <!-- VIEWPORT 3D -->
+    
     <main class="viewport-wrap viewport-3d">
       <div id="canvas3d-container"></div>
       <div id="loading3d" class="loading-overlay">
@@ -484,19 +517,19 @@
   </div>
 </div>
 
-<!-- ========== TAB: ABOUT ========== -->
+
 <div class="tab-content" id="tabAbout">
   <div class="about-page">
 
-    <!-- Hero -->
+    
     <section class="about-hero">
       <div class="hero-badge">Система клинического планирования</div>
-      <h1 class="hero-title">PMAS</h1>
+      <h1 class="hero-title">Clinical Planning System</h1>
       <p class="hero-desc">Plastic & Maxillofacial Analysis System</p>
       <p class="hero-sub">Комплексная система 2D- и 3D-планирования<br>пластических и челюстно-лицевых операций</p>
     </section>
 
-    <!-- Feature Showcase -->
+    
     <section class="features-section">
       <div class="feature-row">
         <div class="feature-card feature-2d">
@@ -535,7 +568,7 @@
       </div>
     </section>
 
-    <!-- Tech Stack -->
+    
     <section class="tech-section">
       <h2 class="section-title">Стек технологий</h2>
       <div class="tech-grid">
@@ -582,30 +615,24 @@
       </div>
     </section>
 
-    <!-- Authors -->
+    
     <section class="authors-section">
       <div class="authors-card">
-        <div class="authors-badge">Авторы</div>
-        <div class="authors-uni">Национальный исследовательский университет «МЭИ»</div>
-        <div class="authors-group">Группа ИЭ-41-25</div>
+        <div class="authors-badge">Contributors</div>
+        <div class="authors-uni">Clinical Planning System</div>
+        <div class="authors-group">Project maintainers</div>
         <div class="authors-divider"></div>
         <div class="authors-names">
           <div class="author-chip">
-            <img class="author-avatar" src="assets/img/merkulov.jpg" alt="Меркулов А.А.">
+            <img class="author-avatar" src="assets/img/contributor-foggies-studio.jpg" alt="foggies-studio">
             <div class="author-info">
-              <div class="author-name">Меркулов А.А.</div>
+              <div class="author-name">foggies-studio</div>
             </div>
           </div>
           <div class="author-chip">
-            <img class="author-avatar" src="assets/img/lubaev.png" alt="Любаев Д.О.">
+            <img class="author-avatar" src="assets/img/contributor-ran9all.png" alt="ran9all">
             <div class="author-info">
-              <div class="author-name">Любаев Д.О.</div>
-            </div>
-          </div>
-          <div class="author-chip">
-            <div class="author-avatar author-avatar-placeholder">С</div>
-            <div class="author-info">
-              <div class="author-name">Сергеева А.М.</div>
+              <div class="author-name">ran9all</div>
             </div>
           </div>
         </div>
@@ -613,13 +640,13 @@
     </section>
 
     <footer class="about-footer">
-      PMAS v1.0 &middot; 2026
+      Clinical Planning System v1.0 &middot; 2026
     </footer>
 
   </div>
 </div>
 
-<!-- ========== 2D SCRIPTS (existing modules) ========== -->
+
 <script src="./assets/js/01-state.js"></script>
 <script src="./assets/js/02-geometry.js"></script>
 <script src="./assets/js/03-render.js"></script>
@@ -628,12 +655,12 @@
 <script src="./assets/js/06-file-loader.js"></script>
 <script src="./assets/js/07-interactions.js"></script>
 <script src="./assets/js/08-controls.js"></script>
-<script src="./assets/js/09-export.js"></script>
+<script src="./assets/js/09-export.js?v=2"></script>
 <script src="./assets/js/10-ai.js"></script>
 <script src="./assets/js/11-persistence-init.js"></script>
 
-<!-- ========== APP: tabs + 3D ========== -->
-<script type="module" src="./assets/js/app.js?v=57"></script>
+
+<script type="module" src="./assets/js/app.js?v=59"></script>
 
 </body>
 </html>

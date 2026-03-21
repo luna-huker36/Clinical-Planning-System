@@ -1,6 +1,4 @@
-/** ================================
- *  Drawing
- *  ================================ */
+
 function resizeOverlay(){
   overlay.width = overlay.clientWidth * devicePixelRatio;
   overlay.height = overlay.clientHeight * devicePixelRatio;
@@ -18,16 +16,12 @@ function drawHandle(pClient, color){
 
 function redraw(){
   ctx.clearRect(0,0,overlay.clientWidth, overlay.clientHeight);
-
-  // subtle frame of fitted image
   const fit = getFit();
   if(fit){
     ctx.strokeStyle = "rgba(148,163,184,.35)";
     ctx.lineWidth = 1;
     ctx.strokeRect(fit.offsetX, fit.offsetY, fit.drawW, fit.drawH);
   }
-
-  // Measurements: line + 2 red points only (no labels)
   for(const key of Object.keys(measurements)){
     const m = measurements[key];
     const a = imageToClient(m.p1.x, m.p1.y);
@@ -44,8 +38,6 @@ function redraw(){
     drawHandle(a, "#ef4444");
     drawHandle(b, "#ef4444");
   }
-
-  // Pending points (during calibration/measurement): show red points so user sees markers immediately
   if(pendingPoints.length){
     for(const p of pendingPoints){
       const c = imageToClient(p.x, p.y);
@@ -53,13 +45,11 @@ function redraw(){
       drawHandle(c, "#ef4444");
     }
   }
-
-  // AI guides (midline / eyeline / thirds)
   if(guides && guides.midline){
     const a = imageToClient(guides.midline.p1.x, guides.midline.p1.y);
     const b = imageToClient(guides.midline.p2.x, guides.midline.p2.y);
     if(a && b){
-      ctx.strokeStyle = "rgba(250,204,21,0.95)"; // yellow
+      ctx.strokeStyle = "rgba(250,204,21,0.95)";
       ctx.lineWidth = 2;
       ctx.setLineDash([6,4]);
       ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
@@ -70,7 +60,7 @@ function redraw(){
     const a = imageToClient(guides.eyeline.p1.x, guides.eyeline.p1.y);
     const b = imageToClient(guides.eyeline.p2.x, guides.eyeline.p2.y);
     if(a && b){
-      ctx.strokeStyle = "rgba(249,115,22,0.95)"; // orange
+      ctx.strokeStyle = "rgba(249,115,22,0.95)";
       ctx.lineWidth = 2;
       ctx.setLineDash([6,4]);
       ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
@@ -81,7 +71,7 @@ function redraw(){
     const fit = getFit();
     if(fit){
       const ys = [guides.thirds.topY, guides.thirds.glabellaY, guides.thirds.subnasaleY, guides.thirds.chinY];
-      ctx.strokeStyle = "rgba(34,211,238,0.95)"; // cyan
+      ctx.strokeStyle = "rgba(34,211,238,0.95)";
       ctx.lineWidth = 1.5;
       ctx.setLineDash([4,4]);
       for(const iy of ys){
@@ -94,15 +84,11 @@ function redraw(){
       ctx.setLineDash([]);
     }
   }
-
-  // Before snapshot overlay (if enabled)
   if(showBefore && beforeSnapshot){
     try{
       const bZones = beforeSnapshot.planZones || [];
       const bItems = beforeSnapshot.planItems || [];
       const bMeas = beforeSnapshot.measurements || {};
-
-      // zones in gray
       for(const z of bZones){
         if(!z.points || z.points.length < 3) continue;
         ctx.save();
@@ -124,8 +110,6 @@ function redraw(){
         ctx.setLineDash([]);
         ctx.restore();
       }
-
-      // items in gray
       for(const it of bItems){
         if(!it.p1 || !it.p2) continue;
         const a = imageToClient(it.p1.x, it.p1.y);
@@ -153,8 +137,6 @@ function redraw(){
           }
         }
       }
-
-      // measurements endpoints in gray (subtle)
       for(const key of Object.keys(bMeas)){
         const mm = bMeas[key];
         if(!mm || !mm.p1 || !mm.p2) continue;
@@ -173,14 +155,11 @@ function redraw(){
       console.warn("Before/After overlay error:", e);
     }
   }
-
-  // Zones (polygons): malar/jowl/neck (semi-transparent)
   if(planZones && planZones.length){
     for(const z of planZones){
       const isSelZone = (selectedPlan && selectedPlan.kind==="zone" && selectedPlan.id===z.id);
       if(!z.points || z.points.length < 3) continue;
       ctx.save();
-      // Fill
       ctx.beginPath();
       const p0 = imageToClient(z.points[0].x, z.points[0].y);
       if(!p0){ ctx.restore(); continue; }
@@ -197,14 +176,10 @@ function redraw(){
       ctx.setLineDash([6,4]);
       ctx.stroke();
       ctx.setLineDash([]);
-
-      // Handles (vertices)
       for(const pt of z.points){
         const c = imageToClient(pt.x, pt.y);
         if(c) drawHandle(c, isSelectedZoneId(z.id) ? "#3b82f6" : "#10b981");
       }
-
-      // Displacement vector from centroid to liftTo (if present)
       if(z.liftTo){
         const cen = polygonCentroid(z.points);
         const a = imageToClient(cen.x, cen.y);
@@ -213,7 +188,6 @@ function redraw(){
           ctx.strokeStyle = "rgba(16,185,129,0.95)";
           ctx.lineWidth = 2.2;
           ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
-          // arrowhead
           const ang = Math.atan2(b.y-a.y, b.x-a.x);
           const len = 10;
           ctx.beginPath();
@@ -228,8 +202,6 @@ function redraw(){
       ctx.restore();
     }
   }
-
-  // Planning items (purple/teal)
   if(planItems && planItems.length){
     for(const it of planItems){
       const a = imageToClient(it.p1.x, it.p1.y);
@@ -239,12 +211,9 @@ function redraw(){
 
 
       if(it.type === "vector"){
-        // arrow
         ctx.strokeStyle = "rgba(168,85,247,0.95)";
         ctx.lineWidth = isSelectedPlanId(it.id) ? 3.8 : 2.5;
         ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
-
-        // arrowhead
         const ang = Math.atan2(b.y-a.y, b.x-a.x);
         const len = 10;
         ctx.beginPath();
@@ -265,7 +234,7 @@ function redraw(){
         drawHandle(b, "#14b8a6");
       }
       else if(it.type === "guide"){
-        ctx.strokeStyle = isSelectedPlanId(it.id) ? "rgba(59,130,246,0.95)" : "rgba(34,197,94,0.95)"; // green
+        ctx.strokeStyle = isSelectedPlanId(it.id) ? "rgba(59,130,246,0.95)" : "rgba(34,197,94,0.95)";
         ctx.lineWidth = 2.2;
         ctx.setLineDash([8,6]);
         ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
@@ -273,14 +242,11 @@ function redraw(){
         drawHandle(a, "#22c55e");
         drawHandle(b, "#22c55e");
       } else if(it.type === "tilt"){
-        // angle between horizontal and segment a->b (simple)
         ctx.strokeStyle = isSelectedPlanId(it.id) ? "rgba(59,130,246,0.95)" : "rgba(245,158,11,0.95)";
         ctx.lineWidth = isSelectedPlanId(it.id) ? 3.8 : 2.5;
         ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
         drawHandle(a, "#f59e0b");
         drawHandle(b, "#f59e0b");
-
-        // small reference horizontal from a
         ctx.setLineDash([4,4]);
         ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(a.x + 60, a.y); ctx.stroke();
         ctx.setLineDash([]);
@@ -317,16 +283,12 @@ function redraw(){
       }
     }
   }
-
-  // Planning pending points (show markers while selecting)
   if(planPending && planPending.length){
     for(const p of planPending){
       const c = imageToClient(p.x, p.y);
       if(c) drawHandle(c, "#a855f7");
     }
   }
-
-// Manual trichion point (purple)
   if(trichionPoint){
     const c = imageToClient(trichionPoint.x, trichionPoint.y);
     if(c){
@@ -336,8 +298,6 @@ function redraw(){
       ctx.fill();
     }
   }
-
-  // AI points (green)
   if(aiPoints.length){
     for(const p of aiPoints){
       const c = imageToClient(p.x, p.y);
@@ -348,7 +308,6 @@ function redraw(){
       ctx.fill();
     }
   }
-  // === Selected element overlay (always on top) ===
   if(selectedPlan){
     try{
       if(selectedPlan.kind === "plan"){
@@ -362,7 +321,6 @@ function redraw(){
             ctx.lineWidth = 5;
             ctx.setLineDash([]);
             ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
-            // If angle3 draw second leg too
             if(it.type === "angle3" && it.p3){
               const v = imageToClient(it.p2.x, it.p2.y);
               const c = imageToClient(it.p3.x, it.p3.y);
@@ -370,7 +328,6 @@ function redraw(){
                 ctx.beginPath(); ctx.moveTo(v.x,v.y); ctx.lineTo(c.x,c.y); ctx.stroke();
               }
             }
-            // Endpoints
             drawHandle(a, "#f97316");
             drawHandle(b, "#f97316");
             if(it.type === "angle3" && it.p3){

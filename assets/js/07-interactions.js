@@ -1,14 +1,10 @@
-/** ================================
- *  Overlay interactions
- *  ================================ */
+
 overlay.addEventListener("pointerdown", (ev)=>{
   if(!photo.src) return;
   overlay.setPointerCapture(ev.pointerId);
   const rect = overlay.getBoundingClientRect();
   const cx = ev.clientX - rect.left;
   const cy = ev.clientY - rect.top;
-
-  // drag existing handle?
   const hit = hitTestHandle(cx, cy);
   if(hit){
     drag.active = true;
@@ -18,8 +14,6 @@ overlay.addEventListener("pointerdown", (ev)=>{
     drag.index = (typeof hit.index === "number") ? hit.index : null;
     return;
   }
-
-  // Click-to-select on lines/zones (when not actively placing points)
   if(!mode && !planMode && !aiPickMode){
     const hitEl = hitTestPlanElement(cx, cy);
     if(hitEl){
@@ -27,10 +21,7 @@ overlay.addEventListener("pointerdown", (ev)=>{
       return;
     }
   }
-
-  // AI pick mode: select nearest AI points as endpoints (2 clicks)
   if(aiPickMode && aiPoints && aiPoints.length){
-    // find nearest AI point in client space
     const fit = getFit();
     const x0 = cx/zoom, y0 = cy/zoom;
     let best = null, bestD = 1e9;
@@ -42,12 +33,11 @@ overlay.addEventListener("pointerdown", (ev)=>{
         bestD = d; best = p;
       }
     }
-    if(best && bestD < 14){ // threshold
+    if(best && bestD < 14){
       aiPickPending.push({x: best.x, y: best.y});
       const need = (planMode === "angle3") ? 3 : 2;
       setStatus(`AI-точка выбрана (${aiPickPending.length}/${need})…`);
       if(aiPickPending.length === 2){
-        // If planning mode active, create plan item; else create a generic measurement in plan
         const label = document.getElementById("planLabel").value || "";
         const type = planMode || "measure";
         planItems.push(computePlanItem(type, label, aiPickPending[0], aiPickPending[1]));
@@ -62,13 +52,9 @@ overlay.addEventListener("pointerdown", (ev)=>{
       return;
     }
   }
-
-  // Planning mode: click two points on image to create plan item
   if(planMode && !mode){
     const imgPt = clientToImage(cx, cy);
     if(!imgPt) return;
-
-    // accept only inside fitted image
     const fit2 = getFit();
     const x2 = cx/zoom, y2 = cy/zoom;
     const inside2 = (x2 >= fit2.offsetX && x2 <= fit2.offsetX+fit2.drawW && y2 >= fit2.offsetY && y2 <= fit2.offsetY+fit2.drawH);
@@ -94,20 +80,14 @@ overlay.addEventListener("pointerdown", (ev)=>{
     }
     return;
   }
-
-  // otherwise: collecting points
   if(!mode) return;
 
   const imgPt = clientToImage(cx, cy);
   if(!imgPt) return;
-
-  // only accept clicks inside the fitted image rectangle
   const fit = getFit();
   const x = cx/zoom, y = cy/zoom;
   const inside = (x >= fit.offsetX && x <= fit.offsetX+fit.drawW && y >= fit.offsetY && y <= fit.offsetY+fit.drawH);
   if(!inside) return;
-
-  // Trichion mode: single point
   if(mode === "trichion"){
     const imgPt2 = clientToImage(cx, cy);
     if(!imgPt2) return;
@@ -128,7 +108,6 @@ overlay.addEventListener("pointerdown", (ev)=>{
     const px = distPx(p1, p2);
 
     if(mode === "calibration"){
-      // IMPORTANT: redraw first so both red markers are visible, then ask for mm.
       setStatus("Калибровка: точки выбраны. Введите расстояние в мм…");
       setTimeout(()=>{
         const real = parseFloat(prompt("Введите реальное расстояние (мм):") || "");
@@ -145,7 +124,7 @@ overlay.addEventListener("pointerdown", (ev)=>{
         redraw();
         saveProject();
       }, 0);
-      return; // don't clear pendingPoints yet
+      return;
     } else if(mode === "measure"){
       measurements[currentType] = { p1, p2 };
       setStatus(`Измерение ${currentType} добавлено.`);
@@ -186,7 +165,6 @@ overlay.addEventListener("pointermove", (ev)=>{
     const it = (planItems || []).find(x => x.id === drag.id);
     if(it && drag.which){
       it[drag.which] = clamped;
-      // recompute derived values
       if(it.type === "angle3" && it.p3){
         const v1x = it.p1.x - it.p2.x, v1y = it.p1.y - it.p2.y;
         const v2x = it.p3.x - it.p2.x, v2y = it.p3.y - it.p2.y;

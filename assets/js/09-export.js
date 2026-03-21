@@ -1,10 +1,44 @@
-/** ================================
- *  Export PDF — Professional Clinical Report (html2canvas approach, matches 3D style)
- *  ================================ */
+
 document.getElementById("btnPDF").addEventListener("click", exportPDF);
 
 function escHtml2d(s){
   return String(s||'').replace(/[&<>"']/g, ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+}
+
+function addPagedCanvasToPdf2d(pdf, sourceCanvas, options = {}){
+  const margin = options.margin ?? 8;
+  const pageW = pdf.internal.pageSize.getWidth();
+  const pageH = pdf.internal.pageSize.getHeight();
+  const printableW = pageW - margin * 2;
+  const printableH = pageH - margin * 2;
+
+  const scale = printableW / sourceCanvas.width;
+  const pageSlicePx = Math.max(1, Math.floor(printableH / scale));
+  let offsetY = 0;
+  let pageIndex = 0;
+
+  while(offsetY < sourceCanvas.height){
+    const sliceHeight = Math.min(pageSlicePx, sourceCanvas.height - offsetY);
+    const pageCanvas = document.createElement('canvas');
+    pageCanvas.width = sourceCanvas.width;
+    pageCanvas.height = sliceHeight;
+    const pageCtx = pageCanvas.getContext('2d');
+    pageCtx.fillStyle = '#ffffff';
+    pageCtx.fillRect(0,0,pageCanvas.width,pageCanvas.height);
+    pageCtx.drawImage(
+      sourceCanvas,
+      0, offsetY, sourceCanvas.width, sliceHeight,
+      0, 0, pageCanvas.width, pageCanvas.height
+    );
+
+    const imgData = pageCanvas.toDataURL('image/png');
+    const renderH = sliceHeight * scale;
+    if(pageIndex > 0) pdf.addPage();
+    pdf.addImage(imgData, 'PNG', margin, margin, printableW, renderH);
+
+    offsetY += sliceHeight;
+    pageIndex += 1;
+  }
 }
 
 async function exportPDF(){
@@ -17,28 +51,20 @@ async function exportPDF(){
     const procedure = document.getElementById("procedure")?.value || "—";
     const goal    = document.getElementById("goal")?.value || "—";
     const notes   = document.getElementById("notes")?.value || "";
-
-    // Capture viewport screenshot
     const vpEl = document.getElementById("viewport");
     let screenDataUrl = '';
     if(vpEl){
       const cap = await html2canvas(vpEl, { scale: 2, useCORS: true, backgroundColor: "#0f172a" });
       screenDataUrl = cap.toDataURL('image/png');
     }
-
-    // Build beautiful report HTML (same approach as 3D export)
     const reportDiv = document.createElement('div');
     reportDiv.style.cssText = 'position:fixed;top:0;left:0;width:800px;background:#fff;color:#1e293b;font-family:"Segoe UI",system-ui,-apple-system,sans-serif;z-index:99999;';
 
     let html = '';
-
-    // Header bar — gradient blue
     html += `<div style="background:linear-gradient(135deg,#1e40af,#3b82f6);color:#fff;padding:24px 30px;border-radius:0 0 12px 12px;">`;
-    html += `<div style="font-size:24px;font-weight:700;letter-spacing:0.5px;">PMAS — 2D Клинический протокол</div>`;
+    html += `<div style="font-size:24px;font-weight:700;letter-spacing:0.5px;">Clinical Planning System — 2D Клинический протокол</div>`;
     html += `<div style="margin-top:6px;font-size:13px;opacity:0.85;">Планирование медицинских и эстетических процедур</div>`;
     html += `</div>`;
-
-    // Patient info cards
     html += `<div style="padding:20px 30px 0;">`;
     html += `<div style="display:flex;gap:12px;flex-wrap:wrap;">`;
     const infoItems = [
@@ -52,16 +78,12 @@ async function exportPDF(){
       html += `</div>`;
     }
     html += `</div></div>`;
-
-    // Viewport screenshot
     if(screenDataUrl){
       html += `<div style="padding:16px 30px;">`;
       html += `<div style="background:#0f172a;border-radius:10px;padding:8px;box-shadow:0 2px 8px rgba(0,0,0,0.15);">`;
       html += `<img src="${screenDataUrl}" style="width:100%;border-radius:6px;display:block;">`;
       html += `</div></div>`;
     }
-
-    // Measurements section
     const measKeys = Object.keys(measurements);
     if(measKeys.length > 0){
       html += `<div style="padding:0 30px 12px;">`;
@@ -96,8 +118,6 @@ async function exportPDF(){
       }
       html += `</table></div>`;
     }
-
-    // Plan items section
     if((planItems && planItems.length) || (planZones && planZones.length)){
       html += `<div style="padding:0 30px 12px;">`;
       html += `<div style="font-size:16px;font-weight:700;color:#1e40af;margin-bottom:10px;padding-bottom:6px;border-bottom:2px solid #dbeafe;">📊 План операции</div>`;
@@ -139,8 +159,6 @@ async function exportPDF(){
       }
       html += `</table></div>`;
     }
-
-    // AI Analysis section
     if(aiMetrics){
       const m = aiMetrics;
       html += `<div style="padding:0 30px 12px;">`;
@@ -165,19 +183,15 @@ async function exportPDF(){
       html += `(${(m.thirds.upperRatio*100).toFixed(1)}% / ${(m.thirds.middleRatio*100).toFixed(1)}% / ${(m.thirds.lowerRatio*100).toFixed(1)}%)`;
       html += `</div></div>`;
     }
-
-    // Notes section
     if(notes && notes.trim()){
       html += `<div style="padding:0 30px 12px;">`;
       html += `<div style="font-size:16px;font-weight:700;color:#1e40af;margin-bottom:8px;padding-bottom:6px;border-bottom:2px solid #dbeafe;">📝 Заметки</div>`;
       html += `<div style="background:#fffbeb;border-left:3px solid #f59e0b;padding:10px 14px;border-radius:0 6px 6px 0;font-size:13px;color:#78350f;white-space:pre-wrap;">${escHtml2d(notes)}</div>`;
       html += `</div>`;
     }
-
-    // Footer
     const scaleTxt = scaleMMperPx != null ? (scaleMMperPx).toFixed(4)+' мм/px' : 'не задан';
     html += `<div style="padding:12px 30px;text-align:center;color:#94a3b8;font-size:10px;border-top:1px solid #e2e8f0;margin-top:8px;">`;
-    html += `PMAS v1.0 • Масштаб: ${scaleTxt} • Сформировано: ${new Date().toLocaleDateString('ru-RU')}`;
+    html += `Clinical Planning System v1.0 • Масштаб: ${scaleTxt} • Сформировано: ${new Date().toLocaleDateString('ru-RU')}`;
     html += `</div>`;
 
     reportDiv.innerHTML = html;
@@ -186,24 +200,10 @@ async function exportPDF(){
     const capture = await html2canvas(reportDiv, { scale: 2, useCORS: true });
     document.body.removeChild(reportDiv);
 
-    const imgData = capture.toDataURL('image/png');
     const pdf = new jsPDF('p', 'mm', 'a4');
-    const pageW = pdf.internal.pageSize.getWidth();
-    const imgW = pageW;
-    const imgH = (capture.height / capture.width) * imgW;
+    addPagedCanvasToPdf2d(pdf, capture, { margin: 8 });
 
-    if(imgH <= 297){
-      pdf.addImage(imgData, 'PNG', 0, 0, imgW, imgH);
-    } else {
-      let yOffset = 0;
-      while(yOffset < imgH){
-        if(yOffset > 0) pdf.addPage();
-        pdf.addImage(imgData, 'PNG', 0, -yOffset, imgW, imgH);
-        yOffset += 297;
-      }
-    }
-
-    pdf.save('PMAS_2D_Report.pdf');
+    pdf.save('Clinical_Planning_System_2D_Report.pdf');
     setStatus('PDF экспортирован.');
   }catch(err){
     console.error(err);
@@ -211,9 +211,7 @@ async function exportPDF(){
   }
 }
 
-/** ================================
- *  Export DOCX — Professional Clinical Report
- *  ================================ */
+
 document.getElementById("btnDOCX").addEventListener("click", exportDOCX);
 
 async function exportDOCX(){
@@ -233,17 +231,13 @@ async function exportDOCX(){
     const blueBorder = { style: BorderStyle.SINGLE, size: 1, color: "2563EB" };
     const noBorder = { style: BorderStyle.NONE, size: 0 };
     const allNoBorders = { top: noBorder, bottom: noBorder, left: noBorder, right: noBorder };
-
-    // --- Viewport screenshot as image ---
     let vpImageData = null;
     const vpEl = document.getElementById("viewport");
     if(vpEl){
       const capture = await html2canvas(vpEl, { scale: 2, useCORS: true, backgroundColor: "#0f172a" });
       const dataUrl = capture.toDataURL("image/png");
-      vpImageData = dataUrl.split(",")[1]; // base64
+      vpImageData = dataUrl.split(",")[1];
     }
-
-    // Helper: section heading
     function sectionHeading(text){
       return new Paragraph({
         spacing: { before: 300, after: 100 },
@@ -253,8 +247,6 @@ async function exportDOCX(){
         ]
       });
     }
-
-    // Helper: key-value row
     function kvRow(key, value, bold = false){
       return new Paragraph({
         spacing: { after: 40 },
@@ -266,31 +258,23 @@ async function exportDOCX(){
     }
 
     const children = [];
-
-    // --- Title ---
     children.push(new Paragraph({
       alignment: AlignmentType.LEFT,
       spacing: { after: 60 },
       children: [
-        new TextRun({ text: "PMAS — 2D Клинический протокол", bold: true, size: 36, color: "2563EB", font: "Calibri" }),
+        new TextRun({ text: "Clinical Planning System — 2D Клинический протокол", bold: true, size: 36, color: "2563EB", font: "Calibri" }),
       ]
     }));
-
-    // Horizontal line
     children.push(new Paragraph({
       spacing: { after: 100 },
       border: { bottom: { style: BorderStyle.SINGLE, size: 2, color: "E2E8F0" } },
       children: []
     }));
-
-    // --- Patient block ---
     children.push(sectionHeading("Пациент"));
     children.push(kvRow("ФИО", patient));
     children.push(kvRow("Дата осмотра", date));
     children.push(kvRow("Процедура", procedure));
     children.push(kvRow("Цель", goal));
-
-    // --- Screenshot ---
     if(vpImageData){
       children.push(new Paragraph({ spacing: { before: 200, after: 100 }, children: [] }));
       const { ImageRun } = docx;
@@ -305,8 +289,6 @@ async function exportDOCX(){
         ]
       }));
     }
-
-    // --- Measurements ---
     const measKeys = Object.keys(measurements);
     if(measKeys.length > 0){
       children.push(sectionHeading("Измерения"));
@@ -329,8 +311,6 @@ async function exportDOCX(){
         }));
       }
     }
-
-    // --- Plan ---
     if((planItems && planItems.length) || (planZones && planZones.length)){
       children.push(sectionHeading("План операции"));
 
@@ -366,8 +346,6 @@ async function exportDOCX(){
         }));
       }
     }
-
-    // --- AI Analysis ---
     if(aiMetrics){
       children.push(sectionHeading("AI анализ"));
       const m = aiMetrics;
@@ -376,8 +354,6 @@ async function exportDOCX(){
       children.push(kvRow("Горизонталь глаз", `наклон ${m.proportions.eyeTiltDeg.toFixed(1)}°`));
       children.push(kvRow("Трети лица", `${m.thirds.upperMM.toFixed(1)} / ${m.thirds.middleMM.toFixed(1)} / ${m.thirds.lowerMM.toFixed(1)} мм (${(m.thirds.upperRatio*100).toFixed(1)}% / ${(m.thirds.middleRatio*100).toFixed(1)}% / ${(m.thirds.lowerRatio*100).toFixed(1)}%)`));
     }
-
-    // --- Notes ---
     if(notes && notes.trim()){
       children.push(sectionHeading("Заметки"));
       children.push(new Paragraph({
@@ -385,8 +361,6 @@ async function exportDOCX(){
         children: [new TextRun({ text: notes, size: 18, color: "0F172A", font: "Calibri" })]
       }));
     }
-
-    // --- Footer ---
     children.push(new Paragraph({
       spacing: { before: 400 },
       border: { top: { style: BorderStyle.SINGLE, size: 1, color: "E2E8F0" } },
@@ -395,7 +369,7 @@ async function exportDOCX(){
     children.push(new Paragraph({
       spacing: { before: 60 },
       children: [
-        new TextRun({ text: "PMAS v1.0 — 2D Клинический протокол • Автоматически сгенерированный отчёт", size: 14, color: "94A3B8", font: "Calibri", italics: true })
+        new TextRun({ text: "Clinical Planning System v1.0 — 2D Клинический протокол • Автоматически сгенерированный отчёт", size: 14, color: "94A3B8", font: "Calibri", italics: true })
       ]
     }));
 
@@ -406,7 +380,7 @@ async function exportDOCX(){
     const blob = await Packer.toBlob(doc);
     const safePatient = (patient||"").replace(/[^a-zA-Z0-9а-яА-Я _-]+/g,"").trim() || "Patient";
     const safeDate = (date||"").replace(/[^0-9.-]+/g,"").trim() || "";
-    const fname = `PMAS_Protocol_${safePatient}${safeDate?("_"+safeDate):""}.docx`;
+    const fname = `Clinical_Planning_System_Protocol_${safePatient}${safeDate?("_"+safeDate):""}.docx`;
     if(typeof saveAs !== "undefined"){
       saveAs(blob, fname);
     } else {
