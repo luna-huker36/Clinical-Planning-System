@@ -1,4 +1,4 @@
-# PMAS — Clinical Planning System
+# Clinical Planning System
 
 **Планирование и анализ лицевой хирургии на базе AI**
 
@@ -9,7 +9,7 @@
 ## Запуск
 
 ### Онлайн
-https://foggies-studio.github.io/PMAS/
+https://foggies-studio.github.io/Clinical-Planning-System/
 
 ### Локально
 - **macOS** — двойной клик на `start.command`
@@ -141,12 +141,13 @@ PMAS/
 
 ---
 
-## Contributors
+## Авторы
 
-| Name | Role |
+| ФИО | Роль |
 |------|------|
-| foggies-studio | Maintainer |
-| ran9all | Contributor |
+| Меркулов А.А. | Разработчик |
+| Любаев Д.О. | Разработчик |
+| Сергеева А.М. | Разработчик |
 
 ---
 
