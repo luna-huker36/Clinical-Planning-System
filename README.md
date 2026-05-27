@@ -9,7 +9,7 @@
 ## Запуск
 
 ### Онлайн
-https://foggies-studio.github.io/Clinical-Planning-System/
+https://luna-huker36.github.io/Clinical-Planning-System/
 
 ### Локально
 - **macOS** — двойной клик на `start.command`
