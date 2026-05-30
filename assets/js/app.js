@@ -13,7 +13,17 @@ const hamburgerBtn = document.getElementById('hamburgerBtn');
 const tabNav = document.getElementById('tabNav');
 let scene3dInitialized = false;
 const TYPE_NAMES_RU = { point: 'Точка', distance: 'Расстояние', angle: 'Угол', vector: 'Вектор', tilt: 'Наклон', measure: 'Измерение', volume: 'Объём' };
-const TYPE_ICONS = { point: '📍', distance: '📏', angle: '📐', vector: '➡️', tilt: '📊', measure: '📏', volume: '🧊' };
+const TYPE_ICONS = { point: '📍', distance: '📏', angle: '∠', vector: '➜', tilt: '△', measure: '✎', volume: '▧' };
+const TOOL_VISUALS = {
+  point:   { color: 0xe53935, css: '#e53935', rgba: '229,57,53',  icon: '📍', label: 'Точка', marker: 'sphere', line: 'none' },
+  distance:{ color: 0x1e88e5, css: '#1e88e5', rgba: '30,136,229', icon: '📏', label: 'Расстояние', marker: 'sphere', line: 'solid' },
+  angle:   { color: 0x43a047, css: '#43a047', rgba: '67,160,71',  icon: '∠',  label: 'Угол', marker: 'sphere', line: 'solid' },
+  vector:  { color: 0x8e24aa, css: '#8e24aa', rgba: '142,36,170', icon: '➜', label: 'Вектор', marker: 'vector', line: 'arrow' },
+  tilt:    { color: 0xfb8c00, css: '#fb8c00', rgba: '251,140,0',  icon: '△',  label: 'Наклон', marker: 'sphere', line: 'tilt' },
+  measure: { color: 0xfdd835, css: '#d6aa00', rgba: '253,216,53', icon: '✎',  label: 'Измерение', marker: 'square', line: 'dashed' },
+  volume:  { color: 0x00acc1, css: '#00acc1', rgba: '0,172,193',  icon: '▧',  label: 'Объём', marker: 'sphere', line: 'volume' },
+  before:  { color: 0x94a3b8, css: '#94a3b8', rgba: '148,163,184', icon: '•', label: 'До', marker: 'sphere', line: 'dashed' }
+};
 
 tabBtns.forEach(btn => {
   btn.addEventListener('click', () => {
@@ -54,6 +64,7 @@ let before3dSnapshot = null;
 let show3dBefore = false;
 let neckClipPlaneY = null;
 let neckClipHelper = null;
+let pointer3dPress = null;
 function nextId3d() {
   return Math.random().toString(16).slice(2) + Date.now().toString(16);
 }
@@ -265,7 +276,9 @@ function init3DScene() {
 
   loadModel3D(document.getElementById('modelSelect').value);
 
-  renderer.domElement.addEventListener('click', on3DClick);
+  renderer.domElement.addEventListener('pointerdown', on3DPointerDown);
+  renderer.domElement.addEventListener('pointerup', on3DPointerUp);
+  renderer.domElement.addEventListener('pointercancel', () => { pointer3dPress = null; });
   renderer.domElement.addEventListener('dblclick', () => { if (currentModel) fitCamera3D(currentModel); });
   window.addEventListener('resize', onResize3D);
 
@@ -657,9 +670,44 @@ function raycastMesh(e) {
   return hits[0].point.clone();
 }
 
+function on3DPointerDown(e) {
+  if (!tool3dMode || !currentModel || meshCleanupMode) return;
+  if (e.button !== 0 || e.pointerType === 'touch') {
+    pointer3dPress = null;
+    return;
+  }
+  pointer3dPress = {
+    pointerId: e.pointerId,
+    x: e.clientX,
+    y: e.clientY,
+    time: performance.now()
+  };
+}
+
+function on3DPointerUp(e) {
+  if (!pointer3dPress || !tool3dMode || !currentModel || meshCleanupMode) {
+    pointer3dPress = null;
+    return;
+  }
+  if (e.pointerId !== pointer3dPress.pointerId || e.button !== 0) {
+    pointer3dPress = null;
+    return;
+  }
+
+  const movePx = Math.hypot(e.clientX - pointer3dPress.x, e.clientY - pointer3dPress.y);
+  const elapsed = performance.now() - pointer3dPress.time;
+  pointer3dPress = null;
+
+  if (movePx > 3 || elapsed > 900) {
+    setStatus3d('Клик не засчитан: для постановки точки нажмите без перетаскивания.');
+    return;
+  }
+
+  on3DClick(e);
+}
+
 function on3DClick(e) {
   if (!tool3dMode || !currentModel) return;
-  if (controls.enabled && e.detail > 1) return;
 
   const point = raycastMesh(e);
   if (!point) return;
@@ -711,48 +759,56 @@ function on3DClick(e) {
   }
 
   tool3dPoints.push(point);
-  addMarker3D(point);
+  if (tool3dMode === 'vector' && tool3dPoints.length === 1) {
+    addMarker3D(point, tool3dMode, 'sphere', { scale: 1.18, renderOrder: 42 });
+  } else if (tool3dMode !== 'vector') {
+    addMarker3D(point, tool3dMode, tool3dMode === 'measure' ? 'square' : null);
+  }
 
   const label = document.getElementById('planLabel3d')?.value || '';
 
   if (tool3dMode === 'point') {
+    addLabel3D(point.clone().add(new THREE.Vector3(0, markerRadius3D() * 3, 0)), label || 'Точка', 'point');
     finalizePlanItem('point', label, [point]);
     tool3dPoints = [];
   } else if (tool3dMode === 'distance' && tool3dPoints.length === 2) {
     const d = dist3d(tool3dPoints[0], tool3dPoints[1]);
-    addLine3D(tool3dPoints[0], tool3dPoints[1], 0x2563eb);
-    addLabel3D(midpoint(tool3dPoints[0], tool3dPoints[1]), formatDist(d));
+    addLine3D(tool3dPoints[0], tool3dPoints[1], 'distance');
+    addLabel3D(midpoint(tool3dPoints[0], tool3dPoints[1]), formatDist(d), 'distance');
     finalizePlanItem('distance', label, [...tool3dPoints], d);
     tool3dPoints = [];
   } else if (tool3dMode === 'angle' && tool3dPoints.length === 3) {
     const [a, b, c] = tool3dPoints;
-    addLine3D(a, b, 0x0891b2);
-    addLine3D(b, c, 0x0891b2);
+    addLine3D(a, b, 'angle');
+    addLine3D(b, c, 'angle');
     const angle = computeAngle3(a, b, c);
-    addLabel3D(b, `${angle.toFixed(1)}°`);
+    addAngleArc3D(a, b, c, 'angle');
+    addLabel3D(b, `${angle.toFixed(1)}°`, 'angle');
     finalizePlanItem('angle', label, [...tool3dPoints], angle, angle);
     tool3dPoints = [];
   } else if (tool3dMode === 'vector' && tool3dPoints.length === 2) {
-    addArrow3D(tool3dPoints[0], tool3dPoints[1]);
+    addArrow3D(tool3dPoints[0], tool3dPoints[1], 'vector');
     const d = dist3d(tool3dPoints[0], tool3dPoints[1]);
-    addLabel3D(midpoint(tool3dPoints[0], tool3dPoints[1]), `→ ${formatDist(d)}`);
+    addLabel3D(midpoint(tool3dPoints[0], tool3dPoints[1]), formatDist(d), 'vector');
     finalizePlanItem('vector', label, [...tool3dPoints], d);
     tool3dPoints = [];
   } else if (tool3dMode === 'tilt' && tool3dPoints.length === 2) {
-    addLine3D(tool3dPoints[0], tool3dPoints[1], 0xf59e0b);
+    const baseEnd = addTiltBase3D(tool3dPoints[0], tool3dPoints[1]);
+    addLine3D(tool3dPoints[0], tool3dPoints[1], 'tilt');
     const dx = tool3dPoints[1].x - tool3dPoints[0].x;
     const dy = tool3dPoints[1].y - tool3dPoints[0].y;
     const dz = tool3dPoints[1].z - tool3dPoints[0].z;
     const horizDist = Math.sqrt(dx * dx + dz * dz);
     const tiltDeg = Math.atan2(dy, horizDist) * 180 / Math.PI;
     const d = dist3d(tool3dPoints[0], tool3dPoints[1]);
-    addLabel3D(midpoint(tool3dPoints[0], tool3dPoints[1]), `${tiltDeg.toFixed(1)}° | ${formatDist(d)}`);
+    addAngleArc3D(baseEnd, tool3dPoints[0], tool3dPoints[1], 'tilt', true);
+    addLabel3D(midpoint(tool3dPoints[0], tool3dPoints[1]), `${tiltDeg.toFixed(1)}°`, 'tilt');
     finalizePlanItem('tilt', label, [...tool3dPoints], d, tiltDeg);
     tool3dPoints = [];
   } else if (tool3dMode === 'measure' && tool3dPoints.length === 2) {
-    addLine3D(tool3dPoints[0], tool3dPoints[1], 0x14b8a6);
+    addLine3D(tool3dPoints[0], tool3dPoints[1], 'measure', { dashed: true });
     const d = dist3d(tool3dPoints[0], tool3dPoints[1]);
-    addLabel3D(midpoint(tool3dPoints[0], tool3dPoints[1]), formatDist(d));
+    addLabel3D(midpoint(tool3dPoints[0], tool3dPoints[1]), formatDist(d), 'measure');
     finalizePlanItem('measure', label, [...tool3dPoints], d);
     tool3dPoints = [];
   } else {
@@ -1502,7 +1558,7 @@ function updateVolumeHealthUI() {
   applyVolumeHealthUI(item.health, item);
 }
 
-function upsertVolumeItem(volumeUnits, quality, stats) {
+function upsertVolumeItem(volumeUnits, quality, stats, bbox = null) {
   let item = plan3dItems.find(x => x.type === 'volume');
   if (!item) {
     item = { id: nextId3d(), type: 'volume', label: 'Объём головы', points: [], value: volumeUnits, deg: null };
@@ -1519,6 +1575,12 @@ function upsertVolumeItem(volumeUnits, quality, stats) {
   item.nonManifoldEdges = stats.nonManifoldEdges;
   item.cappedLoops = stats.cappedLoops;
   item.health = classifyVolumeHealth(volumeUnits, stats, quality);
+  if (bbox) {
+    item.bbox = {
+      min: { x: bbox.min.x, y: bbox.min.y, z: bbox.min.z },
+      max: { x: bbox.max.x, y: bbox.max.y, z: bbox.max.z }
+    };
+  }
   selected3dPlan = item.id;
 }
 
@@ -1971,12 +2033,12 @@ async function computeMeshVolume() {
   const covText = stats.coverageAvg != null
     ? ` | покрытие: ${(stats.coverageAvg * 100).toFixed(0)}%`
     : '';
-  upsertVolumeItem(stats.volumeUnits, quality, stats);
+  upsertVolumeItem(stats.volumeUnits, quality, stats, bbox);
   updateVolumeHealthUI();
   const covPct = stats.coverageAvg != null ? ` | Покрытие: ${(stats.coverageAvg * 100).toFixed(0)}%` : '';
   const clipInfo = stats.neckClipApplied ? ' | Отсечение шеи' : '';
   setStatus3d(`Объём: ${valueText} | bbox: ${bW}×${bH}×${bD} мм${covPct}${clipInfo}`);
-  render3dPlanList();
+  rebuildAllVisuals();
   update3dSelectedInfo();
   save3dProject();
 }
@@ -1990,51 +2052,212 @@ function computeAngle3(a, b, c) {
 function midpoint(a, b) {
   return new THREE.Vector3().addVectors(a, b).multiplyScalar(0.5);
 }
-function addMarker3D(pos, color = 0x22c55e) {
-  const geo = new THREE.SphereGeometry(0.005, 12, 12);
-  const mat = new THREE.MeshBasicMaterial({ color });
-  const sphere = new THREE.Mesh(geo, mat);
-  sphere.position.copy(pos);
-  scene.add(sphere);
-  markers3d.push(sphere);
+function getToolVisual(type) {
+  return TOOL_VISUALS[type] || TOOL_VISUALS.measure;
 }
 
-function addLine3D(from, to, color = 0x2563eb) {
+function disposeObject3D(obj) {
+  if (!obj) return;
+  obj.traverse?.(child => {
+    if (child.geometry) child.geometry.dispose();
+    if (child.material) {
+      (Array.isArray(child.material) ? child.material : [child.material]).forEach(mat => mat.dispose());
+    }
+  });
+}
+
+function markerRadius3D() {
+  if (!currentModel) return 0.008;
+  const box = new THREE.Box3().setFromObject(currentModel);
+  const size = box.getSize(new THREE.Vector3()).length();
+  return THREE.MathUtils.clamp(size * 0.0055, 0.003, 0.016);
+}
+
+function addMarker3D(pos, colorOrType = 'distance', shapeOverride = null, options = {}) {
+  const visual = typeof colorOrType === 'string'
+    ? getToolVisual(colorOrType)
+    : { color: colorOrType, marker: shapeOverride || 'sphere' };
+  const radius = markerRadius3D() * (options.scale || 1);
+  const shape = shapeOverride || visual.marker || 'sphere';
+  const geo = shape === 'square'
+    ? new THREE.BoxGeometry(radius * 1.7, radius * 1.7, radius * 1.7)
+    : new THREE.SphereGeometry(radius, 18, 18);
+  const mat = new THREE.MeshBasicMaterial({ color: visual.color, depthTest: false });
+  const sphere = new THREE.Mesh(geo, mat);
+  sphere.position.copy(pos);
+  sphere.renderOrder = options.renderOrder || 30;
+  scene.add(sphere);
+  markers3d.push(sphere);
+  return sphere;
+}
+
+function addLine3D(from, to, colorOrType = 'distance', options = {}) {
+  const visual = typeof colorOrType === 'string' ? getToolVisual(colorOrType) : { color: colorOrType };
   const dir = new THREE.Vector3().subVectors(to, from);
   const len = dir.length();
   if (len < 1e-6) return;
-  const tubeGeo = new THREE.CylinderGeometry(0.0015, 0.0015, len, 6, 1);
+  const dashed = options.dashed || visual.line === 'dashed';
+  if (dashed) {
+    const geo = new THREE.BufferGeometry().setFromPoints([from, to]);
+    const mat = new THREE.LineDashedMaterial({
+      color: visual.color,
+      dashSize: options.dashSize || len * 0.08,
+      gapSize: options.gapSize || len * 0.045,
+      transparent: true,
+      opacity: options.opacity ?? 0.95,
+      depthTest: false
+    });
+    const line = new THREE.Line(geo, mat);
+    line.computeLineDistances();
+    line.renderOrder = 25;
+    scene.add(line);
+    lines3d.push(line);
+    return line;
+  }
+
+  const radius = options.radius || markerRadius3D() * 0.24;
+  const tubeGeo = new THREE.CylinderGeometry(radius, radius, len, 10, 1);
   tubeGeo.translate(0, len / 2, 0);
   tubeGeo.rotateX(Math.PI / 2);
-  const tubeMat = new THREE.MeshBasicMaterial({ color });
+  const tubeMat = new THREE.MeshBasicMaterial({
+    color: visual.color,
+    transparent: true,
+    opacity: options.opacity ?? 0.98,
+    depthTest: false
+  });
   const tube = new THREE.Mesh(tubeGeo, tubeMat);
   tube.position.copy(from);
   tube.lookAt(to);
+  tube.renderOrder = 20;
   scene.add(tube);
   lines3d.push(tube);
+  return tube;
 }
 
-function addArrow3D(from, to) {
+function addArrow3D(from, to, type = 'vector') {
+  const visual = getToolVisual(type);
   const dir = new THREE.Vector3().subVectors(to, from);
   const len = dir.length();
+  if (len < 1e-6) return;
   dir.normalize();
-  const arrow = new THREE.ArrowHelper(dir, from, len, 0xef4444, 0.02, 0.01);
-  scene.add(arrow);
-  lines3d.push(arrow);
+  const shaft = addLine3D(from, to, type, { radius: markerRadius3D() * 0.28 });
+  addMarker3D(from, type, 'sphere', { scale: 1.18, renderOrder: 42 });
+  const cone = new THREE.Mesh(
+    new THREE.ConeGeometry(markerRadius3D() * 0.95, Math.min(len * 0.22, markerRadius3D() * 3.8), 24),
+    new THREE.MeshBasicMaterial({ color: visual.color, depthTest: false })
+  );
+  cone.position.copy(to);
+  cone.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
+  cone.renderOrder = 28;
+  scene.add(cone);
+  lines3d.push(cone);
+  return shaft;
 }
 
-function addLabel3D(pos, text, bg = 'rgba(37,99,235,0.9)') {
+function addAngleArc3D(a, b, c, type = 'angle', dashed = false) {
+  const visual = getToolVisual(type);
+  const v1 = new THREE.Vector3().subVectors(a, b);
+  const v2 = new THREE.Vector3().subVectors(c, b);
+  if (v1.lengthSq() < 1e-10 || v2.lengthSq() < 1e-10) return;
+  const radius = Math.min(v1.length(), v2.length()) * 0.28;
+  const xAxis = v1.clone().normalize();
+  const normal = new THREE.Vector3().crossVectors(v1, v2).normalize();
+  if (normal.lengthSq() < 1e-10) return;
+  const yAxis = new THREE.Vector3().crossVectors(normal, xAxis).normalize();
+  let angle = xAxis.angleTo(v2.clone().normalize());
+  if (new THREE.Vector3().crossVectors(xAxis, v2).dot(normal) < 0) angle = -angle;
+
+  const pts = [];
+  const steps = 32;
+  for (let i = 0; i <= steps; i += 1) {
+    const t = angle * (i / steps);
+    pts.push(b.clone()
+      .add(xAxis.clone().multiplyScalar(Math.cos(t) * radius))
+      .add(yAxis.clone().multiplyScalar(Math.sin(t) * radius)));
+  }
+  const geo = new THREE.BufferGeometry().setFromPoints(pts);
+  const mat = dashed
+    ? new THREE.LineDashedMaterial({ color: visual.color, dashSize: radius * 0.16, gapSize: radius * 0.08, depthTest: false })
+    : new THREE.LineBasicMaterial({ color: visual.color, transparent: true, opacity: 0.95, depthTest: false });
+  const arc = new THREE.Line(geo, mat);
+  if (dashed) arc.computeLineDistances();
+  arc.renderOrder = 26;
+  scene.add(arc);
+  lines3d.push(arc);
+  return arc;
+}
+
+function addTiltBase3D(from, to) {
+  const horiz = new THREE.Vector3(to.x - from.x, 0, to.z - from.z);
+  if (horiz.lengthSq() < 1e-10) horiz.set(1, 0, 0).multiplyScalar(from.distanceTo(to) || markerRadius3D() * 8);
+  const end = from.clone().add(horiz);
+  addLine3D(from, end, 'tilt', { dashed: true, opacity: 0.9 });
+  return end;
+}
+
+function addVolumeBox3D(item) {
+  if (!item?.bbox) return;
+  const visual = getToolVisual('volume');
+  const min = new THREE.Vector3(item.bbox.min.x, item.bbox.min.y, item.bbox.min.z);
+  const max = new THREE.Vector3(item.bbox.max.x, item.bbox.max.y, item.bbox.max.z);
+  const box = new THREE.Box3(min, max);
+  const size = box.getSize(new THREE.Vector3());
+  const center = box.getCenter(new THREE.Vector3());
+  if (!Number.isFinite(size.x) || size.lengthSq() < 1e-10) return;
+
+  const group = new THREE.Group();
+  const fill = new THREE.Mesh(
+    new THREE.BoxGeometry(size.x, size.y, size.z),
+    new THREE.MeshBasicMaterial({ color: visual.color, transparent: true, opacity: 0.08, depthWrite: false, depthTest: false })
+  );
+  fill.position.copy(center);
+  fill.renderOrder = 8;
+  group.add(fill);
+
+  const edgesGeo = new THREE.EdgesGeometry(new THREE.BoxGeometry(size.x, size.y, size.z));
+  const edges = new THREE.LineSegments(
+    edgesGeo,
+    new THREE.LineDashedMaterial({ color: visual.color, dashSize: size.length() * 0.025, gapSize: size.length() * 0.015, depthTest: false })
+  );
+  edges.position.copy(center);
+  edges.computeLineDistances();
+  edges.renderOrder = 24;
+  group.add(edges);
+
+  const corners = [
+    [min.x, min.y, min.z], [max.x, min.y, min.z], [min.x, max.y, min.z], [max.x, max.y, min.z],
+    [min.x, min.y, max.z], [max.x, min.y, max.z], [min.x, max.y, max.z], [max.x, max.y, max.z]
+  ];
+  corners.forEach(c => {
+    const marker = new THREE.Mesh(
+      new THREE.SphereGeometry(markerRadius3D() * 0.7, 12, 12),
+      new THREE.MeshBasicMaterial({ color: visual.color, depthTest: false })
+    );
+    marker.position.set(c[0], c[1], c[2]);
+    marker.renderOrder = 28;
+    group.add(marker);
+  });
+
+  scene.add(group);
+  lines3d.push(group);
+}
+
+function addLabel3D(pos, text, type = 'distance') {
+  const visual = getToolVisual(type);
   const div = document.createElement('div');
-  div.style.cssText = `background:${bg};color:#fff;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600;white-space:nowrap;`;
-  div.textContent = text;
+  div.className = 'measurement-label-3d';
+  div.style.setProperty('--tool-color', visual.css);
+  div.style.setProperty('--tool-rgb', visual.rgba);
+  div.innerHTML = `<span class="measurement-label-icon">${visual.icon}</span><span>${escHtml(text)}</span>`;
   const label = new CSS2DObject(div);
   label.position.copy(pos);
   scene.add(label);
   labels3d.push(label);
+  return label;
 }
 function clearAllVisuals() {
-  markers3d.forEach(m => { scene.remove(m); m.geometry.dispose(); m.material.dispose(); });
-  lines3d.forEach(l => { scene.remove(l); if (l.geometry) l.geometry.dispose(); if (l.material) l.material.dispose(); });
+  markers3d.forEach(m => { scene.remove(m); disposeObject3D(m); });
+  lines3d.forEach(l => { scene.remove(l); disposeObject3D(l); });
   labels3d.forEach(l => scene.remove(l));
   markers3d = []; lines3d = []; labels3d = [];
   tool3dPoints = [];
@@ -2044,37 +2267,55 @@ function rebuildAllVisuals() {
   clearAllVisuals();
   for (const item of plan3dItems) {
     const pts = item.points.map(p => new THREE.Vector3(p.x, p.y, p.z));
-    pts.forEach(p => addMarker3D(p));
+    if (item.type === 'volume') {
+      addVolumeBox3D(item);
+      if (item.bbox) {
+        const center = new THREE.Box3(
+          new THREE.Vector3(item.bbox.min.x, item.bbox.min.y, item.bbox.min.z),
+          new THREE.Vector3(item.bbox.max.x, item.bbox.max.y, item.bbox.max.z)
+        ).getCenter(new THREE.Vector3());
+        addLabel3D(center, formatVolumeUnits(item.value), 'volume');
+      }
+      continue;
+    }
+    if (item.type !== 'vector') {
+      pts.forEach(p => addMarker3D(p, item.type, item.type === 'measure' ? 'square' : null));
+    }
 
-    if (item.type === 'distance') {
-      addLine3D(pts[0], pts[1], 0x2563eb);
-      addLabel3D(midpoint(pts[0], pts[1]), formatDist(item.value));
+    if (item.type === 'point') {
+      if (pts[0]) addLabel3D(pts[0].clone().add(new THREE.Vector3(0, markerRadius3D() * 3, 0)), item.label || 'Точка', 'point');
+    } else if (item.type === 'distance' && pts.length >= 2) {
+      addLine3D(pts[0], pts[1], 'distance');
+      addLabel3D(midpoint(pts[0], pts[1]), formatDist(item.value), 'distance');
     } else if (item.type === 'angle' && pts.length >= 3) {
-      addLine3D(pts[0], pts[1], 0x0891b2);
-      addLine3D(pts[1], pts[2], 0x0891b2);
-      addLabel3D(pts[1], `${item.deg.toFixed(1)}°`);
-    } else if (item.type === 'vector') {
-      addArrow3D(pts[0], pts[1]);
-      addLabel3D(midpoint(pts[0], pts[1]), `→ ${formatDist(item.value)}`);
-    } else if (item.type === 'tilt') {
-      addLine3D(pts[0], pts[1], 0xf59e0b);
-      addLabel3D(midpoint(pts[0], pts[1]), `${item.deg.toFixed(1)}° | ${formatDist(item.value)}`);
-    } else if (item.type === 'measure') {
-      addLine3D(pts[0], pts[1], 0x14b8a6);
-      addLabel3D(midpoint(pts[0], pts[1]), formatDist(item.value));
+      addLine3D(pts[0], pts[1], 'angle');
+      addLine3D(pts[1], pts[2], 'angle');
+      addAngleArc3D(pts[0], pts[1], pts[2], 'angle');
+      addLabel3D(pts[1], `${item.deg.toFixed(1)}°`, 'angle');
+    } else if (item.type === 'vector' && pts.length >= 2) {
+      addArrow3D(pts[0], pts[1], 'vector');
+      addLabel3D(midpoint(pts[0], pts[1]), formatDist(item.value), 'vector');
+    } else if (item.type === 'tilt' && pts.length >= 2) {
+      const baseEnd = addTiltBase3D(pts[0], pts[1]);
+      addLine3D(pts[0], pts[1], 'tilt');
+      addAngleArc3D(baseEnd, pts[0], pts[1], 'tilt', true);
+      addLabel3D(midpoint(pts[0], pts[1]), item.deg != null ? `${item.deg.toFixed(1)}°` : formatDist(item.value), 'tilt');
+    } else if (item.type === 'measure' && pts.length >= 2) {
+      addLine3D(pts[0], pts[1], 'measure', { dashed: true });
+      addLabel3D(midpoint(pts[0], pts[1]), formatDist(item.value), 'measure');
     }
   }
   if (show3dBefore && before3dSnapshot) {
     for (const item of before3dSnapshot.items) {
       const pts = item.points.map(p => new THREE.Vector3(p.x, p.y, p.z));
-      pts.forEach(p => addMarker3D(p, 0x94a3b8));
+      pts.forEach(p => addMarker3D(p, 'before'));
       if (item.type === 'distance' || item.type === 'measure' || item.type === 'tilt') {
-        addLine3D(pts[0], pts[1], 0x94a3b8);
+        addLine3D(pts[0], pts[1], 'before', { dashed: true, opacity: 0.72 });
       } else if (item.type === 'vector') {
-        addLine3D(pts[0], pts[1], 0x94a3b8);
+        addLine3D(pts[0], pts[1], 'before', { dashed: true, opacity: 0.72 });
       } else if (item.type === 'angle' && pts.length >= 3) {
-        addLine3D(pts[0], pts[1], 0x94a3b8);
-        addLine3D(pts[1], pts[2], 0x94a3b8);
+        addLine3D(pts[0], pts[1], 'before', { dashed: true, opacity: 0.72 });
+        addLine3D(pts[1], pts[2], 'before', { dashed: true, opacity: 0.72 });
       }
     }
   }
@@ -2145,10 +2386,11 @@ function render3dPlanList() {
     const isSel = selected3dPlan === m.id;
     const selStyle = isSel ? 'outline:2px solid rgba(59,130,246,0.55);' : '';
     const typeName = TYPE_NAMES_RU[m.type] || m.type;
+    const visual = getToolVisual(m.type);
     const showLabel = m.label && m.label !== m.type && m.label !== typeName;
-    return `<div style="cursor:pointer;${selStyle}" onclick="window._select3dPlan('${m.id}')">
+    return `<div style="cursor:pointer;border-left:3px solid ${visual.css};${selStyle}" onclick="window._select3dPlan('${m.id}')">
       <div>
-        ${TYPE_ICONS[m.type] || ''} <strong>${typeName} ${i + 1}</strong>
+        <span style="color:${visual.css};font-weight:800">${visual.icon}</span> <strong>${typeName} ${i + 1}</strong>
         ${showLabel ? ' • <em>' + escHtml(m.label) + '</em>' : ''}
         : ${val}
       </div>
@@ -2761,12 +3003,12 @@ function updateBtn3DStates() {
   document.getElementById('btnWireframe')?.classList.toggle('btn-active', wireframeMode);
   document.getElementById('btnNormals')?.classList.toggle('btn-active', normalsMode);
 
-  const toolBtns = ['btn3dPoint', 'btn3dDistance', 'btn3dAngle', 'btn3dVector', 'btn3dTilt', 'btn3dMeasure', 'btn3dNeckClip'];
+  const toolBtns = ['btn3dPoint', 'btn3dAngle', 'btn3dVector', 'btn3dTilt', 'btn3dMeasure', 'btn3dNeckClip'];
   toolBtns.forEach(id => document.getElementById(id)?.classList.remove('btn-active'));
 
   if (tool3dMode) {
     const map = {
-      point: 'btn3dPoint', distance: 'btn3dDistance', angle: 'btn3dAngle',
+      point: 'btn3dPoint', angle: 'btn3dAngle',
       vector: 'btn3dVector', tilt: 'btn3dTilt', measure: 'btn3dMeasure',
       neckClip: 'btn3dNeckClip'
     };
@@ -2782,7 +3024,6 @@ function setTool3D(mode) {
 
   const msgs = {
     point: 'Точка: кликните на модель.',
-    distance: 'Расстояние: выберите 2 точки.',
     angle: 'Угол: выберите 3 точки (A → B(вершина) → C).',
     vector: 'Вектор: выберите 2 точки (откуда → куда).',
     tilt: 'Наклон: выберите 2 точки.',
@@ -2863,7 +3104,6 @@ function bindUI3D() {
     document.querySelectorAll('.bg-btn').forEach(b => b.classList.remove('active'));
   });
   document.getElementById('btn3dPoint').addEventListener('click', () => setTool3D('point'));
-  document.getElementById('btn3dDistance').addEventListener('click', () => setTool3D('distance'));
   document.getElementById('btn3dAngle').addEventListener('click', () => setTool3D('angle'));
   document.getElementById('btn3dVector').addEventListener('click', () => setTool3D('vector'));
   document.getElementById('btn3dTilt').addEventListener('click', () => setTool3D('tilt'));
@@ -3118,32 +3358,32 @@ const OPERATION_TEMPLATES = {
   rhinoplasty: {
     name: 'Ринопластика',
     measurements: [
-      { type: 'distance', label: 'Длина носа', desc: 'Nasion → Tip' },
-      { type: 'distance', label: 'Ширина носа', desc: 'Alar R → Alar L' },
-      { type: 'distance', label: 'Проекция кончика', desc: 'Alar base → Tip' },
+      { type: 'measure', label: 'Длина носа', desc: 'Nasion → Tip' },
+      { type: 'measure', label: 'Ширина носа', desc: 'Alar R → Alar L' },
+      { type: 'measure', label: 'Проекция кончика', desc: 'Alar base → Tip' },
       { type: 'angle', label: 'Назолабиальный угол', desc: 'Columella-Lip-Subnasale' },
       { type: 'angle', label: 'Назофронтальный угол', desc: 'Glabella-Nasion-Dorsum' },
-      { type: 'distance', label: 'Отклонение от средней линии', desc: 'Tip → Mid-sagittal' },
+      { type: 'measure', label: 'Отклонение от средней линии', desc: 'Tip → Mid-sagittal' },
     ]
   },
   blepharoplasty: {
     name: 'Блефаропластика',
     measurements: [
-      { type: 'distance', label: 'Длина глазной щели (R)', desc: 'Медиальный → латеральный угол правого глаза' },
-      { type: 'distance', label: 'Длина глазной щели (L)', desc: 'Медиальный → латеральный угол левого глаза' },
-      { type: 'distance', label: 'MRD1 (R)', desc: 'Верх. край зрачка → верх. веко' },
-      { type: 'distance', label: 'MRD1 (L)', desc: 'Верх. край зрачка → верх. веко' },
-      { type: 'distance', label: 'Межзрачковое расстояние', desc: 'Зрачок R → Зрачок L' },
+      { type: 'measure', label: 'Длина глазной щели (R)', desc: 'Медиальный → латеральный угол правого глаза' },
+      { type: 'measure', label: 'Длина глазной щели (L)', desc: 'Медиальный → латеральный угол левого глаза' },
+      { type: 'measure', label: 'MRD1 (R)', desc: 'Верх. край зрачка → верх. веко' },
+      { type: 'measure', label: 'MRD1 (L)', desc: 'Верх. край зрачка → верх. веко' },
+      { type: 'measure', label: 'Межзрачковое расстояние', desc: 'Зрачок R → Зрачок L' },
     ]
   },
   facelift: {
     name: 'Фейслифтинг',
     measurements: [
-      { type: 'distance', label: 'Ширина лица (скулы)', desc: 'Zygoma R → Zygoma L' },
-      { type: 'distance', label: 'Ширина ниж. челюсти', desc: 'Gonion R → Gonion L' },
-      { type: 'distance', label: 'Высота лица', desc: 'Trichion → Menton' },
-      { type: 'distance', label: 'Высота средней трети', desc: 'Glabella → Subnasale' },
-      { type: 'distance', label: 'Высота нижней трети', desc: 'Subnasale → Menton' },
+      { type: 'measure', label: 'Ширина лица (скулы)', desc: 'Zygoma R → Zygoma L' },
+      { type: 'measure', label: 'Ширина ниж. челюсти', desc: 'Gonion R → Gonion L' },
+      { type: 'measure', label: 'Высота лица', desc: 'Trichion → Menton' },
+      { type: 'measure', label: 'Высота средней трети', desc: 'Glabella → Subnasale' },
+      { type: 'measure', label: 'Высота нижней трети', desc: 'Subnasale → Menton' },
       { type: 'vector', label: 'Вектор подтяжки (R)', desc: 'Направление SMAS-подтяжки справа' },
       { type: 'vector', label: 'Вектор подтяжки (L)', desc: 'Направление SMAS-подтяжки слева' },
     ]
@@ -3151,19 +3391,19 @@ const OPERATION_TEMPLATES = {
   genioplasty: {
     name: 'Гениопластика',
     measurements: [
-      { type: 'distance', label: 'Проекция подбородка', desc: 'Subnasale → Pogonion (горизонт.)' },
-      { type: 'distance', label: 'Высота подбородка', desc: 'Labrale inf. → Menton' },
+      { type: 'measure', label: 'Проекция подбородка', desc: 'Subnasale → Pogonion (горизонт.)' },
+      { type: 'measure', label: 'Высота подбородка', desc: 'Labrale inf. → Menton' },
       { type: 'angle', label: 'Цервико-ментальный угол', desc: 'Угол шея-подбородок' },
-      { type: 'distance', label: 'Отклонение подбородка', desc: 'Menton → Mid-sagittal' },
+      { type: 'measure', label: 'Отклонение подбородка', desc: 'Menton → Mid-sagittal' },
     ]
   },
   otoplasty: {
     name: 'Отопластика',
     measurements: [
-      { type: 'distance', label: 'Ушная раковина (R)', desc: 'Длина правого уха' },
-      { type: 'distance', label: 'Ушная раковина (L)', desc: 'Длина левого уха' },
-      { type: 'distance', label: 'Отстояние (R)', desc: 'Helix R → Mastoid R' },
-      { type: 'distance', label: 'Отстояние (L)', desc: 'Helix L → Mastoid L' },
+      { type: 'measure', label: 'Ушная раковина (R)', desc: 'Длина правого уха' },
+      { type: 'measure', label: 'Ушная раковина (L)', desc: 'Длина левого уха' },
+      { type: 'measure', label: 'Отстояние (R)', desc: 'Helix R → Mastoid R' },
+      { type: 'measure', label: 'Отстояние (L)', desc: 'Helix L → Mastoid L' },
       { type: 'angle', label: 'Ауриколоцефальный угол (R)', desc: 'Угол правого уха к черепу' },
       { type: 'angle', label: 'Ауриколоцефальный угол (L)', desc: 'Угол левого уха к черепу' },
     ]

@@ -189,6 +189,44 @@ textarea { resize: vertical; min-height: 60px; }
 .btn-grid { display: flex; flex-wrap: wrap; gap: 6px; }
 .btn-grid.cols-3 > .btn { flex: 1; min-width: 80px; }
 
+.tool-grid-3d {
+  gap: 8px;
+}
+.tool-btn-3d {
+  --tool-color: var(--accent);
+  --tool-rgb: 8,145,178;
+  min-height: 36px;
+  padding: 7px 10px;
+  gap: 6px;
+  border-color: rgba(var(--tool-rgb), 0.18);
+  background: rgba(var(--tool-rgb), 0.13);
+  color: var(--tool-color);
+  font-size: 12px;
+  font-weight: 600;
+}
+.tool-btn-3d:hover {
+  border-color: rgba(var(--tool-rgb), 0.45);
+  background: rgba(var(--tool-rgb), 0.20);
+  color: var(--tool-color);
+  transform: translateY(-1px);
+}
+.tool-btn-3d.btn-active {
+  background: var(--tool-color) !important;
+  border-color: var(--tool-color) !important;
+  color: #fff !important;
+  box-shadow: 0 0 0 3px rgba(var(--tool-rgb), 0.18), 0 8px 18px rgba(var(--tool-rgb), 0.18);
+}
+.tool-btn-3d .tool-icon {
+  font-size: 13px;
+  line-height: 1;
+}
+.tool-btn-3d[data-tool="point"] { --tool-color: #e53935; --tool-rgb: 229,57,53; }
+.tool-btn-3d[data-tool="angle"] { --tool-color: #43a047; --tool-rgb: 67,160,71; }
+.tool-btn-3d[data-tool="vector"] { --tool-color: #8e24aa; --tool-rgb: 142,36,170; }
+.tool-btn-3d[data-tool="tilt"] { --tool-color: #fb8c00; --tool-rgb: 251,140,0; }
+.tool-btn-3d[data-tool="measure"] { --tool-color: #d6aa00; --tool-rgb: 253,216,53; }
+.tool-btn-3d[data-tool="volume"] { --tool-color: #00acc1; --tool-rgb: 0,172,193; }
+
 
 .badge {
   display: inline-block; padding: 3px 8px;
@@ -469,6 +507,34 @@ textarea { resize: vertical; min-height: 60px; }
   width: 100%; height: 100%;
 }
 #canvas3d-container canvas { display: block; width: 100%; height: 100%; }
+.measurement-label-3d {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 64px;
+  padding: 5px 10px;
+  border: 1.5px solid rgba(var(--tool-rgb), 0.72);
+  border-radius: 7px;
+  background: rgba(255,255,255,0.78);
+  color: var(--tool-color);
+  box-shadow: 0 8px 24px rgba(15,23,42,0.12);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1;
+  white-space: nowrap;
+  text-align: center;
+  pointer-events: none;
+}
+.measurement-label-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  line-height: 1;
+}
 
 
 .loading-overlay {

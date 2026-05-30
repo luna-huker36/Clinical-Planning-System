@@ -342,19 +342,22 @@
           <button class="btn btn-sm bg-btn" data-bg="#f1f5f9" id="bgLight" style="background:#f1f5f9;border:2px solid #cbd5e1;width:26px;height:26px;padding:0;min-width:0" title="Светлый"></button>
           <input type="color" id="bgCustomColor" value="#ffffff" style="width:26px;height:26px;padding:0;border:2px solid #cbd5e1;border-radius:6px;cursor:pointer" title="Свой цвет">
         </div>
+        <div class="form-row" style="margin-top:8px;align-items:center;gap:6px">
+          <span class="label-sm">Масштаб</span>
+          <span class="badge" id="scale3dBadge">Авто</span>
+        </div>
       </div>
 
       
       <div class="card">
         <div class="card-title">🛠 Инструменты</div>
-        <div class="btn-grid">
-          <button class="btn btn-accent" id="btn3dPoint">📍 Точка</button>
-          <button class="btn btn-accent" id="btn3dDistance">📏 Расстояние</button>
-          <button class="btn btn-accent" id="btn3dAngle">📐 Угол</button>
-          <button class="btn btn-accent" id="btn3dVector">➡️ Вектор</button>
-          <button class="btn btn-accent" id="btn3dTilt">📊 Наклон</button>
-          <button class="btn btn-accent" id="btn3dMeasure">✏️ Измерение</button>
-          <button class="btn btn-accent" id="btn3dVolume">🧊 Объём</button>
+        <div class="btn-grid tool-grid-3d">
+          <button class="btn btn-accent tool-btn-3d" data-tool="point" id="btn3dPoint"><span class="tool-icon">📍</span>Точка</button>
+          <button class="btn btn-accent tool-btn-3d" data-tool="angle" id="btn3dAngle"><span class="tool-icon">∠</span>Угол</button>
+          <button class="btn btn-accent tool-btn-3d" data-tool="vector" id="btn3dVector"><span class="tool-icon">➜</span>Вектор</button>
+          <button class="btn btn-accent tool-btn-3d" data-tool="tilt" id="btn3dTilt"><span class="tool-icon">△</span>Наклон</button>
+          <button class="btn btn-accent tool-btn-3d" data-tool="measure" id="btn3dMeasure"><span class="tool-icon">✎</span>Измерение</button>
+          <button class="btn btn-accent tool-btn-3d" data-tool="volume" id="btn3dVolume"><span class="tool-icon">▧</span>Объём</button>
         </div>
       </div>
 
