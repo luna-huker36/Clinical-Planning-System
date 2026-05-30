@@ -12,6 +12,7 @@ const tabContents = document.querySelectorAll('.tab-content');
 const hamburgerBtn = document.getElementById('hamburgerBtn');
 const tabNav = document.getElementById('tabNav');
 let scene3dInitialized = false;
+let pendingInitial3dModel = null;
 const TYPE_NAMES_RU = { point: 'Точка', distance: 'Расстояние', angle: 'Угол', vector: 'Вектор', tilt: 'Наклон', measure: 'Измерение', volume: 'Объём' };
 const TYPE_ICONS = { point: '📍', distance: '📏', angle: '∠', vector: '➜', tilt: '△', measure: '✎', volume: '▧' };
 const TOOL_VISUALS = {
@@ -25,21 +26,20 @@ const TOOL_VISUALS = {
   before:  { color: 0x94a3b8, css: '#94a3b8', rgba: '148,163,184', icon: '•', label: 'До', marker: 'sphere', line: 'dashed' }
 };
 
-tabBtns.forEach(btn => {
-  btn.addEventListener('click', () => {
-    const target = btn.dataset.tab;
-    tabBtns.forEach(b => b.classList.remove('active'));
-    tabContents.forEach(tc => tc.classList.remove('active'));
-    btn.classList.add('active');
-    document.getElementById(target).classList.add('active');
-    tabNav.classList.remove('open');
+function showTab(target) {
+  tabBtns.forEach(b => b.classList.toggle('active', b.dataset.tab === target));
+  tabContents.forEach(tc => tc.classList.toggle('active', tc.id === target));
+  tabNav.classList.remove('open');
 
-    if (target === 'tab3d' && !scene3dInitialized) {
-      init3DScene();
-      scene3dInitialized = true;
-    }
-    if (target === 'tab3d') onResize3D();
-  });
+  if (target === 'tab3d' && !scene3dInitialized) {
+    init3DScene();
+    scene3dInitialized = true;
+  }
+  if (target === 'tab3d') onResize3D();
+}
+
+tabBtns.forEach(btn => {
+  btn.addEventListener('click', () => showTab(btn.dataset.tab));
 });
 
 hamburgerBtn?.addEventListener('click', () => tabNav.classList.toggle('open'));
@@ -274,7 +274,13 @@ function init3DScene() {
   loader.setKTX2Loader(ktx2Loader);
   loader.setMeshoptDecoder(MeshoptDecoder);
 
-  loadModel3D(document.getElementById('modelSelect').value);
+  const initialModel = pendingInitial3dModel;
+  pendingInitial3dModel = null;
+  if (initialModel) {
+    loadModel3D(initialModel.url, initialModel.storageKey);
+  } else {
+    loadModel3D(document.getElementById('modelSelect').value);
+  }
 
   renderer.domElement.addEventListener('pointerdown', on3DPointerDown);
   renderer.domElement.addEventListener('pointerup', on3DPointerUp);
@@ -3139,6 +3145,15 @@ window._3d = {
   get mouse() { return mouse; },
   loadOBJ: loadOBJModel,
   computeVolume: computeMeshVolume,
+  openModel(url, storageKey = makeBuiltInModelKey(url)) {
+    if (!scene3dInitialized) {
+      pendingInitial3dModel = { url, storageKey };
+      showTab('tab3d');
+      return;
+    }
+    showTab('tab3d');
+    loadModel3D(url, storageKey);
+  },
   setTool: setTool3D,
   addMarker: addMarker3D,
   addLine: addLine3D,

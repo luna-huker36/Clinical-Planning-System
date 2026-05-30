@@ -55,6 +55,10 @@
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
       <span>3D Модель</span>
     </button>
+    <button class="tab-btn" data-tab="tabReconstruction">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><path d="M7.5 4.21 12 6.81l4.5-2.6"/><path d="M7.5 19.79V14.6L3 12"/><path d="M21 12l-4.5 2.6v5.19"/><path d="M3.27 6.96 12 12l8.73-5.04"/><path d="M12 22.08V12"/></svg>
+      <span>3D Reconstruction</span>
+    </button>
     <button class="tab-btn" data-tab="tabAbout">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
       <span>О проекте</span>
@@ -521,6 +525,124 @@
 </div>
 
 
+<div class="tab-content" id="tabReconstruction">
+  <div class="reconstruction-page">
+    <section class="reconstruction-shell">
+      <div class="reconstruction-head">
+        <div>
+          <div class="hero-badge">Mock pipeline</div>
+          <h1 class="reconstruction-title">3D Reconstruction</h1>
+          <p class="reconstruction-subtitle">Загрузите фото или видео головы, запустите каркас обработки и откройте тестовый GLB в текущем 3D-viewer PMAS.</p>
+        </div>
+        <span class="badge badge-info" id="reconstructionStageBadge">Idle</span>
+      </div>
+
+      <div class="reconstruction-grid">
+        <div class="card reconstruction-card">
+          <div class="card-title">📥 Входные файлы</div>
+          <label class="reconstruction-dropzone" id="reconstructionDropzone" for="reconstructionFileInput">
+            <input type="file" id="reconstructionFileInput" accept=".jpg,.jpeg,.png,.mp4,.mov,.webm,image/jpeg,image/png,video/mp4,video/quicktime,video/webm" multiple />
+            <span class="reconstruction-drop-icon">⬡</span>
+            <span class="reconstruction-drop-title">Перетащите фото/видео сюда</span>
+            <span class="reconstruction-drop-hint">или нажмите для выбора файлов: JPG, JPEG, PNG, MP4, MOV, WEBM до 250 MB</span>
+          </label>
+
+          <div class="reconstruction-actions">
+            <button class="btn btn-primary" id="btnStartReconstruction" disabled>Start reconstruction</button>
+            <button class="btn" id="btnCancelReconstruction" style="display:none">Cancel reconstruction</button>
+            <button class="btn" id="btnRetryReconstruction" style="display:none">Retry</button>
+            <button class="btn btn-danger" id="btnClearReconstruction">Очистить</button>
+          </div>
+        </div>
+
+        <div class="card reconstruction-card">
+          <div class="card-title">📋 Загруженные файлы <span class="badge" id="reconstructionFileCount">0</span></div>
+          <div id="reconstructionFileList" class="reconstruction-file-list">
+            <div class="hint">Файлы ещё не загружены.</div>
+          </div>
+        </div>
+
+        <div class="card reconstruction-card">
+          <div class="card-title">🧪 Input Quality Report</div>
+          <div class="reconstruction-quality-grid">
+            <div>
+              <span class="label-sm">Input type</span>
+              <div class="reconstruction-quality-value" id="reconstructionQualityInputType">—</div>
+            </div>
+            <div>
+              <span class="label-sm">Files</span>
+              <div class="reconstruction-quality-value" id="reconstructionQualityFileCount">0</div>
+            </div>
+            <div>
+              <span class="label-sm">Estimated quality</span>
+              <div class="reconstruction-quality-value">
+                <span class="badge" id="reconstructionQualityBadge">—</span>
+              </div>
+            </div>
+          </div>
+          <div class="reconstruction-quality-block">
+            <span class="label-sm">Warnings</span>
+            <div id="reconstructionWarnings" class="reconstruction-quality-list hint">—</div>
+          </div>
+          <div class="reconstruction-quality-block">
+            <span class="label-sm">Recommendations</span>
+            <div id="reconstructionRecommendations" class="reconstruction-quality-list hint">—</div>
+          </div>
+        </div>
+
+        <div class="card reconstruction-card">
+          <div class="card-title">⚙️ Статус обработки</div>
+          <div class="reconstruction-job-grid">
+            <div>
+              <span class="label-sm">Job ID</span>
+              <div class="reconstruction-job-value" id="reconstructionJobId">—</div>
+            </div>
+            <div>
+              <span class="label-sm">Status</span>
+              <div class="reconstruction-job-value" id="reconstructionJobStatus">Idle</div>
+            </div>
+            <div>
+              <span class="label-sm">File type</span>
+              <div class="reconstruction-job-value" id="reconstructionJobFileType">—</div>
+            </div>
+            <div>
+              <span class="label-sm">Progress</span>
+              <div class="reconstruction-job-value" id="reconstructionProgressValue">0%</div>
+            </div>
+          </div>
+          <div class="reconstruction-progress">
+            <div class="reconstruction-progress-bar" id="reconstructionProgressBar"></div>
+          </div>
+          <div class="reconstruction-status-steps">
+            <div class="reconstruction-step" data-stage="uploaded">Uploaded</div>
+            <div class="reconstruction-step" data-stage="validating">Validating</div>
+            <div class="reconstruction-step" data-stage="analyzing">Analyzing</div>
+            <div class="reconstruction-step" data-stage="preparing">Preparing</div>
+            <div class="reconstruction-step" data-stage="queued">Queued</div>
+            <div class="reconstruction-step" data-stage="processing">Processing</div>
+            <div class="reconstruction-step" data-stage="cleaning">Cleaning</div>
+            <div class="reconstruction-step" data-stage="exporting">Exporting</div>
+            <div class="reconstruction-step" data-stage="ready">GLB ready</div>
+            <div class="reconstruction-step" data-stage="canceled">Canceled</div>
+          </div>
+          <div id="reconstructionStatus" class="status-bar">Загрузите фото или видео головы.</div>
+          <div id="reconstructionError" class="reconstruction-error" style="display:none"></div>
+        </div>
+
+        <div class="card reconstruction-card reconstruction-result" id="reconstructionResult" style="display:none">
+          <div class="card-title">🧊 Результат</div>
+          <div class="reconstruction-result-meta">
+            <span class="badge badge-info">GLB ready</span>
+            <span id="reconstructionResultName">models/LeePerrySmith.glb</span>
+          </div>
+          <button class="btn btn-primary" id="btnOpenReconstruction3d" style="display:none">Open in PMAS 3D viewer</button>
+        </div>
+      </div>
+    </section>
+  </div>
+</div>
+
+
 <div class="tab-content" id="tabAbout">
   <div class="about-page">
 
@@ -667,9 +789,13 @@
 <script src="./assets/js/09-export.js?v=2"></script>
 <script src="./assets/js/10-ai.js"></script>
 <script src="./assets/js/11-persistence-init.js"></script>
+<script src="./assets/js/14-reconstruction-preprocessing.js?v=1"></script>
+<script src="./assets/js/13-reconstruction-pipeline.js?v=2"></script>
+<script src="./assets/js/15-reconstruction-api.js?v=1"></script>
+<script src="./assets/js/12-reconstruction.js?v=4"></script>
 
 
-<script type="module" src="./assets/js/app.js?v=59"></script>
+<script type="module" src="./assets/js/app.js?v=60"></script>
 
 </body>
 </html>
