@@ -17,6 +17,14 @@ https://luna-huker36.github.io/Clinical-Planning-System/
 
 > Требуется Python 3 и современный браузер (Chrome, Edge, Firefox).
 
+### Локально с backend scaffold
+- Установите зависимости: `npm install`
+- Запустите Express backend: `npm start`
+- Mock frontend mode: `http://localhost:3000/`
+- Backend reconstruction mode: `http://localhost:3000/?reconstructionMode=backend`
+
+> Backend scaffold пока использует mock processing и тестовую модель `models/LeePerrySmith.glb`.
+
 ---
 
 ## Инструкция: 2D Анализ
@@ -128,6 +136,10 @@ PMAS/
 ├── index.html              # главная страница (2D + 3D + О проекте)
 ├── start.command            # запуск (macOS)
 ├── start.bat                # запуск (Windows)
+├── package.json             # запуск Node/Express backend scaffold
+├── backend/
+│   ├── server.js
+│   └── reconstruction/      # API 3D Reconstruction
 ├── assets/
 │   ├── css/style.css
 │   ├── js/app.js            # 3D логика

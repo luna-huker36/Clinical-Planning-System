@@ -1,0 +1,14 @@
+{
+  "name": "pmas-clinical-planning-system",
+  "version": "1.0.0",
+  "private": true,
+  "description": "PMAS Clinical Planning System with 3D reconstruction backend scaffold.",
+  "scripts": {
+    "start": "node backend/server.js",
+    "backend": "node backend/server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "multer": "^2.0.2"
+  }
+}

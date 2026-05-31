@@ -43,10 +43,16 @@
         headers: { "Accept": "application/json", ...(options.headers || {}) },
         ...options
       });
+      const contentType = response.headers.get("content-type") || "";
+      const payload = contentType.includes("application/json") ? await response.json() : null;
       if (!response.ok) {
-        throw apiError(fallbackCode, `Backend request failed: ${response.status} ${response.statusText}`);
+        const backendError = payload?.error;
+        throw apiError(
+          backendError?.code || fallbackCode,
+          backendError?.message || `Backend request failed: ${response.status} ${response.statusText}`
+        );
       }
-      return await response.json();
+      return payload;
     } catch (err) {
       throw normalizeBackendError(err, fallbackCode, "Network/backend unavailable.");
     }
@@ -173,6 +179,18 @@
     reconstructionMode = mode;
     return reconstructionMode;
   }
+
+  function initModeFromUrl() {
+    try {
+      const params = new URLSearchParams(window.location.search || "");
+      const mode = params.get("reconstructionMode");
+      if (mode === "mock" || mode === "backend") setMode(mode);
+    } catch (err) {
+      console.warn("Unable to read reconstruction mode from URL.", err);
+    }
+  }
+
+  initModeFromUrl();
 
   window.PMASReconstructionApi = {
     get mode() { return reconstructionMode; },

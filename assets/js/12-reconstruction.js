@@ -14,6 +14,7 @@
     validating: "Validating",
     analyzing: "Analyzing",
     preparing: "Preparing",
+    extracting_frames: "Extracting frames",
     queued: "Queued",
     processing: "Processing",
     cleaning: "Cleaning",
@@ -24,8 +25,8 @@
     opened: "Opened"
   };
 
-  const PIPELINE_ORDER = ["uploaded", "validating", "analyzing", "preparing", "queued", "processing", "cleaning", "exporting", "ready", "canceled"];
-  const ACTIVE_STATUSES = new Set(["validating", "analyzing", "preparing", "queued", "processing", "cleaning", "exporting"]);
+  const PIPELINE_ORDER = ["uploaded", "validating", "analyzing", "preparing", "extracting_frames", "queued", "processing", "cleaning", "exporting", "ready", "canceled"];
+  const ACTIVE_STATUSES = new Set(["validating", "analyzing", "preparing", "extracting_frames", "queued", "processing", "cleaning", "exporting"]);
 
   function byId(id) {
     return document.getElementById(id);
@@ -89,7 +90,7 @@
     const list = byId("reconstructionFileList");
     const count = byId("reconstructionFileCount");
     const job = currentJob();
-    const files = job ? job.uploadedFiles : state.selectedFiles;
+    const files = job ? (job.uploadedFiles || job.files || []) : state.selectedFiles;
 
     if (count) count.textContent = files.length;
     if (!list) return;
@@ -121,6 +122,28 @@
     el.innerHTML = items.map(item => `<div>• ${escapeHtml(item)}</div>`).join("");
   }
 
+  function formatDuration(seconds) {
+    if (seconds === null || seconds === undefined || seconds === "") return "—";
+    const value = Number(seconds);
+    if (!Number.isFinite(value)) return "—";
+    return `${value.toFixed(value >= 10 ? 0 : 1)} s`;
+  }
+
+  function renderVideoPreprocessing(job) {
+    const duration = byId("reconstructionVideoDuration");
+    const frames = byId("reconstructionExtractedFrames");
+    const resolution = byId("reconstructionFrameResolution");
+    const metadata = job?.videoMetadata || null;
+
+    if (duration) duration.textContent = metadata ? formatDuration(metadata.duration) : "—";
+    if (frames) frames.textContent = String(job?.extractedFramesCount || 0);
+    if (resolution) {
+      resolution.textContent = metadata?.width && metadata?.height
+        ? `${metadata.width} × ${metadata.height}`
+        : "—";
+    }
+  }
+
   function renderQualityReport(report) {
     const inputType = byId("reconstructionQualityInputType");
     const fileCount = byId("reconstructionQualityFileCount");
@@ -135,6 +158,7 @@
       }
       renderQualityList("reconstructionWarnings", []);
       renderQualityList("reconstructionRecommendations", []);
+      renderVideoPreprocessing(null);
       return;
     }
 
@@ -166,7 +190,20 @@
     byId("reconstructionResultName").textContent = job?.resultGlbUrl || "—";
     setProgress(progress);
     updateSteps(status);
-    renderQualityReport(job?.preprocessingReport || state.uploadResult?.previewReport || null);
+    const backendReport = job ? {
+      inputType: job.fileType || "—",
+      fileCount: (job.uploadedFiles || job.files || []).length,
+      estimatedQuality: "medium",
+      warnings: job.warnings || [],
+      recommendations: []
+    } : null;
+    const report = job?.preprocessingReport || state.uploadResult?.previewReport || backendReport;
+    const mergedWarnings = [
+      ...(report?.warnings || []),
+      ...(job?.warnings || [])
+    ];
+    renderQualityReport(report ? { ...report, warnings: Array.from(new Set(mergedWarnings)) } : null);
+    renderVideoPreprocessing(job);
 
     if (start) start.disabled = !state.selectedFiles.length || state.busy;
     if (retry) retry.style.display = status === "error" || status === "canceled" ? "inline-flex" : "none";
