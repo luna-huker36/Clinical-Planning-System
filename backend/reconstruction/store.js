@@ -15,9 +15,12 @@ function makeId(prefix) {
 
 function cloneJob(job) {
   if (!job) return null;
-  const { framesDir, ...safeJob } = job;
+  const { framesDir, masksDir, inputMeshPath, cleanedMeshPath, datasetPath, rawMeshPath, ...safeJob } = job;
   return {
     ...safeJob,
+    cleanedMeshPath: job.publicCleanedMeshUrl || "",
+    rawMeshPath: job.rawMeshPath ? "raw-model.glb" : "",
+    selectedFrames: (job.selectedFrames || []).map(frame => ({ ...frame })),
     files: job.files.map(file => {
       const { path, ...safeFile } = file;
       return { ...safeFile };
@@ -67,7 +70,36 @@ function createJob(upload) {
     extractedFramesCount: 0,
     videoMetadata: null,
     warnings: [],
-    framesDir: ""
+    framesDir: "",
+    frameQualityReport: null,
+    selectedFrames: [],
+    selectedFramesCount: 0,
+    rejectedFramesCount: 0,
+    segmentationMode: "mock",
+    masksCount: 0,
+    masksDir: "",
+    segmentationWarnings: [],
+    segmentationQuality: "poor",
+    reconstructionMode: "mock",
+    engineName: "",
+    engineJobId: "",
+    datasetPath: "",
+    inputFramesCount: 0,
+    inputMasksCount: 0,
+    rawMeshPath: "",
+    reconstructionWarnings: [],
+    reconstructionQuality: "poor",
+    cleanupMode: "mock",
+    inputMeshPath: "",
+    cleanedMeshPath: "",
+    publicCleanedMeshUrl: "",
+    removedArtifactsCount: 0,
+    holesRepairedCount: 0,
+    decimationRatio: 1,
+    cleanupWarnings: [],
+    cleanupQuality: "poor",
+    resultModelSource: "mock",
+    resultDeleted: false
   };
   jobs.set(job.jobId, job);
   return cloneJob(job);

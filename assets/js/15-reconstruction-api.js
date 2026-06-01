@@ -7,6 +7,7 @@
     startJob: jobId => `/api/reconstruction/jobs/${encodeURIComponent(jobId)}/start`,
     status: jobId => `/api/reconstruction/jobs/${encodeURIComponent(jobId)}/status`,
     result: jobId => `/api/reconstruction/jobs/${encodeURIComponent(jobId)}/result`,
+    report: jobId => `/api/reconstruction/jobs/${encodeURIComponent(jobId)}/report`,
     cancel: jobId => `/api/reconstruction/jobs/${encodeURIComponent(jobId)}/cancel`
   };
 
@@ -150,12 +151,102 @@
       return {
         jobId,
         resultGlbUrl: job.resultGlbUrl,
+        rawMeshPath: job.resultGlbUrl,
+        cleanedMeshPath: job.resultGlbUrl,
+        createdAt: job.updatedAt || job.createdAt,
+        inputType: job.fileType || "unknown",
+        filesCount: job.uploadedFiles?.length || 0,
+        selectedFramesCount: job.selectedFramesCount || 0,
+        reconstructionQuality: job.reconstructionQuality || "medium",
+        cleanupQuality: job.cleanupQuality || "medium",
+        warnings: job.warnings || [],
+        metadata: {
+          resultModelSource: "mock",
+          reconstructionMode: "mock",
+          cleanupMode: "mock"
+        },
+        checks: {
+          exists: true,
+          glbExists: true,
+          canOpen: true,
+          invalid: false,
+          expiredOrMissing: false
+        },
         job
       };
     }
 
     // TODO: GET /api/reconstruction/jobs/:jobId/result when backend result storage is available.
     return await backendJson(ENDPOINTS.result(jobId), { method: "GET" }, ERROR_CODES.jobFailed);
+  }
+
+  async function getBackendReconstructionReport(jobId) {
+    if (reconstructionMode === "mock") {
+      const job = await getBackendReconstructionStatus(jobId);
+      return {
+        jobId,
+        generatedAt: new Date().toISOString(),
+        inputSummary: {
+          inputType: job.fileType || "unknown",
+          filesCount: job.uploadedFiles?.length || 0,
+          files: job.uploadedFiles || []
+        },
+        frameQualityReport: job.frameQualityReport || null,
+        segmentationReport: {
+          segmentationMode: job.segmentationMode || "mock",
+          masksCount: job.masksCount || 0,
+          segmentationQuality: job.segmentationQuality || "medium",
+          warnings: job.segmentationWarnings || []
+        },
+        reconstructionReport: {
+          reconstructionMode: job.reconstructionMode || "mock",
+          engineName: job.engineName || "PMAS Mock Reconstruction Engine",
+          inputFramesCount: job.inputFramesCount || 0,
+          reconstructionQuality: job.reconstructionQuality || "medium",
+          warnings: job.reconstructionWarnings || []
+        },
+        cleanupReport: {
+          cleanupMode: job.cleanupMode || "mock",
+          cleanupQuality: job.cleanupQuality || "medium",
+          resultModelSource: "mock",
+          warnings: job.cleanupWarnings || []
+        },
+        finalResult: await getBackendReconstructionResult(jobId),
+        warnings: job.warnings || []
+      };
+    }
+
+    return await backendJson(ENDPOINTS.report(jobId), { method: "GET" }, ERROR_CODES.jobFailed);
+  }
+
+  async function deleteBackendReconstructionResult(jobId) {
+    if (reconstructionMode === "mock") {
+      const job = await getBackendReconstructionStatus(jobId);
+      return {
+        deleted: true,
+        result: {
+          jobId,
+          resultGlbUrl: "",
+          createdAt: new Date().toISOString(),
+          inputType: job.fileType || "unknown",
+          filesCount: job.uploadedFiles?.length || 0,
+          selectedFramesCount: job.selectedFramesCount || 0,
+          reconstructionQuality: job.reconstructionQuality || "medium",
+          cleanupQuality: job.cleanupQuality || "medium",
+          warnings: ["Result deleted in mock UI state."],
+          metadata: { resultModelSource: "deleted" },
+          checks: {
+            exists: false,
+            glbExists: false,
+            canOpen: false,
+            invalid: false,
+            expiredOrMissing: true
+          }
+        }
+      };
+    }
+
+    return await backendJson(ENDPOINTS.result(jobId), { method: "DELETE" }, ERROR_CODES.jobFailed);
   }
 
   async function cancelBackendReconstructionJob(jobId) {
@@ -202,6 +293,8 @@
     startBackendReconstructionJob,
     getBackendReconstructionStatus,
     getBackendReconstructionResult,
+    getBackendReconstructionReport,
+    deleteBackendReconstructionResult,
     cancelBackendReconstructionJob
   };
 })();

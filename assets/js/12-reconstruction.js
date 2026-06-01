@@ -4,6 +4,8 @@
     uploadResult: null,
     currentJobId: null,
     currentJob: null,
+    currentResult: null,
+    currentReport: null,
     busy: false,
     pollTimer: null
   };
@@ -15,9 +17,11 @@
     analyzing: "Analyzing",
     preparing: "Preparing",
     extracting_frames: "Extracting frames",
+    analyzing_frames: "Analyzing frames",
+    segmenting_head: "Segmenting head",
     queued: "Queued",
-    processing: "Processing",
-    cleaning: "Cleaning",
+    reconstructing_3d: "Reconstructing 3D",
+    cleaning_mesh: "Cleaning mesh",
     exporting: "Exporting",
     ready: "Ready",
     canceled: "Canceled",
@@ -25,8 +29,8 @@
     opened: "Opened"
   };
 
-  const PIPELINE_ORDER = ["uploaded", "validating", "analyzing", "preparing", "extracting_frames", "queued", "processing", "cleaning", "exporting", "ready", "canceled"];
-  const ACTIVE_STATUSES = new Set(["validating", "analyzing", "preparing", "extracting_frames", "queued", "processing", "cleaning", "exporting"]);
+  const PIPELINE_ORDER = ["uploaded", "validating", "analyzing", "preparing", "extracting_frames", "analyzing_frames", "segmenting_head", "queued", "reconstructing_3d", "cleaning_mesh", "exporting", "ready", "canceled"];
+  const ACTIVE_STATUSES = new Set(["validating", "analyzing", "preparing", "extracting_frames", "analyzing_frames", "segmenting_head", "queued", "reconstructing_3d", "cleaning_mesh", "exporting"]);
 
   function byId(id) {
     return document.getElementById(id);
@@ -144,6 +148,120 @@
     }
   }
 
+  function renderFrameQuality(job) {
+    const report = job?.frameQualityReport || null;
+    const total = byId("reconstructionTotalFrames");
+    const selected = byId("reconstructionSelectedFrames");
+    const rejected = byId("reconstructionRejectedFrames");
+    const score = byId("reconstructionFrameQualityScore");
+
+    if (total) total.textContent = String(report?.totalFrames || 0);
+    if (selected) selected.textContent = String(job?.selectedFramesCount ?? report?.selectedFramesCount ?? 0);
+    if (rejected) rejected.textContent = String(job?.rejectedFramesCount ?? report?.rejectedFramesCount ?? 0);
+    if (score) {
+      const value = report?.qualityScore;
+      score.textContent = Number.isFinite(Number(value)) ? `${Math.round(Number(value))}/100` : "—";
+    }
+  }
+
+  function renderSegmentation(job) {
+    const masks = byId("reconstructionMasksCount");
+    const quality = byId("reconstructionSegmentationQuality");
+    const segmentationQuality = job?.segmentationQuality || "";
+
+    if (masks) masks.textContent = String(job?.masksCount || 0);
+    if (quality) {
+      quality.textContent = segmentationQuality || "—";
+      quality.className = segmentationQuality
+        ? `badge reconstruction-quality-${segmentationQuality}`
+        : "badge";
+    }
+  }
+
+  function renderReconstructionEngine(job) {
+    const mode = byId("reconstructionEngineMode");
+    const frames = byId("reconstructionInputFrames");
+    const quality = byId("reconstructionEngineQuality");
+    const reconstructionQuality = job?.reconstructionQuality || "";
+
+    if (mode) mode.textContent = job?.reconstructionMode || "—";
+    if (frames) frames.textContent = String(job?.inputFramesCount || 0);
+    if (quality) {
+      quality.textContent = reconstructionQuality || "—";
+      quality.className = reconstructionQuality
+        ? `badge reconstruction-quality-${reconstructionQuality}`
+        : "badge";
+    }
+  }
+
+  function renderCleanup(job) {
+    const quality = byId("reconstructionCleanupQuality");
+    const source = byId("reconstructionResultModelSource");
+    const cleanupQuality = job?.cleanupQuality || "";
+
+    if (quality) {
+      quality.textContent = cleanupQuality || "—";
+      quality.className = cleanupQuality
+        ? `badge reconstruction-quality-${cleanupQuality}`
+        : "badge";
+    }
+    if (source) source.textContent = job?.resultModelSource || "—";
+  }
+
+  function setQualityBadge(id, value) {
+    const el = byId(id);
+    if (!el) return;
+    el.textContent = value || "—";
+    el.className = value ? `badge reconstruction-quality-${value}` : "badge";
+  }
+
+  function renderResultCard(job) {
+    const resultCard = byId("reconstructionResult");
+    const result = state.currentResult;
+    const showResult = job?.status === "ready" || Boolean(result);
+    const checks = result?.checks || {};
+    const canOpen = Boolean(checks.canOpen && result?.resultGlbUrl);
+    const resultStatus = byId("reconstructionResultStatus");
+    const open = byId("btnOpenReconstruction3d");
+    const download = byId("btnDownloadReconstructionGlb");
+    const viewReport = byId("btnViewReconstructionReport");
+    const deleteResult = byId("btnDeleteReconstructionResult");
+    const startNew = byId("btnStartNewReconstruction");
+
+    if (resultCard) resultCard.style.display = showResult ? "block" : "none";
+    if (!showResult) return;
+
+    byId("reconstructionResultJobId").textContent = result?.jobId || job?.jobId || "—";
+    byId("reconstructionResultName").textContent = result?.resultGlbUrl || job?.resultGlbUrl || "Result deleted or missing";
+    byId("reconstructionResultSelectedFrames").textContent = String(result?.selectedFramesCount ?? job?.selectedFramesCount ?? 0);
+    byId("reconstructionResultSource").textContent = result?.metadata?.resultModelSource || job?.resultModelSource || "—";
+    setQualityBadge("reconstructionResultReconstructionQuality", result?.reconstructionQuality || job?.reconstructionQuality || "");
+    setQualityBadge("reconstructionResultCleanupQuality", result?.cleanupQuality || job?.cleanupQuality || "");
+    renderQualityList("reconstructionResultWarnings", result?.warnings || []);
+
+    if (resultStatus) {
+      if (canOpen) {
+        resultStatus.textContent = "GLB ready";
+        resultStatus.className = "badge badge-info";
+      } else if (checks.expiredOrMissing) {
+        resultStatus.textContent = "Result missing";
+        resultStatus.className = "badge";
+      } else {
+        resultStatus.textContent = "Invalid result";
+        resultStatus.className = "badge reconstruction-quality-poor";
+      }
+    }
+
+    if (open) open.style.display = canOpen ? "inline-flex" : "none";
+    if (download) {
+      download.style.display = canOpen ? "inline-flex" : "none";
+      download.href = canOpen ? result.resultGlbUrl : "#";
+    }
+    if (viewReport) viewReport.style.display = showResult ? "inline-flex" : "none";
+    if (deleteResult) deleteResult.style.display = result?.checks?.exists ? "inline-flex" : "none";
+    if (startNew) startNew.style.display = "inline-flex";
+  }
+
   function renderQualityReport(report) {
     const inputType = byId("reconstructionQualityInputType");
     const fileCount = byId("reconstructionQualityFileCount");
@@ -159,6 +277,10 @@
       renderQualityList("reconstructionWarnings", []);
       renderQualityList("reconstructionRecommendations", []);
       renderVideoPreprocessing(null);
+      renderFrameQuality(null);
+      renderSegmentation(null);
+      renderReconstructionEngine(null);
+      renderCleanup(null);
       return;
     }
 
@@ -176,10 +298,8 @@
   function renderJob(job) {
     const status = job?.status || "idle";
     const progress = job?.progress || 0;
-    const result = byId("reconstructionResult");
     const retry = byId("btnRetryReconstruction");
     const cancel = byId("btnCancelReconstruction");
-    const open = byId("btnOpenReconstruction3d");
     const start = byId("btnStartReconstruction");
     const badge = byId("reconstructionStageBadge");
 
@@ -187,29 +307,41 @@
     byId("reconstructionJobId").textContent = job?.jobId || "—";
     byId("reconstructionJobStatus").textContent = STATUS_LABELS[status] || status;
     byId("reconstructionJobFileType").textContent = job?.fileType || "—";
-    byId("reconstructionResultName").textContent = job?.resultGlbUrl || "—";
     setProgress(progress);
     updateSteps(status);
     const backendReport = job ? {
       inputType: job.fileType || "—",
       fileCount: (job.uploadedFiles || job.files || []).length,
       estimatedQuality: "medium",
-      warnings: job.warnings || [],
+      warnings: [
+        ...(job.warnings || []),
+        ...(job.frameQualityReport?.warnings || []),
+        ...(job.segmentationWarnings || []),
+        ...(job.reconstructionWarnings || []),
+        ...(job.cleanupWarnings || [])
+      ],
       recommendations: []
     } : null;
     const report = job?.preprocessingReport || state.uploadResult?.previewReport || backendReport;
     const mergedWarnings = [
       ...(report?.warnings || []),
-      ...(job?.warnings || [])
+      ...(job?.warnings || []),
+      ...(job?.frameQualityReport?.warnings || []),
+      ...(job?.segmentationWarnings || []),
+      ...(job?.reconstructionWarnings || []),
+      ...(job?.cleanupWarnings || [])
     ];
     renderQualityReport(report ? { ...report, warnings: Array.from(new Set(mergedWarnings)) } : null);
     renderVideoPreprocessing(job);
+    renderFrameQuality(job);
+    renderSegmentation(job);
+    renderReconstructionEngine(job);
+    renderCleanup(job);
 
     if (start) start.disabled = !state.selectedFiles.length || state.busy;
     if (retry) retry.style.display = status === "error" || status === "canceled" ? "inline-flex" : "none";
     if (cancel) cancel.style.display = ACTIVE_STATUSES.has(status) && state.busy ? "inline-flex" : "none";
-    if (open) open.style.display = status === "ready" ? "inline-flex" : "none";
-    if (result) result.style.display = status === "ready" ? "block" : "none";
+    renderResultCard(job);
 
     if (status === "error") {
       setError(job?.errorMessage || "Reconstruction pipeline завершился с ошибкой.");
@@ -228,6 +360,8 @@
   }
 
   function resetJobUi() {
+    state.currentResult = null;
+    state.currentReport = null;
     renderJob(null);
     setProgress(0);
     renderQualityReport(null);
@@ -279,6 +413,8 @@
         state.uploadResult = uploadResult;
         state.currentJobId = job.jobId;
         state.currentJob = job;
+        state.currentResult = null;
+        state.currentReport = null;
         setError("");
         renderJob(job);
         if (state.uploadResult?.previewReport) renderQualityReport(state.uploadResult.previewReport);
@@ -294,6 +430,8 @@
   async function startCurrentJob() {
     if (!api() || !state.currentJobId || state.busy) return;
     state.busy = true;
+    state.currentResult = null;
+    state.currentReport = null;
     renderJob(currentJob());
     startJobPolling();
     try {
@@ -302,6 +440,7 @@
       state.busy = false;
       stopJobPolling();
       renderJob(job);
+      if (job.status === "ready") await refreshCurrentResult();
     } catch (err) {
       state.busy = false;
       stopJobPolling();
@@ -316,6 +455,8 @@
       const job = await api().createBackendReconstructionJob(state.uploadResult);
       state.currentJobId = job.jobId;
       state.currentJob = job;
+      state.currentResult = null;
+      state.currentReport = null;
       renderJob(job);
       await startCurrentJob();
     } catch (err) {
@@ -329,6 +470,7 @@
       const job = await api().getBackendReconstructionStatus(state.currentJobId);
       state.currentJob = job;
       renderJob(job);
+      if (job.status === "ready" && !state.currentResult) await refreshCurrentResult();
       return job;
     } catch (err) {
       setError(apiErrorMessage(err, "Network/backend unavailable."));
@@ -354,6 +496,8 @@
     state.uploadResult = null;
     state.currentJobId = null;
     state.currentJob = null;
+    state.currentResult = null;
+    state.currentReport = null;
     state.busy = false;
     stopJobPolling();
     const input = byId("reconstructionFileInput");
@@ -373,8 +517,11 @@
 
   async function openIn3DViewer() {
     const job = currentJob();
-    if (!job || job.status !== "ready" || !job.resultGlbUrl) {
-      setError("Сначала дождитесь статуса Ready.");
+    const resultUrl = state.currentResult?.checks?.canOpen
+      ? state.currentResult.resultGlbUrl
+      : job?.resultGlbUrl;
+    if (!job || job.status !== "ready" || !resultUrl) {
+      setError("Сначала дождитесь статуса Ready и доступного GLB.");
       return;
     }
     const viewer = await waitFor3DViewer();
@@ -382,9 +529,64 @@
       setError("3D viewer ещё не готов. Откройте вкладку 3D Модель и повторите.");
       return;
     }
-    viewer.openModel(job.resultGlbUrl, `reconstruction:${job.jobId}`);
+    viewer.openModel(resultUrl, `reconstruction:${job.jobId}`);
     byId("reconstructionStageBadge").textContent = "Opened";
     setStatusText("Open in 3D viewer: GLB открыт в PMAS 3D viewer.");
+  }
+
+  async function refreshCurrentResult() {
+    if (!api() || !state.currentJobId) return null;
+    try {
+      const result = await api().getBackendReconstructionResult(state.currentJobId);
+      state.currentResult = result;
+      renderResultCard(currentJob());
+      return result;
+    } catch (err) {
+      setError(apiErrorMessage(err, "Result unavailable."));
+      state.currentResult = {
+        jobId: state.currentJobId,
+        resultGlbUrl: "",
+        checks: { exists: false, glbExists: false, canOpen: false, invalid: true, expiredOrMissing: false },
+        warnings: [err?.message || "Result unavailable."]
+      };
+      renderResultCard(currentJob());
+      return null;
+    }
+  }
+
+  async function viewCurrentReport() {
+    if (!api() || !state.currentJobId) return;
+    const modal = byId("reconstructionReportModal");
+    const pre = byId("reconstructionReportJson");
+    try {
+      const report = await api().getBackendReconstructionReport(state.currentJobId);
+      state.currentReport = report;
+      if (pre) pre.textContent = JSON.stringify(report, null, 2);
+      if (modal) modal.style.display = "flex";
+    } catch (err) {
+      setError(apiErrorMessage(err, "Report unavailable."));
+    }
+  }
+
+  function closeReportModal() {
+    const modal = byId("reconstructionReportModal");
+    if (modal) modal.style.display = "none";
+  }
+
+  async function deleteCurrentResult() {
+    if (!api() || !state.currentJobId) return;
+    try {
+      const response = await api().deleteBackendReconstructionResult(state.currentJobId);
+      state.currentResult = response?.result || response;
+      if (state.currentJob) {
+        state.currentJob.resultGlbUrl = "";
+        state.currentJob.resultModelSource = "deleted";
+      }
+      setStatusText("Result deleted: GLB artifact removed, report metadata kept.");
+      renderResultCard(currentJob());
+    } catch (err) {
+      setError(apiErrorMessage(err, "Delete result failed."));
+    }
   }
 
   function bind() {
@@ -395,6 +597,19 @@
     byId("btnCancelReconstruction")?.addEventListener("click", cancelCurrentJob);
     byId("btnClearReconstruction")?.addEventListener("click", clearReconstruction);
     byId("btnOpenReconstruction3d")?.addEventListener("click", openIn3DViewer);
+    byId("btnDownloadReconstructionGlb")?.addEventListener("click", event => {
+      if (!state.currentResult?.checks?.canOpen) {
+        event.preventDefault();
+        setError("GLB result недоступен для скачивания.");
+      }
+    });
+    byId("btnViewReconstructionReport")?.addEventListener("click", viewCurrentReport);
+    byId("btnDeleteReconstructionResult")?.addEventListener("click", deleteCurrentResult);
+    byId("btnStartNewReconstruction")?.addEventListener("click", clearReconstruction);
+    byId("btnCloseReconstructionReport")?.addEventListener("click", closeReportModal);
+    byId("reconstructionReportModal")?.addEventListener("click", event => {
+      if (event.target?.id === "reconstructionReportModal") closeReportModal();
+    });
 
     input?.addEventListener("change", event => addFiles(event.target.files));
 

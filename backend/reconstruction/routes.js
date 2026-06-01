@@ -7,6 +7,12 @@ const { ApiError, sendError } = require("./errors");
 const { validateUploadedFiles, toSafeFileMeta } = require("./validation");
 const { createUpload, getUpload, createJob, getJob } = require("./store");
 const { startJob, cancelJob } = require("./processor");
+const {
+  getReconstructionResult,
+  buildReconstructionReport,
+  deleteReconstructionResult,
+  getArtifactPath
+} = require("./reconstruction-results");
 
 const router = express.Router();
 const uploadDir = path.resolve(__dirname, "../tmp/uploads");
@@ -77,19 +83,44 @@ router.get("/jobs/:jobId/status", asyncRoute(async (req, res) => {
 router.get("/jobs/:jobId/result", asyncRoute(async (req, res) => {
   const job = getJob(req.params.jobId);
   if (!job) throw new ApiError(404, ERROR_CODES.jobNotFound, "Reconstruction job не найден.");
-  if (job.status !== STATUSES.ready || !job.resultGlbUrl) {
+  if (job.status !== STATUSES.ready) {
     throw new ApiError(409, ERROR_CODES.resultNotReady, "Reconstruction result ещё не готов.");
   }
+  res.json(getReconstructionResult(req.params.jobId));
+}));
+
+router.get("/jobs/:jobId/report", asyncRoute(async (req, res) => {
+  const report = buildReconstructionReport(req.params.jobId);
+  if (!report) throw new ApiError(404, ERROR_CODES.jobNotFound, "Reconstruction job не найден.");
+  res.json(report);
+}));
+
+router.delete("/jobs/:jobId/result", asyncRoute(async (req, res) => {
+  const result = await deleteReconstructionResult(req.params.jobId);
+  if (!result) throw new ApiError(404, ERROR_CODES.jobNotFound, "Reconstruction job не найден.");
   res.json({
-    jobId: job.jobId,
-    resultGlbUrl: job.resultGlbUrl,
-    job
+    deleted: true,
+    result
   });
 }));
 
 router.post("/jobs/:jobId/cancel", asyncRoute(async (req, res) => {
   const job = cancelJob(req.params.jobId, "Canceled by user");
   res.json(job);
+}));
+
+router.get("/artifacts/:jobId/mesh/cleaned-model.glb", asyncRoute(async (req, res) => {
+  const job = getJob(req.params.jobId);
+  if (!job || !job.cleanedMeshPath) {
+    throw new ApiError(404, ERROR_CODES.resultNotReady, "Cleaned mesh artifact не найден.");
+  }
+
+  const artifactPath = getArtifactPath(req.params.jobId);
+  if (!fs.existsSync(artifactPath)) {
+    throw new ApiError(404, ERROR_CODES.resultNotReady, "Cleaned mesh artifact не найден.");
+  }
+  res.type("model/gltf-binary");
+  res.sendFile(artifactPath);
 }));
 
 module.exports = router;

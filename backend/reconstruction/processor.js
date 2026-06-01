@@ -4,6 +4,13 @@ const { MOCK_GLB_URL, STATUSES, ERROR_CODES } = require("./constants");
 const { ApiError } = require("./errors");
 const { getMutableJob, getJob, saveJob } = require("./store");
 const { preprocessVideoInputs } = require("./video-preprocessing");
+const {
+  analyzeFramesQuality,
+  selectBestFrames
+} = require("./frame-quality-analysis");
+const { generateSegmentationMasks } = require("./head-segmentation");
+const { runMockMeshCleanup } = require("./mesh-cleanup");
+const { runMockReconstruction } = require("./reconstruction-engine");
 
 const activeJobs = new Map();
 
@@ -49,6 +56,127 @@ function hasVideoInput(job) {
   return (job.files || []).some(file => ["mp4", "mov", "webm"].includes(String(file.extension || "").toLowerCase()));
 }
 
+function isImageFile(file) {
+  return ["jpg", "jpeg", "png"].includes(String(file.extension || "").toLowerCase());
+}
+
+function mergeWarnings(...warningGroups) {
+  return Array.from(new Set(warningGroups.flat().filter(Boolean)));
+}
+
+function getSelectedFramesForSegmentation(job) {
+  return (job.selectedFrames || []).map(frame => ({ ...frame }));
+}
+
+async function collectFramePaths(job) {
+  if (hasVideoInput(job) && job.framesDir) {
+    try {
+      const files = await fs.promises.readdir(job.framesDir);
+      return files
+        .filter(fileName => /\.(jpe?g|png)$/i.test(fileName))
+        .map(fileName => path.join(job.framesDir, fileName));
+    } catch (err) {
+      return [];
+    }
+  }
+
+  return (job.files || [])
+    .filter(file => isImageFile(file) && file.path)
+    .map(file => file.path);
+}
+
+async function analyzeJobFrames(jobId) {
+  const job = ensureJob(jobId);
+  const framePaths = await collectFramePaths(job);
+  if (!framePaths.length) {
+    return {
+      frameQualityReport: {
+        totalFrames: 0,
+        selectedFramesCount: 0,
+        rejectedFramesCount: 0,
+        averageBlurScore: 0,
+        averageBrightness: 0,
+        averageContrast: 0,
+        qualityScore: 0,
+        warnings: ["Недостаточно качественных кадров"],
+        frames: []
+      },
+      selectedFrames: [],
+      selectedFramesCount: 0,
+      rejectedFramesCount: 0,
+      warnings: ["Недостаточно качественных кадров"]
+    };
+  }
+
+  try {
+    const analysis = await analyzeFramesQuality(framePaths);
+    const selected = selectBestFrames(analysis, { maxFrames: 60 });
+    return {
+      frameQualityReport: selected.frameQualityReport,
+      selectedFrames: selected.selectedFrames,
+      selectedFramesCount: selected.frameQualityReport.selectedFramesCount,
+      rejectedFramesCount: selected.frameQualityReport.rejectedFramesCount,
+      warnings: selected.frameQualityReport.warnings
+    };
+  } catch (err) {
+    return {
+      frameQualityReport: {
+        totalFrames: framePaths.length,
+        selectedFramesCount: 0,
+        rejectedFramesCount: framePaths.length,
+        averageBlurScore: 0,
+        averageBrightness: 0,
+        averageContrast: 0,
+        qualityScore: 0,
+        warnings: ["Frame quality analysis unavailable"],
+        frames: []
+      },
+      selectedFrames: [],
+      selectedFramesCount: 0,
+      rejectedFramesCount: framePaths.length,
+      warnings: ["Frame quality analysis unavailable"]
+    };
+  }
+}
+
+async function segmentJobHead(jobId) {
+  const job = ensureJob(jobId);
+  const selectedFrames = getSelectedFramesForSegmentation(job);
+  const masksDir = path.resolve(__dirname, "../tmp/jobs", job.jobId, "masks");
+
+  if (!selectedFrames.length) {
+    return {
+      segmentationMode: "mock",
+      masksCount: 0,
+      masksDir,
+      segmentationWarnings: [
+        "Не удалось уверенно выделить голову на части кадров",
+        "Фон может попасть в reconstruction",
+        "Волосы/плечи могут создать шум в mesh",
+        "Нужна проверка масок перед reconstruction"
+      ],
+      segmentationQuality: "poor"
+    };
+  }
+
+  try {
+    return await generateSegmentationMasks(selectedFrames, { masksDir, mode: "mock" });
+  } catch (err) {
+    return {
+      segmentationMode: "mock",
+      masksCount: 0,
+      masksDir,
+      segmentationWarnings: [
+        "Не удалось уверенно выделить голову на части кадров",
+        "Фон может попасть в reconstruction",
+        "Волосы/плечи могут создать шум в mesh",
+        "Нужна проверка масок перед reconstruction"
+      ],
+      segmentationQuality: "poor"
+    };
+  }
+}
+
 function isCanceled(jobId) {
   return ensureJob(jobId).status === STATUSES.canceled;
 }
@@ -66,17 +194,16 @@ async function rampJob(jobId, status, from, to, steps, delayMs) {
 }
 
 function completeWithMockGlb(jobId) {
-  const mockGlbPath = path.resolve(__dirname, "../../models/LeePerrySmith.glb");
-  if (!fs.existsSync(mockGlbPath)) {
-    return failJob(jobId, "Тестовая GLB-модель не найдена.");
-  }
-
   const job = ensureJob(jobId);
+  const resultGlbUrl = job.publicCleanedMeshUrl || job.resultGlbUrl;
+  if (!resultGlbUrl) {
+    return failJob(jobId, "Cleaned GLB-модель не готова.");
+  }
   if (job.status === STATUSES.canceled) return getJob(jobId);
   job.status = STATUSES.ready;
   job.progress = 100;
   job.errorMessage = "";
-  job.resultGlbUrl = MOCK_GLB_URL;
+  job.resultGlbUrl = resultGlbUrl;
   return saveJob(job);
 }
 
@@ -118,21 +245,90 @@ async function processJob(jobId) {
       if (isCanceled(jobId)) return getJob(jobId);
     }
 
-    setJobProgress(jobId, STATUSES.queued, 45);
+    setJobProgress(jobId, STATUSES.analyzingFrames, 45);
+    await sleep(180);
+    if (isCanceled(jobId)) return getJob(jobId);
+    const frameQuality = await analyzeJobFrames(jobId);
+    if (isCanceled(jobId)) return getJob(jobId);
+    const jobWithQuality = ensureJob(jobId);
+    jobWithQuality.frameQualityReport = frameQuality.frameQualityReport;
+    jobWithQuality.selectedFrames = frameQuality.selectedFrames;
+    jobWithQuality.selectedFramesCount = frameQuality.selectedFramesCount;
+    jobWithQuality.rejectedFramesCount = frameQuality.rejectedFramesCount;
+    jobWithQuality.warnings = mergeWarnings(jobWithQuality.warnings || [], frameQuality.warnings);
+    saveJob(jobWithQuality);
+    setJobProgress(jobId, STATUSES.analyzingFrames, 55);
+    await sleep(220);
+    if (isCanceled(jobId)) return getJob(jobId);
+
+    setJobProgress(jobId, STATUSES.segmentingHead, 55);
+    await sleep(180);
+    if (isCanceled(jobId)) return getJob(jobId);
+    const segmentation = await segmentJobHead(jobId);
+    if (isCanceled(jobId)) return getJob(jobId);
+    const jobWithSegmentation = ensureJob(jobId);
+    jobWithSegmentation.segmentationMode = segmentation.segmentationMode;
+    jobWithSegmentation.masksCount = segmentation.masksCount;
+    jobWithSegmentation.masksDir = segmentation.masksDir;
+    jobWithSegmentation.segmentationWarnings = segmentation.segmentationWarnings;
+    jobWithSegmentation.segmentationQuality = segmentation.segmentationQuality;
+    jobWithSegmentation.warnings = mergeWarnings(jobWithSegmentation.warnings || [], segmentation.segmentationWarnings);
+    saveJob(jobWithSegmentation);
+    setJobProgress(jobId, STATUSES.segmentingHead, 65);
+    await sleep(220);
+    if (isCanceled(jobId)) return getJob(jobId);
+
+    setJobProgress(jobId, STATUSES.queued, 65);
     await sleep(260);
     if (isCanceled(jobId)) return getJob(jobId);
-    setJobProgress(jobId, STATUSES.queued, 50);
+    setJobProgress(jobId, STATUSES.queued, 70);
 
-    // TODO: Replace mock processing with photogrammetry / 3D reconstruction engine.
-    await rampJob(jobId, STATUSES.processing, 50, 70, 6, 140);
+    setJobProgress(jobId, STATUSES.reconstructing3d, 70);
+    await sleep(180);
+    if (isCanceled(jobId)) return getJob(jobId);
+    const reconstruction = await runMockReconstruction(ensureJob(jobId));
+    if (isCanceled(jobId)) return getJob(jobId);
+    const jobWithReconstruction = ensureJob(jobId);
+    jobWithReconstruction.reconstructionMode = reconstruction.reconstructionMode;
+    jobWithReconstruction.engineName = reconstruction.engineName;
+    jobWithReconstruction.engineJobId = reconstruction.engineJobId;
+    jobWithReconstruction.datasetPath = reconstruction.datasetPath;
+    jobWithReconstruction.inputFramesCount = reconstruction.inputFramesCount;
+    jobWithReconstruction.inputMasksCount = reconstruction.inputMasksCount;
+    jobWithReconstruction.rawMeshPath = reconstruction.rawMeshPath;
+    jobWithReconstruction.reconstructionWarnings = reconstruction.reconstructionWarnings;
+    jobWithReconstruction.reconstructionQuality = reconstruction.reconstructionQuality;
+    jobWithReconstruction.warnings = mergeWarnings(jobWithReconstruction.warnings || [], reconstruction.reconstructionWarnings);
+    saveJob(jobWithReconstruction);
+    setJobProgress(jobId, STATUSES.reconstructing3d, 82);
+    await sleep(220);
     if (isCanceled(jobId)) return getJob(jobId);
 
-    // TODO: Run mesh cleanup after reconstruction produces raw geometry.
-    await rampJob(jobId, STATUSES.cleaning, 70, 82, 4, 130);
+    setJobProgress(jobId, STATUSES.cleaningMesh, 82);
+    await sleep(160);
+    if (isCanceled(jobId)) return getJob(jobId);
+    const cleanup = await runMockMeshCleanup(ensureJob(jobId));
+    if (isCanceled(jobId)) return getJob(jobId);
+    const jobWithCleanup = ensureJob(jobId);
+    jobWithCleanup.cleanupMode = cleanup.cleanupMode;
+    jobWithCleanup.inputMeshPath = cleanup.inputMeshPath;
+    jobWithCleanup.cleanedMeshPath = cleanup.cleanedMeshPath;
+    jobWithCleanup.publicCleanedMeshUrl = cleanup.publicCleanedMeshUrl;
+    jobWithCleanup.removedArtifactsCount = cleanup.removedArtifactsCount;
+    jobWithCleanup.holesRepairedCount = cleanup.holesRepairedCount;
+    jobWithCleanup.decimationRatio = cleanup.decimationRatio;
+    jobWithCleanup.cleanupWarnings = cleanup.cleanupWarnings;
+    jobWithCleanup.cleanupQuality = cleanup.cleanupQuality;
+    jobWithCleanup.resultModelSource = cleanup.resultModelSource;
+    jobWithCleanup.resultGlbUrl = cleanup.publicCleanedMeshUrl;
+    jobWithCleanup.warnings = mergeWarnings(jobWithCleanup.warnings || [], cleanup.cleanupWarnings);
+    saveJob(jobWithCleanup);
+    setJobProgress(jobId, STATUSES.cleaningMesh, 90);
+    await sleep(220);
     if (isCanceled(jobId)) return getJob(jobId);
 
-    // TODO: Export the cleaned mesh as GLB and store the generated artifact URL.
-    await rampJob(jobId, STATUSES.exporting, 82, 95, 5, 120);
+    // Cleaned mesh has already been exported by the mesh cleanup stage.
+    await rampJob(jobId, STATUSES.exporting, 90, 96, 5, 120);
     if (isCanceled(jobId)) return getJob(jobId);
 
     return completeWithMockGlb(jobId);
@@ -160,6 +356,35 @@ function startJob(jobId) {
   job.videoMetadata = null;
   job.warnings = [];
   job.framesDir = "";
+  job.frameQualityReport = null;
+  job.selectedFrames = [];
+  job.selectedFramesCount = 0;
+  job.rejectedFramesCount = 0;
+  job.segmentationMode = "mock";
+  job.masksCount = 0;
+  job.masksDir = "";
+  job.segmentationWarnings = [];
+  job.segmentationQuality = "poor";
+  job.reconstructionMode = "mock";
+  job.engineName = "";
+  job.engineJobId = "";
+  job.datasetPath = "";
+  job.inputFramesCount = 0;
+  job.inputMasksCount = 0;
+  job.rawMeshPath = "";
+  job.reconstructionWarnings = [];
+  job.reconstructionQuality = "poor";
+  job.cleanupMode = "mock";
+  job.inputMeshPath = "";
+  job.cleanedMeshPath = "";
+  job.publicCleanedMeshUrl = "";
+  job.removedArtifactsCount = 0;
+  job.holesRepairedCount = 0;
+  job.decimationRatio = 1;
+  job.cleanupWarnings = [];
+  job.cleanupQuality = "poor";
+  job.resultModelSource = "mock";
+  job.resultDeleted = false;
   saveJob(job);
 
   const promise = processJob(jobId);

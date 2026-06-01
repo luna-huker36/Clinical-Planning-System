@@ -591,6 +591,56 @@
               <span class="label-sm">Frame resolution</span>
               <div class="reconstruction-quality-value" id="reconstructionFrameResolution">—</div>
             </div>
+            <div>
+              <span class="label-sm">Total frames</span>
+              <div class="reconstruction-quality-value" id="reconstructionTotalFrames">0</div>
+            </div>
+            <div>
+              <span class="label-sm">Selected frames</span>
+              <div class="reconstruction-quality-value" id="reconstructionSelectedFrames">0</div>
+            </div>
+            <div>
+              <span class="label-sm">Rejected frames</span>
+              <div class="reconstruction-quality-value" id="reconstructionRejectedFrames">0</div>
+            </div>
+            <div>
+              <span class="label-sm">Quality score</span>
+              <div class="reconstruction-quality-value" id="reconstructionFrameQualityScore">—</div>
+            </div>
+            <div>
+              <span class="label-sm">Masks</span>
+              <div class="reconstruction-quality-value" id="reconstructionMasksCount">0</div>
+            </div>
+            <div>
+              <span class="label-sm">Segmentation quality</span>
+              <div class="reconstruction-quality-value">
+                <span class="badge" id="reconstructionSegmentationQuality">—</span>
+              </div>
+            </div>
+            <div>
+              <span class="label-sm">Engine mode</span>
+              <div class="reconstruction-quality-value" id="reconstructionEngineMode">—</div>
+            </div>
+            <div>
+              <span class="label-sm">Input frames</span>
+              <div class="reconstruction-quality-value" id="reconstructionInputFrames">0</div>
+            </div>
+            <div>
+              <span class="label-sm">Reconstruction quality</span>
+              <div class="reconstruction-quality-value">
+                <span class="badge" id="reconstructionEngineQuality">—</span>
+              </div>
+            </div>
+            <div>
+              <span class="label-sm">Cleanup quality</span>
+              <div class="reconstruction-quality-value">
+                <span class="badge" id="reconstructionCleanupQuality">—</span>
+              </div>
+            </div>
+            <div>
+              <span class="label-sm">Result model source</span>
+              <div class="reconstruction-quality-value" id="reconstructionResultModelSource">—</div>
+            </div>
           </div>
           <div class="reconstruction-quality-block">
             <span class="label-sm">Warnings</span>
@@ -631,9 +681,11 @@
             <div class="reconstruction-step" data-stage="analyzing">Analyzing</div>
             <div class="reconstruction-step" data-stage="preparing">Preparing</div>
             <div class="reconstruction-step" data-stage="extracting_frames">Extracting frames</div>
+            <div class="reconstruction-step" data-stage="analyzing_frames">Analyzing frames</div>
+            <div class="reconstruction-step" data-stage="segmenting_head">Segmenting head</div>
             <div class="reconstruction-step" data-stage="queued">Queued</div>
-            <div class="reconstruction-step" data-stage="processing">Processing</div>
-            <div class="reconstruction-step" data-stage="cleaning">Cleaning</div>
+            <div class="reconstruction-step" data-stage="reconstructing_3d">Reconstructing 3D</div>
+            <div class="reconstruction-step" data-stage="cleaning_mesh">Cleaning mesh</div>
             <div class="reconstruction-step" data-stage="exporting">Exporting</div>
             <div class="reconstruction-step" data-stage="ready">GLB ready</div>
             <div class="reconstruction-step" data-stage="canceled">Canceled</div>
@@ -644,14 +696,66 @@
 
         <div class="card reconstruction-card reconstruction-result" id="reconstructionResult" style="display:none">
           <div class="card-title">🧊 Результат</div>
-          <div class="reconstruction-result-meta">
-            <span class="badge badge-info">GLB ready</span>
-            <span id="reconstructionResultName">models/LeePerrySmith.glb</span>
+          <div class="reconstruction-result-grid">
+            <div>
+              <span class="label-sm">Job ID</span>
+              <div class="reconstruction-result-value" id="reconstructionResultJobId">—</div>
+            </div>
+            <div>
+              <span class="label-sm">Result status</span>
+              <div class="reconstruction-result-value">
+                <span class="badge badge-info" id="reconstructionResultStatus">GLB ready</span>
+              </div>
+            </div>
+            <div>
+              <span class="label-sm">Reconstruction quality</span>
+              <div class="reconstruction-result-value">
+                <span class="badge" id="reconstructionResultReconstructionQuality">—</span>
+              </div>
+            </div>
+            <div>
+              <span class="label-sm">Cleanup quality</span>
+              <div class="reconstruction-result-value">
+                <span class="badge" id="reconstructionResultCleanupQuality">—</span>
+              </div>
+            </div>
+            <div>
+              <span class="label-sm">Selected frames</span>
+              <div class="reconstruction-result-value" id="reconstructionResultSelectedFrames">0</div>
+            </div>
+            <div>
+              <span class="label-sm">Source</span>
+              <div class="reconstruction-result-value" id="reconstructionResultSource">—</div>
+            </div>
           </div>
-          <button class="btn btn-primary" id="btnOpenReconstruction3d" style="display:none">Open in PMAS 3D viewer</button>
+          <div class="reconstruction-result-meta">
+            <span class="label-sm">GLB</span>
+            <span id="reconstructionResultName">—</span>
+          </div>
+          <div class="reconstruction-quality-block">
+            <span class="label-sm">Result warnings</span>
+            <div id="reconstructionResultWarnings" class="reconstruction-quality-list hint">—</div>
+          </div>
+          <div class="reconstruction-result-actions">
+            <button class="btn btn-primary" id="btnOpenReconstruction3d" style="display:none">Open in PMAS 3D viewer</button>
+            <a class="btn" id="btnDownloadReconstructionGlb" href="#" download="pmas-reconstruction.glb" style="display:none">Download GLB</a>
+            <button class="btn" id="btnViewReconstructionReport" style="display:none">View Report</button>
+            <button class="btn btn-danger" id="btnDeleteReconstructionResult" style="display:none">Delete Result</button>
+            <button class="btn" id="btnStartNewReconstruction" style="display:none">Start New Reconstruction</button>
+          </div>
         </div>
       </div>
     </section>
+  </div>
+</div>
+
+<div class="reconstruction-report-modal" id="reconstructionReportModal" style="display:none">
+  <div class="reconstruction-report-panel">
+    <div class="reconstruction-report-head">
+      <div class="card-title">Reconstruction Report</div>
+      <button class="btn" id="btnCloseReconstructionReport">Закрыть</button>
+    </div>
+    <pre id="reconstructionReportJson" class="reconstruction-report-pre">{}</pre>
   </div>
 </div>
 

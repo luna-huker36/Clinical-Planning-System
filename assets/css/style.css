@@ -837,6 +837,26 @@ textarea { resize: vertical; min-height: 60px; }
   border-color: rgba(16,185,129,0.35);
 }
 
+.reconstruction-result-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.reconstruction-result-value {
+  min-height: 34px;
+  margin-top: 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-hover);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 700;
+  word-break: break-word;
+}
+
 .reconstruction-result-meta {
   display: flex;
   align-items: center;
@@ -844,6 +864,58 @@ textarea { resize: vertical; min-height: 60px; }
   margin-bottom: 12px;
   color: var(--text-secondary);
   font-size: 12px;
+}
+
+.reconstruction-result-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.reconstruction-result-actions .btn {
+  min-height: 38px;
+}
+
+.reconstruction-report-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 120;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(15,23,42,0.45);
+}
+
+.reconstruction-report-panel {
+  width: min(880px, 100%);
+  max-height: min(760px, 90vh);
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow-lg);
+}
+
+.reconstruction-report-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.reconstruction-report-pre {
+  margin: 0;
+  padding: 16px;
+  overflow: auto;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
 }
 
 
@@ -1028,6 +1100,7 @@ textarea { resize: vertical; min-height: 60px; }
   .author-info .author-name { font-size: 16px; }
   .reconstruction-grid { grid-template-columns: 1fr; }
   .reconstruction-quality-grid { grid-template-columns: 1fr; }
+  .reconstruction-result-grid { grid-template-columns: 1fr; }
   .reconstruction-status-steps { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
