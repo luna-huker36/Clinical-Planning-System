@@ -11,6 +11,7 @@ const {
 const { generateSegmentationMasks } = require("./head-segmentation");
 const { runMockMeshCleanup } = require("./mesh-cleanup");
 const { runMockReconstruction } = require("./reconstruction-engine");
+const { normalizeReconstructionSettings } = require("./settings");
 
 const activeJobs = new Map();
 
@@ -87,6 +88,7 @@ async function collectFramePaths(job) {
 
 async function analyzeJobFrames(jobId) {
   const job = ensureJob(jobId);
+  const settings = normalizeReconstructionSettings(job.settings);
   const framePaths = await collectFramePaths(job);
   if (!framePaths.length) {
     return {
@@ -110,7 +112,7 @@ async function analyzeJobFrames(jobId) {
 
   try {
     const analysis = await analyzeFramesQuality(framePaths);
-    const selected = selectBestFrames(analysis, { maxFrames: 60 });
+    const selected = selectBestFrames(analysis, { maxFrames: settings.maxFrames });
     return {
       frameQualityReport: selected.frameQualityReport,
       selectedFrames: selected.selectedFrames,
@@ -137,6 +139,27 @@ async function analyzeJobFrames(jobId) {
       warnings: ["Frame quality analysis unavailable"]
     };
   }
+}
+
+async function cleanupIntermediateArtifacts(jobId) {
+  const job = ensureJob(jobId);
+  const settings = normalizeReconstructionSettings(job.settings);
+  if (settings.saveIntermediateFiles) return;
+
+  const dirs = [
+    job.framesDir,
+    job.masksDir,
+    job.datasetPath,
+    job.rawMeshPath ? path.dirname(job.rawMeshPath) : ""
+  ].filter(Boolean);
+
+  await Promise.all(dirs.map(dir => fs.promises.rm(dir, { recursive: true, force: true }).catch(() => null)));
+  const currentJob = ensureJob(jobId);
+  currentJob.framesDir = "";
+  currentJob.masksDir = "";
+  currentJob.datasetPath = "";
+  currentJob.rawMeshPath = "";
+  saveJob(currentJob);
 }
 
 async function segmentJobHead(jobId) {
@@ -209,6 +232,7 @@ function completeWithMockGlb(jobId) {
 
 async function processJob(jobId) {
   try {
+    const settings = normalizeReconstructionSettings(ensureJob(jobId).settings);
     setJobProgress(jobId, STATUSES.validating, 5);
     await sleep(180);
     if (isCanceled(jobId)) return getJob(jobId);
@@ -232,7 +256,10 @@ async function processJob(jobId) {
       await sleep(250);
       if (isCanceled(jobId)) return getJob(jobId);
       // Video frames are prepared here for the future photogrammetry input set.
-      const videoPreprocessing = await preprocessVideoInputs(mutableJob);
+      const videoPreprocessing = await preprocessVideoInputs(mutableJob, {
+        frameExtractionRate: settings.frameExtractionRate,
+        maxFrames: settings.maxFrames
+      });
       if (isCanceled(jobId)) return getJob(jobId);
       const currentJob = ensureJob(jobId);
       currentJob.extractedFramesCount = videoPreprocessing.extractedFramesCount;
@@ -307,7 +334,9 @@ async function processJob(jobId) {
     setJobProgress(jobId, STATUSES.cleaningMesh, 82);
     await sleep(160);
     if (isCanceled(jobId)) return getJob(jobId);
-    const cleanup = await runMockMeshCleanup(ensureJob(jobId));
+    const cleanup = await runMockMeshCleanup(ensureJob(jobId), {
+      cleanupStrength: settings.cleanupStrength
+    });
     if (isCanceled(jobId)) return getJob(jobId);
     const jobWithCleanup = ensureJob(jobId);
     jobWithCleanup.cleanupMode = cleanup.cleanupMode;
@@ -331,8 +360,11 @@ async function processJob(jobId) {
     await rampJob(jobId, STATUSES.exporting, 90, 96, 5, 120);
     if (isCanceled(jobId)) return getJob(jobId);
 
-    return completeWithMockGlb(jobId);
+    const completed = completeWithMockGlb(jobId);
+    if (!isCanceled(jobId)) await cleanupIntermediateArtifacts(jobId);
+    return getJob(jobId) || completed;
   } catch (err) {
+    if (!getMutableJob(jobId)) return null;
     return failJob(jobId, err.message);
   } finally {
     activeJobs.delete(jobId);

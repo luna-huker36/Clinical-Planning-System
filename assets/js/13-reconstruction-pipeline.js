@@ -99,7 +99,7 @@
     };
   }
 
-  function createReconstructionJob(files) {
+  function createReconstructionJob(files, settings = {}) {
     const fileArray = Array.from(files || []);
     const validation = validateReconstructionFiles(fileArray);
     if (!validation.ok) {
@@ -118,7 +118,8 @@
       errorMessage: "",
       resultGlbUrl: "",
       preprocessingReport: null,
-      preparedInput: null
+      preparedInput: null,
+      settings: { ...settings }
     };
     jobs.set(job.jobId, job);
     return { ok: true, errors: [], job: cloneJob(job) };

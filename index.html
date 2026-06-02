@@ -556,6 +556,81 @@
         </div>
 
         <div class="card reconstruction-card">
+          <div class="card-title">Reconstruction Settings</div>
+          <div class="reconstruction-settings-grid">
+            <div>
+              <label class="label-sm" for="reconstructionProcessingMode">Processing mode</label>
+              <select id="reconstructionProcessingMode" class="reconstruction-setting-control">
+                <option value="fast">fast</option>
+                <option value="balanced" selected>balanced</option>
+                <option value="quality">quality</option>
+              </select>
+            </div>
+            <div>
+              <label class="label-sm" for="reconstructionInputPreference">Input type preference</label>
+              <select id="reconstructionInputPreference" class="reconstruction-setting-control">
+                <option value="auto" selected>auto</option>
+                <option value="photos">photos</option>
+                <option value="video">video</option>
+              </select>
+            </div>
+            <div>
+              <label class="label-sm" for="reconstructionMaxFrames">Max frames</label>
+              <select id="reconstructionMaxFrames" class="reconstruction-setting-control">
+                <option value="20">20</option>
+                <option value="40" selected>40</option>
+                <option value="60">60</option>
+              </select>
+            </div>
+            <div>
+              <label class="label-sm" for="reconstructionFrameRate">Frame extraction rate</label>
+              <select id="reconstructionFrameRate" class="reconstruction-setting-control">
+                <option value="0.5">0.5 fps</option>
+                <option value="1" selected>1 fps</option>
+                <option value="2">2 fps</option>
+              </select>
+            </div>
+            <div>
+              <label class="label-sm" for="reconstructionCleanupStrength">Cleanup strength</label>
+              <select id="reconstructionCleanupStrength" class="reconstruction-setting-control">
+                <option value="low">low</option>
+                <option value="medium" selected>medium</option>
+                <option value="high">high</option>
+              </select>
+            </div>
+            <div>
+              <label class="label-sm" for="reconstructionTargetQuality">Target model quality</label>
+              <select id="reconstructionTargetQuality" class="reconstruction-setting-control">
+                <option value="preview" selected>preview</option>
+                <option value="planning">planning</option>
+              </select>
+            </div>
+          </div>
+          <label class="reconstruction-setting-toggle">
+            <input type="checkbox" id="reconstructionSaveIntermediateFiles" />
+            <span>Save intermediate files</span>
+          </label>
+        </div>
+
+        <div class="card reconstruction-card">
+          <div class="card-title">Input Quality Checklist</div>
+          <div id="reconstructionChecklistSummary" class="reconstruction-checklist-summary">Start disabled: загрузите фото или видео.</div>
+          <div id="reconstructionChecklist" class="reconstruction-checklist">
+            <div class="hint">Checklist появится после выбора входных файлов.</div>
+          </div>
+          <div class="reconstruction-quality-block">
+            <span class="label-sm">Capture recommendations</span>
+            <div class="reconstruction-quality-list hint">
+              <div>• Снимайте голову по кругу</div>
+              <div>• Держите одинаковое расстояние до лица</div>
+              <div>• Избегайте размытия</div>
+              <div>• Лучше использовать 20–40 фото или видео 20–40 секунд</div>
+              <div>• Фон должен быть спокойным и не сливаться с человеком</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card reconstruction-card">
           <div class="card-title">📋 Загруженные файлы <span class="badge" id="reconstructionFileCount">0</span></div>
           <div id="reconstructionFileList" class="reconstruction-file-list">
             <div class="hint">Файлы ещё не загружены.</div>
@@ -672,6 +747,7 @@
               <div class="reconstruction-job-value" id="reconstructionProgressValue">0%</div>
             </div>
           </div>
+          <div class="reconstruction-settings-summary" id="reconstructionSettingsSummary">balanced · auto · 40 frames · 1 fps · medium · preview · intermediates off</div>
           <div class="reconstruction-progress">
             <div class="reconstruction-progress-bar" id="reconstructionProgressBar"></div>
           </div>
@@ -727,21 +803,58 @@
               <span class="label-sm">Source</span>
               <div class="reconstruction-result-value" id="reconstructionResultSource">—</div>
             </div>
+            <div>
+              <span class="label-sm">Model readiness</span>
+              <div class="reconstruction-result-value">
+                <span class="badge" id="reconstructionReadinessLevel">—</span>
+              </div>
+            </div>
+            <div>
+              <span class="label-sm">Readiness score</span>
+              <div class="reconstruction-result-value" id="reconstructionReadinessScore">—</div>
+            </div>
+            <div>
+              <span class="label-sm">Visualization</span>
+              <div class="reconstruction-result-value" id="reconstructionCanVisualize">—</div>
+            </div>
+            <div>
+              <span class="label-sm">Measurements</span>
+              <div class="reconstruction-result-value" id="reconstructionCanMeasure">—</div>
+            </div>
           </div>
           <div class="reconstruction-result-meta">
             <span class="label-sm">GLB</span>
             <span id="reconstructionResultName">—</span>
           </div>
+          <div class="reconstruction-settings-summary" id="reconstructionResultSettings">—</div>
           <div class="reconstruction-quality-block">
             <span class="label-sm">Result warnings</span>
             <div id="reconstructionResultWarnings" class="reconstruction-quality-list hint">—</div>
+          </div>
+          <div class="reconstruction-quality-block">
+            <span class="label-sm">Readiness warnings</span>
+            <div id="reconstructionReadinessWarnings" class="reconstruction-quality-list hint">—</div>
           </div>
           <div class="reconstruction-result-actions">
             <button class="btn btn-primary" id="btnOpenReconstruction3d" style="display:none">Open in PMAS 3D viewer</button>
             <a class="btn" id="btnDownloadReconstructionGlb" href="#" download="pmas-reconstruction.glb" style="display:none">Download GLB</a>
             <button class="btn" id="btnViewReconstructionReport" style="display:none">View Report</button>
+            <button class="btn" id="btnDownloadReconstructionReport" style="display:none">Download JSON Report</button>
             <button class="btn btn-danger" id="btnDeleteReconstructionResult" style="display:none">Delete Result</button>
             <button class="btn" id="btnStartNewReconstruction" style="display:none">Start New Reconstruction</button>
+          </div>
+        </div>
+
+        <div class="card reconstruction-card reconstruction-history-card">
+          <div class="card-title">Reconstruction History</div>
+          <div class="reconstruction-history-filters" id="reconstructionHistoryFilters">
+            <button class="btn btn-sm active" data-filter="all">All</button>
+            <button class="btn btn-sm" data-filter="ready">Ready</button>
+            <button class="btn btn-sm" data-filter="error">Error</button>
+            <button class="btn btn-sm" data-filter="canceled">Canceled</button>
+          </div>
+          <div id="reconstructionHistoryList" class="reconstruction-history-list">
+            <div class="hint">История reconstruction jobs пока пустая.</div>
           </div>
         </div>
       </div>

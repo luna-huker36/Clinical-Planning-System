@@ -2,7 +2,9 @@ const fs = require("fs/promises");
 const fsSync = require("fs");
 const path = require("path");
 const { STATUSES } = require("./constants");
-const { getMutableJob, saveJob } = require("./store");
+const { getMutableJob, listMutableJobs, saveJob } = require("./store");
+const { checkModelReadiness } = require("./model-readiness-check");
+const { normalizeReconstructionSettings } = require("./settings");
 
 function getArtifactPath(jobId) {
   return path.resolve(__dirname, "../tmp/jobs", jobId, "mesh", "cleaned-model.glb");
@@ -37,8 +39,23 @@ function getResultChecks(job) {
   };
 }
 
+function getReadiness(job) {
+  const artifactPath = getArtifactPath(job.jobId);
+  const readiness = checkModelReadiness(job, { artifactPath, settings: normalizeReconstructionSettings(job.settings) });
+  job.readinessScore = readiness.readinessScore;
+  job.readinessLevel = readiness.readinessLevel;
+  job.canOpenInViewer = readiness.canOpenInViewer;
+  job.canUseForVisualization = readiness.canUseForVisualization;
+  job.canUseForMeasurements = readiness.canUseForMeasurements;
+  job.readinessWarnings = readiness.readinessWarnings;
+  job.readinessMetadata = readiness.readinessMetadata;
+  return readiness;
+}
+
 function buildResultObject(job) {
   const checks = getResultChecks(job);
+  const readiness = getReadiness(job);
+  const settings = normalizeReconstructionSettings(job.settings);
   return {
     jobId: job.jobId,
     resultGlbUrl: checks.canOpen ? job.resultGlbUrl : "",
@@ -48,9 +65,16 @@ function buildResultObject(job) {
     inputType: job.fileType || "unknown",
     filesCount: (job.files || []).length,
     selectedFramesCount: job.selectedFramesCount || 0,
+    settings,
     reconstructionQuality: job.reconstructionQuality || "poor",
     cleanupQuality: job.cleanupQuality || "poor",
     warnings: collectWarnings(job),
+    readinessScore: readiness.readinessScore,
+    readinessLevel: readiness.readinessLevel,
+    canOpenInViewer: readiness.canOpenInViewer,
+    canUseForVisualization: readiness.canUseForVisualization,
+    canUseForMeasurements: readiness.canUseForMeasurements,
+    readinessWarnings: readiness.readinessWarnings,
     metadata: {
       resultModelSource: job.resultModelSource || "mock",
       cleanupMode: job.cleanupMode || "mock",
@@ -62,10 +86,38 @@ function buildResultObject(job) {
       inputMasksCount: job.inputMasksCount || 0,
       removedArtifactsCount: job.removedArtifactsCount || 0,
       holesRepairedCount: job.holesRepairedCount || 0,
-      decimationRatio: job.decimationRatio || 1
+      decimationRatio: job.decimationRatio || 1,
+      readiness: readiness.readinessMetadata,
+      settings
     },
     checks
   };
+}
+
+function buildHistoryItem(job) {
+  const result = buildResultObject(job);
+  return {
+    jobId: job.jobId,
+    createdAt: job.createdAt,
+    status: job.status,
+    inputType: job.fileType || "unknown",
+    filesCount: (job.files || []).length,
+    resultGlbUrl: result.checks.canOpen ? result.resultGlbUrl : "",
+    reconstructionQuality: job.reconstructionQuality || "poor",
+    cleanupQuality: job.cleanupQuality || "poor",
+    warningsCount: result.warnings.length,
+    readinessScore: result.readinessScore,
+    readinessLevel: result.readinessLevel,
+    settings: result.settings
+  };
+}
+
+function listReconstructionHistory(filter = "all") {
+  const normalizedFilter = String(filter || "all").toLowerCase();
+  return listMutableJobs()
+    .map(buildHistoryItem)
+    .filter(item => normalizedFilter === "all" || item.status === normalizedFilter)
+    .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
 }
 
 function getReconstructionResult(jobId) {
@@ -78,9 +130,24 @@ function buildReconstructionReport(jobId) {
   const job = getMutableJob(jobId);
   if (!job) return null;
   const result = buildResultObject(job);
+  const settings = normalizeReconstructionSettings(job.settings);
+  // TODO: Add PDF/DOCX reconstruction report exporters from this JSON shape without reusing 2D/3D clinical export functions.
   return {
     jobId: job.jobId,
+    createdAt: job.createdAt,
     generatedAt: new Date().toISOString(),
+    exportFormats: ["json"],
+    inputType: job.fileType || "unknown",
+    filesCount: (job.files || []).length,
+    videoMetadata: job.videoMetadata || null,
+    extractedFramesCount: job.extractedFramesCount || 0,
+    selectedFramesCount: job.selectedFramesCount || 0,
+    rejectedFramesCount: job.rejectedFramesCount || 0,
+    readinessScore: result.readinessScore,
+    readinessLevel: result.readinessLevel,
+    readinessWarnings: result.readinessWarnings,
+    resultGlbUrl: result.resultGlbUrl,
+    settings,
     inputSummary: {
       inputType: job.fileType || "unknown",
       filesCount: (job.files || []).length,
@@ -134,12 +201,24 @@ async function deleteReconstructionResult(jobId) {
   job.cleanedMeshPath = "";
   job.resultModelSource = "deleted";
   job.warnings = collectWarnings(job);
+  job.readinessScore = 0;
+  job.readinessLevel = "poor";
+  job.canOpenInViewer = false;
+  job.canUseForVisualization = false;
+  job.canUseForMeasurements = false;
+  job.readinessWarnings = [
+    "GLB-модель не найдена",
+    "Модель может быть непригодна для точных измерений",
+    "Требуется ручная проверка перед клиническим использованием"
+  ];
   saveJob(job);
   return buildResultObject(job);
 }
 
 module.exports = {
   buildResultObject,
+  buildHistoryItem,
+  listReconstructionHistory,
   getReconstructionResult,
   buildReconstructionReport,
   deleteReconstructionResult,

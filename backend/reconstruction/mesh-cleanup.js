@@ -85,13 +85,20 @@ async function exportCleanedMeshToGlb(inputMeshPath, outputPath, options = {}) {
 }
 
 async function runMockMeshCleanup(job, options = {}) {
+  const strength = options.cleanupStrength || job.settings?.cleanupStrength || "medium";
+  const strengthOptions = {
+    low: { mockRemovedArtifactsCount: 1, mockHolesRepairedCount: 1, decimationRatio: 0.95, cleanupQuality: "medium" },
+    medium: { mockRemovedArtifactsCount: 3, mockHolesRepairedCount: 2, decimationRatio: 0.85, cleanupQuality: "medium" },
+    high: { mockRemovedArtifactsCount: 5, mockHolesRepairedCount: 4, decimationRatio: 0.72, cleanupQuality: "good" }
+  };
+  const cleanupOptions = { ...(strengthOptions[strength] || strengthOptions.medium), ...options };
   const prepared = await prepareMeshForCleanup(options.inputMeshPath || job.rawMeshPath || MOCK_INPUT_MODEL, job);
-  const floating = await removeFloatingArtifacts(prepared.inputMeshPath, options);
-  await cropToHeadRegion(floating.meshPath, options);
-  await smoothMesh(floating.meshPath, options);
-  const decimation = await decimateMesh(floating.meshPath, options);
-  const repair = await repairMeshHoles(floating.meshPath, options);
-  const exported = await exportCleanedMeshToGlb(floating.meshPath, prepared.cleanedMeshPath, options);
+  const floating = await removeFloatingArtifacts(prepared.inputMeshPath, cleanupOptions);
+  await cropToHeadRegion(floating.meshPath, cleanupOptions);
+  await smoothMesh(floating.meshPath, cleanupOptions);
+  const decimation = await decimateMesh(floating.meshPath, cleanupOptions);
+  const repair = await repairMeshHoles(floating.meshPath, cleanupOptions);
+  const exported = await exportCleanedMeshToGlb(floating.meshPath, prepared.cleanedMeshPath, cleanupOptions);
 
   return {
     cleanupMode: CLEANUP_MODE,

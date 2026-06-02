@@ -144,7 +144,7 @@ function buildWarnings(metadata, extractedFramesCount, toolWarnings) {
   return Array.from(new Set(warnings.filter(Boolean)));
 }
 
-async function preprocessVideoInputs(job) {
+async function preprocessVideoInputs(job, options = {}) {
   const videoFile = (job.files || []).find(isVideoFile);
   if (!videoFile) {
     return {
@@ -162,7 +162,10 @@ async function preprocessVideoInputs(job) {
   delete metadata.warning;
 
   const extraction = videoFile.path
-    ? await extractFramesFromVideo(videoFile.path, framesDir, { fps: DEFAULT_FPS, maxFrames: DEFAULT_MAX_FRAMES })
+    ? await extractFramesFromVideo(videoFile.path, framesDir, {
+      fps: options.frameExtractionRate || DEFAULT_FPS,
+      maxFrames: options.maxFrames || DEFAULT_MAX_FRAMES
+    })
     : { extractedFramesCount: 0, warning: FFMPEG_FALLBACK_WARNING };
   if (extraction.warning) toolWarnings.push(extraction.warning);
 

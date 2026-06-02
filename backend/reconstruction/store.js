@@ -1,5 +1,6 @@
 const crypto = require("crypto");
 const { STATUSES } = require("./constants");
+const { normalizeReconstructionSettings } = require("./settings");
 
 const uploads = new Map();
 const jobs = new Map();
@@ -55,12 +56,13 @@ function getUpload(uploadId) {
   return uploads.get(uploadId) || null;
 }
 
-function createJob(upload) {
+function createJob(upload, settings = {}) {
   const timestamp = nowIso();
   const job = {
     jobId: makeId("recon"),
     files: upload.files.map(file => ({ ...file })),
     fileType: upload.fileType,
+    settings: normalizeReconstructionSettings(settings),
     status: STATUSES.uploaded,
     progress: 0,
     createdAt: timestamp,
@@ -99,7 +101,14 @@ function createJob(upload) {
     cleanupWarnings: [],
     cleanupQuality: "poor",
     resultModelSource: "mock",
-    resultDeleted: false
+    resultDeleted: false,
+    readinessScore: 0,
+    readinessLevel: "poor",
+    canOpenInViewer: false,
+    canUseForVisualization: false,
+    canUseForMeasurements: false,
+    readinessWarnings: [],
+    readinessMetadata: null
   };
   jobs.set(job.jobId, job);
   return cloneJob(job);
@@ -113,10 +122,25 @@ function getJob(jobId) {
   return cloneJob(jobs.get(jobId));
 }
 
+function listMutableJobs() {
+  return Array.from(jobs.values());
+}
+
+function listJobs() {
+  return listMutableJobs().map(cloneJob);
+}
+
 function saveJob(job) {
   job.updatedAt = nowIso();
   jobs.set(job.jobId, job);
   return cloneJob(job);
+}
+
+function deleteJob(jobId) {
+  const job = jobs.get(jobId) || null;
+  if (!job) return null;
+  jobs.delete(jobId);
+  return job;
 }
 
 module.exports = {
@@ -126,5 +150,8 @@ module.exports = {
   createJob,
   getMutableJob,
   getJob,
-  saveJob
+  listMutableJobs,
+  listJobs,
+  saveJob,
+  deleteJob
 };

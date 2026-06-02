@@ -5,9 +5,11 @@ const path = require("path");
 const { MAX_FILE_BYTES, ERROR_CODES, STATUSES } = require("./constants");
 const { ApiError, sendError } = require("./errors");
 const { validateUploadedFiles, toSafeFileMeta } = require("./validation");
-const { createUpload, getUpload, createJob, getJob } = require("./store");
+const { createUpload, getUpload, createJob, getJob, getMutableJob, deleteJob } = require("./store");
 const { startJob, cancelJob } = require("./processor");
+const { assertValidReconstructionSettings } = require("./settings");
 const {
+  listReconstructionHistory,
   getReconstructionResult,
   buildReconstructionReport,
   deleteReconstructionResult,
@@ -65,8 +67,54 @@ router.post("/jobs", asyncRoute(async (req, res) => {
     throw new ApiError(404, ERROR_CODES.uploadNotFound, "Upload result не найден.");
   }
 
-  const job = createJob(uploadResult);
+  const settings = assertValidReconstructionSettings(req.body?.settings || {});
+  const job = createJob(uploadResult, settings);
   res.json(job);
+}));
+
+router.get("/jobs", asyncRoute(async (req, res) => {
+  res.json({
+    jobs: listReconstructionHistory(req.query?.status || "all")
+  });
+}));
+
+router.get("/jobs/:jobId", asyncRoute(async (req, res) => {
+  const job = getJob(req.params.jobId);
+  if (!job) throw new ApiError(404, ERROR_CODES.jobNotFound, "Reconstruction job не найден.");
+  res.json(job);
+}));
+
+router.delete("/jobs/:jobId", asyncRoute(async (req, res) => {
+  const job = getMutableJob(req.params.jobId);
+  if (!job) throw new ApiError(404, ERROR_CODES.jobNotFound, "Reconstruction job не найден.");
+
+  if ([
+    STATUSES.validating,
+    STATUSES.analyzing,
+    STATUSES.preparing,
+    STATUSES.extractingFrames,
+    STATUSES.analyzingFrames,
+    STATUSES.segmentingHead,
+    STATUSES.queued,
+    STATUSES.reconstructing3d,
+    STATUSES.cleaningMesh,
+    STATUSES.exporting
+  ].includes(job.status)) {
+    cancelJob(req.params.jobId, "Deleted by user");
+  }
+
+  const deletedJob = deleteJob(req.params.jobId);
+  const jobDir = path.resolve(__dirname, "../tmp/jobs", req.params.jobId);
+  await fs.promises.rm(jobDir, { recursive: true, force: true });
+  await Promise.all((deletedJob.files || [])
+    .map(file => file.path)
+    .filter(Boolean)
+    .map(filePath => fs.promises.rm(filePath, { force: true }).catch(() => null)));
+
+  res.json({
+    deleted: true,
+    jobId: req.params.jobId
+  });
 }));
 
 router.post("/jobs/:jobId/start", asyncRoute(async (req, res) => {
