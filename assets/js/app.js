@@ -56,8 +56,13 @@ let tool3dPoints = [];
 let markers3d = [];
 let lines3d = [];
 let labels3d = [];
+let landmarkObjects3d = [];
+let landmarkLabels3d = [];
+let selectedLandmark3d = null;
 let plan3dItems = [];
 let selected3dPlan = null;
+let caseMeasurementContext3D = null;
+let suppressCaseMeasurementSync3D = false;
 let scale3dMMperUnit = null;
 let calibrationPoints = [];
 let before3dSnapshot = null;
@@ -91,6 +96,59 @@ function formatDist(unitDist) {
   const mm = mmFromUnit(unitDist);
   if (mm != null) return `${mm.toFixed(2)} мм`;
   return `${unitDist.toFixed(4)} ед.`;
+}
+
+function normalizeCaseMeasurementType3D(type) {
+  if (type === 'measure' || type === 'distance') return 'distance';
+  if (type === 'angle' || type === 'vector' || type === 'point') return type;
+  return 'annotation';
+}
+
+function serializeCaseMeasurement3D(item) {
+  if (!item) return null;
+  const type = normalizeCaseMeasurementType3D(item.type);
+  const value = type === 'angle'
+    ? (Number.isFinite(Number(item.deg)) ? Number(item.deg) : null)
+    : (Number.isFinite(Number(item.value)) ? Number(item.value) : null);
+  return {
+    measurementId: String(item.measurementId || item.id || nextId3d()),
+    caseId: caseMeasurementContext3D?.caseId || '',
+    jobId: caseMeasurementContext3D?.jobId || '',
+    modelId: caseMeasurementContext3D?.modelId || currentModelStorageKey || '',
+    type,
+    label: item.label || TYPE_NAMES_RU[item.type] || item.type || type,
+    points: Array.isArray(item.points) ? item.points.map(p => ({ x: p.x, y: p.y, z: p.z })) : [],
+    value,
+    unit: type === 'angle' ? 'degree' : 'model_unit'
+  };
+}
+
+function planItemFromCaseMeasurement3D(measurement) {
+  const points = Array.isArray(measurement?.points)
+    ? measurement.points.map(p => ({ x: Number(p.x) || 0, y: Number(p.y) || 0, z: Number(p.z) || 0 }))
+    : [];
+  let type = measurement?.type || 'point';
+  if (type === 'distance') type = 'measure';
+  if (type === 'annotation') type = points.length > 1 ? 'measure' : 'point';
+  return {
+    id: String(measurement?.measurementId || nextId3d()),
+    measurementId: String(measurement?.measurementId || ''),
+    type,
+    label: measurement?.label || TYPE_NAMES_RU[type] || type,
+    points,
+    value: measurement?.type === 'angle' ? null : (Number.isFinite(Number(measurement?.value)) ? Number(measurement.value) : null),
+    deg: measurement?.type === 'angle' && Number.isFinite(Number(measurement?.value)) ? Number(measurement.value) : null
+  };
+}
+
+function notifyCaseMeasurementChange3D(action, item) {
+  if (suppressCaseMeasurementSync3D || !caseMeasurementContext3D?.caseId) return;
+  const measurement = serializeCaseMeasurement3D(item);
+  if (!measurement?.measurementId) return;
+  const bridge = window.PMASReconstructionMeasurementBridge;
+  if (bridge && typeof bridge.onMeasurementChanged === 'function') {
+    bridge.onMeasurementChanged({ action, measurement });
+  }
 }
 
 function sortedDimsFromSize(size) {
@@ -2261,6 +2319,60 @@ function addLabel3D(pos, text, type = 'distance') {
   labels3d.push(label);
   return label;
 }
+
+function clearLandmarkVisuals3D() {
+  landmarkObjects3d.forEach(obj => { scene?.remove(obj); disposeObject3D(obj); });
+  landmarkLabels3d.forEach(label => scene?.remove(label));
+  landmarkObjects3d = [];
+  landmarkLabels3d = [];
+  selectedLandmark3d = null;
+}
+
+function addLandmarkVisual3D(landmark) {
+  if (!scene || landmark?.visible === false) return;
+  const pos = new THREE.Vector3(
+    Number(landmark.position3D?.x) || 0,
+    Number(landmark.position3D?.y) || 0,
+    Number(landmark.position3D?.z) || 0
+  );
+  const color = new THREE.Color(landmark.color || '#2563eb');
+  const radius = markerRadius3D() * (selectedLandmark3d === landmark.landmarkId ? 1.75 : 1.35);
+  const mesh = new THREE.Mesh(
+    new THREE.SphereGeometry(radius, 20, 20),
+    new THREE.MeshBasicMaterial({ color, depthTest: false })
+  );
+  mesh.position.copy(pos);
+  mesh.renderOrder = selectedLandmark3d === landmark.landmarkId ? 55 : 50;
+  mesh.userData.landmarkId = landmark.landmarkId;
+  scene.add(mesh);
+  landmarkObjects3d.push(mesh);
+
+  const div = document.createElement('div');
+  div.className = 'measurement-label-3d';
+  div.style.setProperty('--tool-color', landmark.color || '#2563eb');
+  div.style.setProperty('--tool-rgb', '37,99,235');
+  div.innerHTML = `<span class="measurement-label-icon">●</span><span>${escHtml(landmark.name || 'Landmark')}</span>`;
+  const label = new CSS2DObject(div);
+  label.position.copy(pos);
+  label.position.y += radius * 2.2;
+  scene.add(label);
+  landmarkLabels3d.push(label);
+}
+
+function loadLandmarks3D(landmarks = []) {
+  clearLandmarkVisuals3D();
+  if (!Array.isArray(landmarks)) return;
+  landmarks.forEach(addLandmarkVisual3D);
+}
+
+function selectLandmark3D(landmarkId) {
+  selectedLandmark3d = landmarkId || null;
+  landmarkObjects3d.forEach(obj => {
+    const selected = obj.userData.landmarkId === selectedLandmark3d;
+    obj.scale.setScalar(selected ? 1.45 : 1);
+    obj.renderOrder = selected ? 55 : 50;
+  });
+}
 function clearAllVisuals() {
   markers3d.forEach(m => { scene.remove(m); disposeObject3D(m); });
   lines3d.forEach(l => { scene.remove(l); disposeObject3D(l); });
@@ -2330,6 +2442,7 @@ function rebuildAllVisuals() {
 }
 
 function clearAll3D() {
+  const removedItems = plan3dItems.slice();
   clearAllVisuals();
   plan3dItems = [];
   selected3dPlan = null;
@@ -2342,29 +2455,33 @@ function clearAll3D() {
   compute3dAsymmetry();
   update3dSelectedInfo();
   save3dProject();
+  removedItems.forEach(item => notifyCaseMeasurementChange3D('delete', item));
   setStatus3d('План очищен.');
 }
 
 function undo3D() {
   if (plan3dItems.length === 0) return;
-  plan3dItems.pop();
+  const item = plan3dItems.pop();
   rebuildAllVisuals();
   save3dProject();
+  notifyCaseMeasurementChange3D('delete', item);
   setStatus3d('Последний элемент удалён.');
 }
 function finalizePlanItem(type, label, points, value = null, deg = null) {
   const serPoints = points.map(p => ({ x: p.x, y: p.y, z: p.z }));
-  plan3dItems.push({
+  const item = {
     id: nextId3d(),
     type,
     label: label || TYPE_NAMES_RU[type] || type,
     points: serPoints,
     value,
     deg
-  });
+  };
+  plan3dItems.push(item);
   render3dPlanList();
   compute3dAsymmetry();
   save3dProject();
+  notifyCaseMeasurementChange3D('upsert', item);
   setStatus3d('Элемент плана добавлен.');
 }
 
@@ -2413,12 +2530,14 @@ window._select3dPlan = function (id) {
   render3dPlanList();
 };
 window._delete3dPlan = function (id) {
+  const item = plan3dItems.find(x => x.id === id);
   plan3dItems = plan3dItems.filter(x => x.id !== id);
   if (selected3dPlan === id) selected3dPlan = null;
   rebuildAllVisuals();
   compute3dAsymmetry();
   update3dSelectedInfo();
   save3dProject();
+  notifyCaseMeasurementChange3D('delete', item);
 };
 
 function update3dSelectedInfo() {
@@ -3166,6 +3285,25 @@ window._3d = {
   formatDist: formatDist,
   clearAll: clearAll3D,
   rebuild: rebuildAllVisuals,
+  setCaseMeasurementContext(context = null) {
+    caseMeasurementContext3D = context && context.caseId ? { ...context } : null;
+  },
+  loadCaseMeasurements(measurements = []) {
+    suppressCaseMeasurementSync3D = true;
+    plan3dItems = Array.isArray(measurements) ? measurements.map(planItemFromCaseMeasurement3D) : [];
+    selected3dPlan = null;
+    rebuildAllVisuals();
+    compute3dAsymmetry();
+    update3dSelectedInfo();
+    save3dProject();
+    suppressCaseMeasurementSync3D = false;
+  },
+  getCaseMeasurements() {
+    return plan3dItems.map(serializeCaseMeasurement3D).filter(Boolean);
+  },
+  loadLandmarks: loadLandmarks3D,
+  selectLandmark: selectLandmark3D,
+  clearLandmarks: clearLandmarkVisuals3D,
   raycastAt(cx, cy) {
     const container = document.getElementById('canvas3d-container');
     const rect = container.getBoundingClientRect();

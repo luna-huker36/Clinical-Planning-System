@@ -537,7 +537,91 @@
         <span class="badge badge-info" id="reconstructionStageBadge">Idle</span>
       </div>
 
+      <div class="reconstruction-mode-bar">
+        <div>
+          <strong>Current Mode</strong>
+          <div class="hint" id="reconstructionModeDescription">Demo mode is active.</div>
+        </div>
+        <select id="reconstructionAccessMode" class="reconstruction-setting-control">
+          <option value="demo">Demo</option>
+          <option value="doctor">Doctor</option>
+          <option value="admin">Admin</option>
+        </select>
+      </div>
+      <div class="reconstruction-demo-warning" id="reconstructionDemoWarning">
+        Demo mode is not intended for storing real patient data.
+      </div>
+      <div class="reconstruction-demo-watermark" id="reconstructionDemoWatermark">DEMO MODE</div>
+
+      <div class="reconstruction-session-recovery" id="reconstructionSessionRecovery" style="display:none">
+        <div>
+          <strong>Last session found</strong>
+          <div class="hint" id="reconstructionSessionRecoverySummary">A saved Patient Case session is available.</div>
+        </div>
+        <div class="reconstruction-result-actions">
+          <button class="btn btn-primary" id="btnRestoreReconstructionSession">Restore session</button>
+          <button class="btn" id="btnStartCleanReconstructionSession">Start clean</button>
+        </div>
+      </div>
+
       <div class="reconstruction-grid">
+        <div class="card reconstruction-card reconstruction-case-dashboard-card">
+          <div class="card-title">Patient Cases Dashboard</div>
+          <div class="reconstruction-history-filters" id="caseDashboardFilters">
+            <input id="caseDashboardSearch" class="reconstruction-setting-control" type="search" placeholder="Search patient name or ID" />
+            <select id="caseDashboardStatusFilter" class="reconstruction-setting-control">
+              <option value="all">All statuses</option>
+              <option value="ready">Ready</option>
+              <option value="review_required">Review required</option>
+              <option value="manual_adjustment_required">Manual adjustment</option>
+              <option value="error">Error</option>
+              <option value="canceled">Canceled</option>
+            </select>
+            <select id="caseDashboardSort" class="reconstruction-setting-control">
+              <option value="updated_desc">Updated newest</option>
+              <option value="updated_asc">Updated oldest</option>
+            </select>
+            <button class="btn btn-primary" id="btnDashboardCreateCase">Create New Case</button>
+          </div>
+          <div id="caseDashboardList" class="reconstruction-history-list">
+            <div class="hint">No patient cases yet.</div>
+          </div>
+        </div>
+
+        <div class="card reconstruction-card">
+          <div class="card-title">Patient Case Manager</div>
+          <div class="reconstruction-settings-grid">
+            <div>
+              <label class="label-sm" for="reconstructionCaseSelect">Existing case</label>
+              <select id="reconstructionCaseSelect" class="reconstruction-setting-control">
+                <option value="">Create or select a case...</option>
+              </select>
+            </div>
+            <div>
+              <label class="label-sm" for="reconstructionCasePatientName">Patient name</label>
+              <input id="reconstructionCasePatientName" class="reconstruction-setting-control" type="text" placeholder="Patient name" />
+            </div>
+            <div>
+              <label class="label-sm" for="reconstructionCasePatientId">Patient ID</label>
+              <input id="reconstructionCasePatientId" class="reconstruction-setting-control" type="text" placeholder="Optional ID" />
+            </div>
+            <div>
+              <label class="label-sm" for="reconstructionCaseNotes">Notes</label>
+              <input id="reconstructionCaseNotes" class="reconstruction-setting-control" type="text" placeholder="Case notes" />
+            </div>
+          </div>
+          <div class="reconstruction-actions">
+            <button class="btn btn-primary" id="btnCreateReconstructionCase">Create Case</button>
+            <button class="btn" id="btnViewCaseReport">View Case Report</button>
+            <button class="btn" id="btnDownloadCaseJsonReport">Download JSON Report</button>
+            <button class="btn" id="btnExportCasePdfReport">Export PDF</button>
+            <button class="btn" id="btnExportCaseDocxReport">Export DOCX</button>
+          </div>
+          <div class="reconstruction-case-summary" id="reconstructionCaseSummary">
+            <div class="hint">Select or create a case before reconstruction.</div>
+          </div>
+        </div>
+
         <div class="card reconstruction-card">
           <div class="card-title">📥 Входные файлы</div>
           <label class="reconstruction-dropzone" id="reconstructionDropzone" for="reconstructionFileInput">
@@ -555,7 +639,7 @@
           </div>
         </div>
 
-        <div class="card reconstruction-card">
+        <div class="card reconstruction-card" id="reconstructionSettingsCard">
           <div class="card-title">Reconstruction Settings</div>
           <div class="reconstruction-settings-grid">
             <div>
@@ -610,6 +694,12 @@
             <input type="checkbox" id="reconstructionSaveIntermediateFiles" />
             <span>Save intermediate files</span>
           </label>
+        </div>
+
+        <div class="card reconstruction-card" id="reconstructionAdminDebug" style="display:none">
+          <div class="card-title">Admin Debug / Report Logs</div>
+          <div class="reconstruction-settings-summary" id="adminDebugSummary">Admin mode only.</div>
+          <pre id="adminDebugLog" class="reconstruction-report-json">{}</pre>
         </div>
 
         <div class="card reconstruction-card">
@@ -683,8 +773,24 @@
               <div class="reconstruction-quality-value" id="reconstructionFrameQualityScore">—</div>
             </div>
             <div>
+              <span class="label-sm">Segmentation mode</span>
+              <div class="reconstruction-quality-value" id="reconstructionSegmentationMode">—</div>
+            </div>
+            <div>
               <span class="label-sm">Masks</span>
               <div class="reconstruction-quality-value" id="reconstructionMasksCount">0</div>
+            </div>
+            <div>
+              <span class="label-sm">Successful masks</span>
+              <div class="reconstruction-quality-value" id="reconstructionSuccessfulMasks">0</div>
+            </div>
+            <div>
+              <span class="label-sm">Failed masks</span>
+              <div class="reconstruction-quality-value" id="reconstructionFailedMasks">0</div>
+            </div>
+            <div>
+              <span class="label-sm">Mask coverage</span>
+              <div class="reconstruction-quality-value" id="reconstructionMaskCoverage">—</div>
             </div>
             <div>
               <span class="label-sm">Segmentation quality</span>
@@ -697,6 +803,22 @@
               <div class="reconstruction-quality-value" id="reconstructionEngineMode">—</div>
             </div>
             <div>
+              <span class="label-sm">External engine status</span>
+              <div class="reconstruction-quality-value" id="reconstructionExternalEngineStatus">—</div>
+            </div>
+            <div>
+              <span class="label-sm">Raw mesh</span>
+              <div class="reconstruction-quality-value" id="reconstructionRawMeshStatus">—</div>
+            </div>
+            <div>
+              <span class="label-sm">Conversion status</span>
+              <div class="reconstruction-quality-value" id="reconstructionConversionStatus">—</div>
+            </div>
+            <div>
+              <span class="label-sm">Output format</span>
+              <div class="reconstruction-quality-value" id="reconstructionConversionOutput">—</div>
+            </div>
+            <div>
               <span class="label-sm">Input frames</span>
               <div class="reconstruction-quality-value" id="reconstructionInputFrames">0</div>
             </div>
@@ -705,6 +827,34 @@
               <div class="reconstruction-quality-value">
                 <span class="badge" id="reconstructionEngineQuality">—</span>
               </div>
+            </div>
+            <div>
+              <span class="label-sm">Cleanup mode</span>
+              <div class="reconstruction-quality-value" id="reconstructionCleanupMode">—</div>
+            </div>
+            <div>
+              <span class="label-sm">Cleanup success</span>
+              <div class="reconstruction-quality-value" id="reconstructionCleanupSuccess">—</div>
+            </div>
+            <div>
+              <span class="label-sm">Cleaned model</span>
+              <div class="reconstruction-quality-value" id="reconstructionCleanedModelReady">—</div>
+            </div>
+            <div>
+              <span class="label-sm">Alignment status</span>
+              <div class="reconstruction-quality-value" id="reconstructionAlignmentStatus">—</div>
+            </div>
+            <div>
+              <span class="label-sm">Model centered</span>
+              <div class="reconstruction-quality-value" id="reconstructionModelCentered">—</div>
+            </div>
+            <div>
+              <span class="label-sm">Scale normalized</span>
+              <div class="reconstruction-quality-value" id="reconstructionScaleNormalized">—</div>
+            </div>
+            <div>
+              <span class="label-sm">Orientation</span>
+              <div class="reconstruction-quality-value" id="reconstructionOrientationStatus">—</div>
             </div>
             <div>
               <span class="label-sm">Cleanup quality</span>
@@ -759,15 +909,64 @@
             <div class="reconstruction-step" data-stage="extracting_frames">Extracting frames</div>
             <div class="reconstruction-step" data-stage="analyzing_frames">Analyzing frames</div>
             <div class="reconstruction-step" data-stage="segmenting_head">Segmenting head</div>
+            <div class="reconstruction-step" data-stage="review_required">Input review</div>
             <div class="reconstruction-step" data-stage="queued">Queued</div>
             <div class="reconstruction-step" data-stage="reconstructing_3d">Reconstructing 3D</div>
             <div class="reconstruction-step" data-stage="cleaning_mesh">Cleaning mesh</div>
+            <div class="reconstruction-step" data-stage="aligning_model">Aligning model</div>
+            <div class="reconstruction-step" data-stage="manual_adjustment_required">Manual adjustment</div>
             <div class="reconstruction-step" data-stage="exporting">Exporting</div>
             <div class="reconstruction-step" data-stage="ready">GLB ready</div>
             <div class="reconstruction-step" data-stage="canceled">Canceled</div>
           </div>
           <div id="reconstructionStatus" class="status-bar">Загрузите фото или видео головы.</div>
           <div id="reconstructionError" class="reconstruction-error" style="display:none"></div>
+        </div>
+
+        <div class="card reconstruction-card" id="reconstructionInputReview" style="display:none">
+          <div class="card-title">Input Review</div>
+          <div class="reconstruction-settings-summary" id="reconstructionReviewSummary">Review selected frames and segmentation masks before reconstruction.</div>
+          <div class="reconstruction-review-stats">
+            <div>
+              <span class="label-sm">Selected frames</span>
+              <div class="reconstruction-job-value" id="reconstructionReviewSelectedCount">0</div>
+            </div>
+            <div>
+              <span class="label-sm">Rejected frames</span>
+              <div class="reconstruction-job-value" id="reconstructionReviewRejectedCount">0</div>
+            </div>
+            <div>
+              <span class="label-sm">Masks</span>
+              <div class="reconstruction-job-value" id="reconstructionReviewMasksCount">0</div>
+            </div>
+          </div>
+          <div class="reconstruction-quality-block">
+            <span class="label-sm">Selected frames preview</span>
+            <div id="reconstructionSelectedFramesReview" class="reconstruction-review-grid">
+              <div class="hint">Selected frames will appear after analysis.</div>
+            </div>
+          </div>
+          <div class="reconstruction-quality-block">
+            <span class="label-sm">Rejected frames</span>
+            <div id="reconstructionRejectedFramesReview" class="reconstruction-review-grid">
+              <div class="hint">Rejected frames will appear after analysis.</div>
+            </div>
+          </div>
+          <div class="reconstruction-quality-block">
+            <span class="label-sm">Segmentation masks preview</span>
+            <div id="reconstructionMasksReview" class="reconstruction-review-grid">
+              <div class="hint">Masks will appear after segmentation.</div>
+            </div>
+          </div>
+          <div class="reconstruction-quality-block">
+            <span class="label-sm">Review warnings</span>
+            <div id="reconstructionReviewWarnings" class="reconstruction-quality-list hint">—</div>
+          </div>
+          <div class="reconstruction-result-actions">
+            <button class="btn btn-primary" id="btnApproveReconstructionReview">Approve and Start Reconstruction</button>
+            <button class="btn" id="btnRerunReconstructionAnalysis">Re-run Analysis</button>
+            <button class="btn btn-danger" id="btnCancelReconstructionReview">Cancel</button>
+          </div>
         </div>
 
         <div class="card reconstruction-card reconstruction-result" id="reconstructionResult" style="display:none">
@@ -802,6 +1001,10 @@
             <div>
               <span class="label-sm">Source</span>
               <div class="reconstruction-result-value" id="reconstructionResultSource">—</div>
+            </div>
+            <div>
+              <span class="label-sm">Manual adjustment</span>
+              <div class="reconstruction-result-value" id="reconstructionResultAdjustmentApplied">—</div>
             </div>
             <div>
               <span class="label-sm">Model readiness</span>
@@ -845,6 +1048,205 @@
           </div>
         </div>
 
+        <div class="card reconstruction-card" id="reconstructionManualAdjustment" style="display:none">
+          <div class="card-title">Manual Model Adjustment</div>
+          <div class="reconstruction-settings-summary" id="reconstructionManualAdjustmentStatus">Manual adjustment required.</div>
+          <div class="reconstruction-settings-grid">
+            <div>
+              <label class="label-sm" for="manualRotationX">Rotate X</label>
+              <input id="manualRotationX" class="reconstruction-setting-control" type="number" step="1" value="0" />
+            </div>
+            <div>
+              <label class="label-sm" for="manualRotationY">Rotate Y</label>
+              <input id="manualRotationY" class="reconstruction-setting-control" type="number" step="1" value="0" />
+            </div>
+            <div>
+              <label class="label-sm" for="manualRotationZ">Rotate Z</label>
+              <input id="manualRotationZ" class="reconstruction-setting-control" type="number" step="1" value="0" />
+            </div>
+            <div>
+              <label class="label-sm" for="manualPositionX">Move X</label>
+              <input id="manualPositionX" class="reconstruction-setting-control" type="number" step="0.01" value="0" />
+            </div>
+            <div>
+              <label class="label-sm" for="manualPositionY">Move Y</label>
+              <input id="manualPositionY" class="reconstruction-setting-control" type="number" step="0.01" value="0" />
+            </div>
+            <div>
+              <label class="label-sm" for="manualPositionZ">Move Z</label>
+              <input id="manualPositionZ" class="reconstruction-setting-control" type="number" step="0.01" value="0" />
+            </div>
+            <div>
+              <label class="label-sm" for="manualScale">Scale</label>
+              <input id="manualScale" class="reconstruction-setting-control" type="number" step="0.01" min="0.01" value="1" />
+            </div>
+          </div>
+          <div class="reconstruction-result-actions">
+            <button class="btn" id="btnPreviewManualAdjustment">Preview in PMAS viewer</button>
+            <button class="btn" id="btnResetManualAdjustment">Reset adjustments</button>
+            <button class="btn btn-primary" id="btnApplyManualAdjustment">Apply adjustments</button>
+            <button class="btn" id="btnSkipManualAdjustment">Skip</button>
+          </div>
+        </div>
+
+        <div class="card reconstruction-card" id="reconstructionBeforeAfterComparison">
+          <div class="card-title">Before / After Comparison</div>
+          <div class="reconstruction-settings-summary" id="comparisonSummary">Select two ready models from the current case.</div>
+          <div class="reconstruction-settings-grid">
+            <div>
+              <label class="label-sm" for="comparisonBeforeModel">Before model</label>
+              <select id="comparisonBeforeModel" class="reconstruction-setting-control">
+                <option value="">Select before model...</option>
+              </select>
+            </div>
+            <div>
+              <label class="label-sm" for="comparisonAfterModel">After model</label>
+              <select id="comparisonAfterModel" class="reconstruction-setting-control">
+                <option value="">Select after model...</option>
+              </select>
+            </div>
+            <div>
+              <label class="label-sm" for="comparisonMode">Comparison mode</label>
+              <select id="comparisonMode" class="reconstruction-setting-control">
+                <option value="show_before">show before</option>
+                <option value="show_after">show after</option>
+                <option value="overlay">overlay mode</option>
+                <option value="side_by_side">side-by-side mode</option>
+              </select>
+            </div>
+            <div>
+              <label class="label-sm" for="comparisonNotes">Notes</label>
+              <input id="comparisonNotes" class="reconstruction-setting-control" type="text" placeholder="Comparison notes" />
+            </div>
+          </div>
+          <div class="reconstruction-comparison-grid">
+            <div class="reconstruction-comparison-panel">
+              <span class="label-sm">Before</span>
+              <div id="comparisonBeforeDetails" class="hint">—</div>
+            </div>
+            <div class="reconstruction-comparison-panel">
+              <span class="label-sm">After</span>
+              <div id="comparisonAfterDetails" class="hint">—</div>
+            </div>
+          </div>
+          <div class="reconstruction-result-actions">
+            <button class="btn btn-primary" id="btnCreateComparison">Save Comparison</button>
+            <button class="btn" id="btnOpenComparisonBefore">Show Before</button>
+            <button class="btn" id="btnOpenComparisonAfter">Show After</button>
+            <button class="btn" id="btnDownloadComparisonReport">Download Comparison Report</button>
+          </div>
+        </div>
+
+        <div class="card reconstruction-card" id="reconstructionSurgicalPlanningNotes">
+          <div class="card-title">Surgical Planning Notes</div>
+          <div class="reconstruction-settings-summary" id="surgicalPlanningSummary">Select a case to save clinical planning notes.</div>
+          <div class="reconstruction-settings-grid">
+            <div>
+              <label class="label-sm" for="surgicalPlanModel">Linked model</label>
+              <select id="surgicalPlanModel" class="reconstruction-setting-control">
+                <option value="">No model selected</option>
+              </select>
+            </div>
+            <div>
+              <label class="label-sm" for="surgicalPlanTitle">Title</label>
+              <input id="surgicalPlanTitle" class="reconstruction-setting-control" type="text" placeholder="Planning note title" />
+            </div>
+            <div>
+              <label class="label-sm" for="surgicalProcedureType">Procedure type</label>
+              <input id="surgicalProcedureType" class="reconstruction-setting-control" type="text" placeholder="Procedure type" />
+            </div>
+            <div>
+              <label class="label-sm" for="surgicalDiagnosis">Diagnosis</label>
+              <input id="surgicalDiagnosis" class="reconstruction-setting-control" type="text" placeholder="Diagnosis" />
+            </div>
+          </div>
+          <div class="reconstruction-notes-grid">
+            <div>
+              <label class="label-sm" for="surgicalGoals">Treatment goals</label>
+              <textarea id="surgicalGoals" class="reconstruction-setting-control reconstruction-textarea" placeholder="Treatment goals"></textarea>
+            </div>
+            <div>
+              <label class="label-sm" for="surgicalRisks">Risks / concerns</label>
+              <textarea id="surgicalRisks" class="reconstruction-setting-control reconstruction-textarea" placeholder="Risks / concerns"></textarea>
+            </div>
+            <div>
+              <label class="label-sm" for="surgicalNotes">Notes</label>
+              <textarea id="surgicalNotes" class="reconstruction-setting-control reconstruction-textarea" placeholder="Clinical notes"></textarea>
+            </div>
+          </div>
+          <div class="reconstruction-result-actions">
+            <button class="btn btn-primary" id="btnSaveSurgicalPlanningNotes">Save Surgical Plan</button>
+          </div>
+          <div id="surgicalPlanningNotesList" class="reconstruction-history-list">
+            <div class="hint">No surgical planning notes yet.</div>
+          </div>
+        </div>
+
+        <div class="card reconstruction-card" id="reconstructionLandmarks">
+          <div class="card-title">Landmarks</div>
+          <div class="reconstruction-settings-summary" id="landmarksSummary">Open a model from a case to manage landmarks.</div>
+          <div class="reconstruction-settings-grid">
+            <div>
+              <label class="label-sm" for="landmarkName">Name</label>
+              <input id="landmarkName" class="reconstruction-setting-control" type="text" placeholder="Landmark name" />
+            </div>
+            <div>
+              <label class="label-sm" for="landmarkCategory">Category</label>
+              <select id="landmarkCategory" class="reconstruction-setting-control">
+                <option value="facial">facial</option>
+                <option value="nasal">nasal</option>
+                <option value="maxillofacial">maxillofacial</option>
+                <option value="orthodontic">orthodontic</option>
+                <option value="custom" selected>custom</option>
+              </select>
+            </div>
+            <div>
+              <label class="label-sm" for="landmarkColor">Color</label>
+              <input id="landmarkColor" class="reconstruction-setting-control" type="color" value="#2563eb" />
+            </div>
+            <div>
+              <label class="label-sm" for="landmarkSource">Source</label>
+              <select id="landmarkSource" class="reconstruction-setting-control">
+                <option value="manual" selected>manual</option>
+                <option value="imported">imported</option>
+                <option value="ai_generated">ai_generated</option>
+              </select>
+            </div>
+          </div>
+          <div class="reconstruction-settings-grid">
+            <div>
+              <label class="label-sm" for="landmarkX">X</label>
+              <input id="landmarkX" class="reconstruction-setting-control" type="number" step="0.001" value="0" />
+            </div>
+            <div>
+              <label class="label-sm" for="landmarkY">Y</label>
+              <input id="landmarkY" class="reconstruction-setting-control" type="number" step="0.001" value="0" />
+            </div>
+            <div>
+              <label class="label-sm" for="landmarkZ">Z</label>
+              <input id="landmarkZ" class="reconstruction-setting-control" type="number" step="0.001" value="0" />
+            </div>
+            <div>
+              <label class="label-sm" for="landmarkDescription">Description</label>
+              <input id="landmarkDescription" class="reconstruction-setting-control" type="text" placeholder="Description" />
+            </div>
+          </div>
+          <div class="reconstruction-result-actions">
+            <button class="btn btn-primary" id="btnCreateLandmark">Create Landmark</button>
+          </div>
+          <div id="landmarksList" class="reconstruction-history-list">
+            <div class="hint">No landmarks yet.</div>
+          </div>
+        </div>
+
+        <div class="card reconstruction-card" id="reconstructionCaseMeasurements">
+          <div class="card-title">Case Measurements</div>
+          <div class="reconstruction-settings-summary" id="caseMeasurementsSummary">Open a model from a case to load measurements.</div>
+          <div id="caseMeasurementsList" class="reconstruction-history-list">
+            <div class="hint">No case measurements yet.</div>
+          </div>
+        </div>
+
         <div class="card reconstruction-card reconstruction-history-card">
           <div class="card-title">Reconstruction History</div>
           <div class="reconstruction-history-filters" id="reconstructionHistoryFilters">
@@ -852,6 +1254,9 @@
             <button class="btn btn-sm" data-filter="ready">Ready</button>
             <button class="btn btn-sm" data-filter="error">Error</button>
             <button class="btn btn-sm" data-filter="canceled">Canceled</button>
+            <select id="reconstructionHistoryCaseFilter" class="reconstruction-setting-control">
+              <option value="all">All cases</option>
+            </select>
           </div>
           <div id="reconstructionHistoryList" class="reconstruction-history-list">
             <div class="hint">История reconstruction jobs пока пустая.</div>
@@ -865,7 +1270,7 @@
 <div class="reconstruction-report-modal" id="reconstructionReportModal" style="display:none">
   <div class="reconstruction-report-panel">
     <div class="reconstruction-report-head">
-      <div class="card-title">Reconstruction Report</div>
+      <div class="card-title" id="reconstructionReportModalTitle">Reconstruction Report</div>
       <button class="btn" id="btnCloseReconstructionReport">Закрыть</button>
     </div>
     <pre id="reconstructionReportJson" class="reconstruction-report-pre">{}</pre>

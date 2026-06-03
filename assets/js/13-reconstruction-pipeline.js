@@ -9,9 +9,14 @@
     "validating",
     "analyzing",
     "preparing",
+    "extracting_frames",
+    "analyzing_frames",
+    "segmenting_head",
+    "review_required",
     "queued",
-    "processing",
-    "cleaning",
+    "reconstructing_3d",
+    "cleaning_mesh",
+    "aligning_model",
     "exporting",
     "ready",
     "canceled",
@@ -33,12 +38,21 @@
   }
 
   function cloneFileMeta(file) {
+    let previewUrl = "";
+    try {
+      if (file instanceof Blob && IMAGE_EXTENSIONS.has(getFileExtension(file))) {
+        previewUrl = URL.createObjectURL(file);
+      }
+    } catch (err) {
+      previewUrl = "";
+    }
     return {
       name: file.name,
       size: file.size,
       type: file.type || "",
       extension: getFileExtension(file),
-      lastModified: file.lastModified || null
+      lastModified: file.lastModified || null,
+      previewUrl
     };
   }
 
@@ -99,7 +113,7 @@
     };
   }
 
-  function createReconstructionJob(files, settings = {}) {
+  function createReconstructionJob(files, settings = {}, caseId = "") {
     const fileArray = Array.from(files || []);
     const validation = validateReconstructionFiles(fileArray);
     if (!validation.ok) {
@@ -109,6 +123,7 @@
     const timestamp = nowIso();
     const job = {
       jobId: makeJobId(),
+      caseId: String(caseId || ""),
       uploadedFiles: fileArray.map(cloneFileMeta),
       fileType: validation.fileType,
       createdAt: timestamp,
@@ -119,6 +134,25 @@
       resultGlbUrl: "",
       preprocessingReport: null,
       preparedInput: null,
+      selectedFrames: [],
+      rejectedFrames: [],
+      selectedFramesCount: 0,
+      rejectedFramesCount: 0,
+      segmentationMasks: [],
+      masksCount: 0,
+      successfulMasksCount: 0,
+      failedMasksCount: 0,
+      averageMaskCoverage: 0,
+      segmentationWarnings: [],
+      segmentationQuality: "medium",
+      reviewRequired: true,
+      reviewedByUser: false,
+      reviewCompletedAt: "",
+      finalSelectedFrames: [],
+      finalSelectedMasks: [],
+      finalSelectedFramesCount: 0,
+      manuallyExcludedFramesCount: 0,
+      manuallyRestoredFramesCount: 0,
       settings: { ...settings }
     };
     jobs.set(job.jobId, job);
@@ -178,6 +212,40 @@
     job.resultGlbUrl = MOCK_GLB_URL;
     job.updatedAt = nowIso();
     return cloneJob(job);
+  }
+
+  function mockMaskDataUrl(index) {
+    const hue = 185 + (index % 5) * 12;
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="320" height="240" viewBox="0 0 320 240"><rect width="320" height="240" fill="#0f172a"/><ellipse cx="160" cy="94" rx="68" ry="76" fill="hsl(${hue},75%,65%)" opacity=".78"/><rect x="128" y="145" width="64" height="58" rx="18" fill="hsl(${hue},75%,65%)" opacity=".78"/><text x="160" y="224" text-anchor="middle" font-family="Arial" font-size="18" fill="#e2e8f0">mock mask</text></svg>`;
+    return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+  }
+
+  function buildMockReviewData(job) {
+    const images = (job.uploadedFiles || []).filter(file => IMAGE_EXTENSIONS.has(file.extension));
+    const framesSource = images.length ? images : (job.uploadedFiles || []);
+    const selectedFrames = framesSource.map((file, index) => ({
+      fileName: file.name || `frame-${index + 1}`,
+      frameUrl: file.previewUrl || "",
+      qualityScore: Math.max(45, 88 - index * 3),
+      blurScore: 30 + index,
+      brightness: 128,
+      contrast: 42,
+      width: null,
+      height: null,
+      rejectionReason: ""
+    }));
+    const segmentationMasks = selectedFrames.map((frame, index) => ({
+      frameName: frame.fileName,
+      maskName: `mock-mask-${index + 1}.png`,
+      maskUrl: mockMaskDataUrl(index),
+      mode: "mock",
+      width: 320,
+      height: 240,
+      coverage: 0.34,
+      success: true,
+      warning: "Нужна проверка маски перед reconstruction"
+    }));
+    return { selectedFrames, rejectedFrames: [], segmentationMasks };
   }
 
   function sleep(ms) {
@@ -248,26 +316,73 @@
       if (isJobCanceled(jobId)) return getReconstructionJob(jobId);
       updateJobProgress(jobId, "queued", 40);
 
-      // TODO: Extract video frames through ffmpeg when a backend worker is connected.
-      await rampJob(jobId, "processing", 40, 58, 5, 140);
+      await rampJob(jobId, "extracting_frames", 35, 45, 4, 130);
       if (isJobCanceled(jobId)) return getReconstructionJob(jobId);
-      // TODO: Add head segmentation before reconstruction input is sent to the engine.
-      await rampJob(jobId, "processing", 58, 70, 4, 140);
+      await rampJob(jobId, "analyzing_frames", 45, 55, 4, 130);
       if (isJobCanceled(jobId)) return getReconstructionJob(jobId);
-      // TODO: Replace this mock stage with the real 3D reconstruction engine call.
-
-      // TODO: Run mesh cleanup after reconstruction produces raw geometry.
-      await rampJob(jobId, "cleaning", 70, 82, 4, 130);
+      await rampJob(jobId, "segmenting_head", 55, 65, 4, 130);
       if (isJobCanceled(jobId)) return getReconstructionJob(jobId);
 
-      // TODO: Export the produced mesh as GLB instead of returning the bundled mock model.
-      await rampJob(jobId, "exporting", 82, 95, 5, 120);
-      if (isJobCanceled(jobId)) return getReconstructionJob(jobId);
-
-      return await completeJobWithMockGlb(jobId);
+      const reviewData = buildMockReviewData(job);
+      job.selectedFrames = reviewData.selectedFrames;
+      job.rejectedFrames = reviewData.rejectedFrames;
+      job.selectedFramesCount = reviewData.selectedFrames.length;
+      job.rejectedFramesCount = reviewData.rejectedFrames.length;
+      job.segmentationMasks = reviewData.segmentationMasks;
+      job.masksCount = reviewData.segmentationMasks.length;
+      job.successfulMasksCount = reviewData.segmentationMasks.length;
+      job.failedMasksCount = 0;
+      job.averageMaskCoverage = 0.34;
+      job.segmentationWarnings = ["Нужна проверка масок перед reconstruction"];
+      job.segmentationQuality = reviewData.segmentationMasks.length >= 10 ? "medium" : "poor";
+      job.status = "review_required";
+      job.progress = 65;
+      job.reviewRequired = true;
+      job.reviewedByUser = false;
+      job.updatedAt = nowIso();
+      return cloneJob(job);
     } catch (err) {
       return failJob(jobId, err?.message || "Reconstruction pipeline завершился с ошибкой.");
     }
+  }
+
+  async function approveReviewAndContinue(jobId, selectedFrameNames = []) {
+    const job = getMutableJob(jobId);
+    if (job.status !== "review_required") return failJob(jobId, "Review stage сейчас не активен.");
+    const selected = new Set(Array.from(selectedFrameNames || []).map(String).filter(Boolean));
+    const originalSelected = job.selectedFrames || [];
+    const originalRejected = job.rejectedFrames || [];
+    const allFrames = [...originalSelected, ...originalRejected];
+    const finalFrames = allFrames.filter(frame => selected.has(frame.fileName));
+    if (!finalFrames.length) return failJob(jobId, "Нужно выбрать хотя бы один кадр перед reconstruction.");
+    const originalSelectedNames = new Set(originalSelected.map(frame => frame.fileName));
+    const originalRejectedNames = new Set(originalRejected.map(frame => frame.fileName));
+    const finalNames = new Set(finalFrames.map(frame => frame.fileName));
+    job.selectedFrames = finalFrames;
+    job.rejectedFrames = allFrames.filter(frame => !finalNames.has(frame.fileName));
+    job.selectedFramesCount = finalFrames.length;
+    job.rejectedFramesCount = job.rejectedFrames.length;
+    job.finalSelectedFrames = finalFrames;
+    job.finalSelectedMasks = (job.segmentationMasks || []).filter(mask => finalNames.has(mask.frameName));
+    job.finalSelectedFramesCount = finalFrames.length;
+    job.manuallyExcludedFramesCount = Array.from(originalSelectedNames).filter(name => !finalNames.has(name)).length;
+    job.manuallyRestoredFramesCount = Array.from(originalRejectedNames).filter(name => finalNames.has(name)).length;
+    job.reviewedByUser = true;
+    job.reviewCompletedAt = nowIso();
+
+    await rampJob(jobId, "queued", 65, 70, 3, 120);
+    if (isJobCanceled(jobId)) return getReconstructionJob(jobId);
+    await rampJob(jobId, "reconstructing_3d", 70, 82, 5, 130);
+    if (isJobCanceled(jobId)) return getReconstructionJob(jobId);
+    await rampJob(jobId, "cleaning_mesh", 82, 90, 4, 130);
+    if (isJobCanceled(jobId)) return getReconstructionJob(jobId);
+    await rampJob(jobId, "aligning_model", 90, 94, 3, 120);
+      if (isJobCanceled(jobId)) return getReconstructionJob(jobId);
+
+    await rampJob(jobId, "exporting", 94, 95, 3, 120);
+      if (isJobCanceled(jobId)) return getReconstructionJob(jobId);
+
+      return await completeJobWithMockGlb(jobId);
   }
 
   function getReconstructionJob(jobId) {
@@ -278,6 +393,7 @@
     createReconstructionJob,
     validateReconstructionFiles,
     startReconstructionJob,
+    approveReviewAndContinue,
     updateJobProgress,
     cancelReconstructionJob,
     completeJobWithMockGlb,

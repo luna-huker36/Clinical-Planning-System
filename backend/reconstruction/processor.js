@@ -11,6 +11,9 @@ const {
 const { generateSegmentationMasks } = require("./head-segmentation");
 const { runMockMeshCleanup } = require("./mesh-cleanup");
 const { runMockReconstruction } = require("./reconstruction-engine");
+const { convertJobRawMeshToGlb } = require("./mesh-conversion");
+const { alignModelForPmas } = require("./model-alignment");
+const { applyManualAdjustment, skipManualAdjustment } = require("./manual-adjustment");
 const { normalizeReconstructionSettings } = require("./settings");
 
 const activeJobs = new Map();
@@ -69,6 +72,42 @@ function getSelectedFramesForSegmentation(job) {
   return (job.selectedFrames || []).map(frame => ({ ...frame }));
 }
 
+function frameKey(frame) {
+  return String(frame?.fileName || frame?.name || "").trim();
+}
+
+function maskKey(mask) {
+  return String(mask?.frameName || "").trim();
+}
+
+function applyReviewSelection(job, selectedFrameNames = []) {
+  const requested = new Set(Array.from(selectedFrameNames || []).map(String).filter(Boolean));
+  const originalSelected = Array.from(job.selectedFrames || []);
+  const originalRejected = Array.from(job.rejectedFrames || []);
+  const allFrames = [...originalSelected, ...originalRejected];
+  const defaultSelection = requested.size
+    ? requested
+    : new Set(originalSelected.map(frameKey).filter(Boolean));
+  const finalSelectedFrames = allFrames.filter(frame => defaultSelection.has(frameKey(frame)));
+  const originalSelectedKeys = new Set(originalSelected.map(frameKey).filter(Boolean));
+  const originalRejectedKeys = new Set(originalRejected.map(frameKey).filter(Boolean));
+  const finalSelectedKeys = new Set(finalSelectedFrames.map(frameKey).filter(Boolean));
+  const finalSelectedMasks = Array.from(job.segmentationMasks || []).filter(mask => finalSelectedKeys.has(maskKey(mask)));
+
+  job.selectedFrames = finalSelectedFrames;
+  job.selectedFramesCount = finalSelectedFrames.length;
+  job.rejectedFrames = allFrames.filter(frame => !finalSelectedKeys.has(frameKey(frame)));
+  job.rejectedFramesCount = job.rejectedFrames.length;
+  job.finalSelectedFrames = finalSelectedFrames;
+  job.finalSelectedMasks = finalSelectedMasks;
+  job.finalSelectedFramesCount = finalSelectedFrames.length;
+  job.manuallyExcludedFramesCount = Array.from(originalSelectedKeys).filter(key => !finalSelectedKeys.has(key)).length;
+  job.manuallyRestoredFramesCount = Array.from(originalRejectedKeys).filter(key => finalSelectedKeys.has(key)).length;
+  job.reviewedByUser = true;
+  job.reviewCompletedAt = new Date().toISOString();
+  job.reviewRequired = true;
+}
+
 async function collectFramePaths(job) {
   if (hasVideoInput(job) && job.framesDir) {
     try {
@@ -113,9 +152,26 @@ async function analyzeJobFrames(jobId) {
   try {
     const analysis = await analyzeFramesQuality(framePaths);
     const selected = selectBestFrames(analysis, { maxFrames: settings.maxFrames });
+    const rejectedFrames = selected.frameQualityReport.frames
+      .filter(frame => frame.rejected)
+      .map(frame => {
+        const analyzed = analysis.find(item => item.fileName === frame.fileName) || frame;
+        return {
+          fileName: frame.fileName,
+          framePath: analyzed.framePath || "",
+          qualityScore: frame.qualityScore,
+          blurScore: frame.blurScore,
+          brightness: frame.brightness,
+          contrast: frame.contrast,
+          width: frame.width,
+          height: frame.height,
+          rejectionReason: frame.rejectionReason
+        };
+      });
     return {
       frameQualityReport: selected.frameQualityReport,
       selectedFrames: selected.selectedFrames,
+      rejectedFrames,
       selectedFramesCount: selected.frameQualityReport.selectedFramesCount,
       rejectedFramesCount: selected.frameQualityReport.rejectedFramesCount,
       warnings: selected.frameQualityReport.warnings
@@ -134,6 +190,7 @@ async function analyzeJobFrames(jobId) {
         frames: []
       },
       selectedFrames: [],
+      rejectedFrames: [],
       selectedFramesCount: 0,
       rejectedFramesCount: framePaths.length,
       warnings: ["Frame quality analysis unavailable"]
@@ -150,6 +207,7 @@ async function cleanupIntermediateArtifacts(jobId) {
     job.framesDir,
     job.masksDir,
     job.datasetPath,
+    job.outputGlbPath ? path.dirname(job.outputGlbPath) : "",
     job.rawMeshPath ? path.dirname(job.rawMeshPath) : ""
   ].filter(Boolean);
 
@@ -168,30 +226,44 @@ async function segmentJobHead(jobId) {
   const masksDir = path.resolve(__dirname, "../tmp/jobs", job.jobId, "masks");
 
   if (!selectedFrames.length) {
-    return {
-      segmentationMode: "mock",
-      masksCount: 0,
-      masksDir,
-      segmentationWarnings: [
-        "Не удалось уверенно выделить голову на части кадров",
-        "Фон может попасть в reconstruction",
-        "Волосы/плечи могут создать шум в mesh",
-        "Нужна проверка масок перед reconstruction"
-      ],
+      return {
+        segmentationMode: "mock",
+        masksCount: 0,
+        successfulMasksCount: 0,
+        failedMasksCount: 0,
+        averageMaskCoverage: 0,
+        segmentationMasks: [],
+        masksDir,
+        segmentationWarnings: [
+          "Не удалось уверенно выделить голову на части кадров",
+          "Фон может попасть в 3D-реконструкцию",
+          "Часть головы может быть обрезана",
+          "Маска нестабильна на некоторых кадрах",
+          "Проверьте освещение и контраст с фоном",
+          "Волосы/плечи могут создать шум в mesh",
+          "Нужна проверка масок перед reconstruction"
+        ],
       segmentationQuality: "poor"
     };
   }
 
   try {
-    return await generateSegmentationMasks(selectedFrames, { masksDir, mode: "mock" });
+    return await generateSegmentationMasks(selectedFrames, { masksDir, mode: "person_segmentation" });
   } catch (err) {
     return {
       segmentationMode: "mock",
       masksCount: 0,
+      successfulMasksCount: 0,
+      failedMasksCount: selectedFrames.length,
+      averageMaskCoverage: 0,
+      segmentationMasks: [],
       masksDir,
       segmentationWarnings: [
         "Не удалось уверенно выделить голову на части кадров",
-        "Фон может попасть в reconstruction",
+        "Фон может попасть в 3D-реконструкцию",
+        "Часть головы может быть обрезана",
+        "Маска нестабильна на некоторых кадрах",
+        "Проверьте освещение и контраст с фоном",
         "Волосы/плечи могут создать шум в mesh",
         "Нужна проверка масок перед reconstruction"
       ],
@@ -230,9 +302,24 @@ function completeWithMockGlb(jobId) {
   return saveJob(job);
 }
 
-async function processJob(jobId) {
+async function finalizeJobAfterAdjustment(jobId) {
+  await rampJob(jobId, STATUSES.exporting, 94, 96, 3, 120);
+  if (isCanceled(jobId)) return getJob(jobId);
+  const completed = completeWithMockGlb(jobId);
+  if (!isCanceled(jobId)) await cleanupIntermediateArtifacts(jobId);
+  return getJob(jobId) || completed;
+}
+
+function shouldPauseForManualAdjustment(alignment) {
+  return !alignment.alignmentSuccess ||
+    alignment.alignmentMode === "manual_fallback" ||
+    (alignment.alignmentWarnings || []).length > 0;
+}
+
+async function processJob(jobId, phase = "analysis") {
   try {
     const settings = normalizeReconstructionSettings(ensureJob(jobId).settings);
+    if (phase !== "reconstruction") {
     setJobProgress(jobId, STATUSES.validating, 5);
     await sleep(180);
     if (isCanceled(jobId)) return getJob(jobId);
@@ -280,6 +367,7 @@ async function processJob(jobId) {
     const jobWithQuality = ensureJob(jobId);
     jobWithQuality.frameQualityReport = frameQuality.frameQualityReport;
     jobWithQuality.selectedFrames = frameQuality.selectedFrames;
+    jobWithQuality.rejectedFrames = frameQuality.rejectedFrames;
     jobWithQuality.selectedFramesCount = frameQuality.selectedFramesCount;
     jobWithQuality.rejectedFramesCount = frameQuality.rejectedFramesCount;
     jobWithQuality.warnings = mergeWarnings(jobWithQuality.warnings || [], frameQuality.warnings);
@@ -296,6 +384,10 @@ async function processJob(jobId) {
     const jobWithSegmentation = ensureJob(jobId);
     jobWithSegmentation.segmentationMode = segmentation.segmentationMode;
     jobWithSegmentation.masksCount = segmentation.masksCount;
+    jobWithSegmentation.successfulMasksCount = segmentation.successfulMasksCount;
+    jobWithSegmentation.failedMasksCount = segmentation.failedMasksCount;
+    jobWithSegmentation.averageMaskCoverage = segmentation.averageMaskCoverage;
+    jobWithSegmentation.segmentationMasks = segmentation.segmentationMasks || segmentation.masks || [];
     jobWithSegmentation.masksDir = segmentation.masksDir;
     jobWithSegmentation.segmentationWarnings = segmentation.segmentationWarnings;
     jobWithSegmentation.segmentationQuality = segmentation.segmentationQuality;
@@ -304,6 +396,20 @@ async function processJob(jobId) {
     setJobProgress(jobId, STATUSES.segmentingHead, 65);
     await sleep(220);
     if (isCanceled(jobId)) return getJob(jobId);
+
+    const reviewJob = ensureJob(jobId);
+    reviewJob.status = STATUSES.reviewRequired;
+    reviewJob.progress = 65;
+    reviewJob.reviewRequired = true;
+    reviewJob.reviewedByUser = false;
+    reviewJob.finalSelectedFrames = [];
+    reviewJob.finalSelectedMasks = [];
+    reviewJob.finalSelectedFramesCount = 0;
+    reviewJob.manuallyExcludedFramesCount = 0;
+    reviewJob.manuallyRestoredFramesCount = 0;
+    saveJob(reviewJob);
+    return getJob(jobId);
+    }
 
     setJobProgress(jobId, STATUSES.queued, 65);
     await sleep(260);
@@ -317,6 +423,11 @@ async function processJob(jobId) {
     if (isCanceled(jobId)) return getJob(jobId);
     const jobWithReconstruction = ensureJob(jobId);
     jobWithReconstruction.reconstructionMode = reconstruction.reconstructionMode;
+    jobWithReconstruction.engineMode = reconstruction.engineMode;
+    jobWithReconstruction.engineCommand = reconstruction.engineCommand;
+    jobWithReconstruction.engineExitCode = reconstruction.engineExitCode;
+    jobWithReconstruction.engineStdout = reconstruction.engineStdout;
+    jobWithReconstruction.engineStderr = reconstruction.engineStderr;
     jobWithReconstruction.engineName = reconstruction.engineName;
     jobWithReconstruction.engineJobId = reconstruction.engineJobId;
     jobWithReconstruction.datasetPath = reconstruction.datasetPath;
@@ -327,6 +438,17 @@ async function processJob(jobId) {
     jobWithReconstruction.reconstructionQuality = reconstruction.reconstructionQuality;
     jobWithReconstruction.warnings = mergeWarnings(jobWithReconstruction.warnings || [], reconstruction.reconstructionWarnings);
     saveJob(jobWithReconstruction);
+
+    const conversion = await convertJobRawMeshToGlb(ensureJob(jobId));
+    if (isCanceled(jobId)) return getJob(jobId);
+    const jobWithConversion = ensureJob(jobId);
+    jobWithConversion.inputMeshFormat = conversion.inputMeshFormat;
+    jobWithConversion.conversionMode = conversion.conversionMode;
+    jobWithConversion.conversionSuccess = conversion.conversionSuccess;
+    jobWithConversion.outputGlbPath = conversion.outputGlbPath;
+    jobWithConversion.conversionWarnings = conversion.conversionWarnings;
+    jobWithConversion.warnings = mergeWarnings(jobWithConversion.warnings || [], conversion.conversionWarnings);
+    saveJob(jobWithConversion);
     setJobProgress(jobId, STATUSES.reconstructing3d, 82);
     await sleep(220);
     if (isCanceled(jobId)) return getJob(jobId);
@@ -335,7 +457,8 @@ async function processJob(jobId) {
     await sleep(160);
     if (isCanceled(jobId)) return getJob(jobId);
     const cleanup = await runMockMeshCleanup(ensureJob(jobId), {
-      cleanupStrength: settings.cleanupStrength
+      cleanupStrength: settings.cleanupStrength,
+      inputMeshPath: ensureJob(jobId).outputGlbPath || ensureJob(jobId).rawMeshPath
     });
     if (isCanceled(jobId)) return getJob(jobId);
     const jobWithCleanup = ensureJob(jobId);
@@ -343,26 +466,58 @@ async function processJob(jobId) {
     jobWithCleanup.inputMeshPath = cleanup.inputMeshPath;
     jobWithCleanup.cleanedMeshPath = cleanup.cleanedMeshPath;
     jobWithCleanup.publicCleanedMeshUrl = cleanup.publicCleanedMeshUrl;
+    jobWithCleanup.removedComponentsCount = cleanup.removedComponentsCount;
     jobWithCleanup.removedArtifactsCount = cleanup.removedArtifactsCount;
     jobWithCleanup.holesRepairedCount = cleanup.holesRepairedCount;
     jobWithCleanup.decimationRatio = cleanup.decimationRatio;
+    jobWithCleanup.cleanupSuccess = cleanup.cleanupSuccess;
     jobWithCleanup.cleanupWarnings = cleanup.cleanupWarnings;
     jobWithCleanup.cleanupQuality = cleanup.cleanupQuality;
     jobWithCleanup.resultModelSource = cleanup.resultModelSource;
-    jobWithCleanup.resultGlbUrl = cleanup.publicCleanedMeshUrl;
     jobWithCleanup.warnings = mergeWarnings(jobWithCleanup.warnings || [], cleanup.cleanupWarnings);
     saveJob(jobWithCleanup);
     setJobProgress(jobId, STATUSES.cleaningMesh, 90);
     await sleep(220);
     if (isCanceled(jobId)) return getJob(jobId);
 
-    // Cleaned mesh has already been exported by the mesh cleanup stage.
-    await rampJob(jobId, STATUSES.exporting, 90, 96, 5, 120);
+    setJobProgress(jobId, STATUSES.aligningModel, 90);
+    await sleep(160);
+    if (isCanceled(jobId)) return getJob(jobId);
+    const alignment = await alignModelForPmas(ensureJob(jobId), {
+      inputMeshPath: ensureJob(jobId).cleanedMeshPath
+    });
+    if (isCanceled(jobId)) return getJob(jobId);
+    const jobWithAlignment = ensureJob(jobId);
+    jobWithAlignment.alignmentMode = alignment.alignmentMode;
+    jobWithAlignment.boundingBox = alignment.boundingBox;
+    jobWithAlignment.scaleFactor = alignment.scaleFactor;
+    jobWithAlignment.centerOffset = alignment.centerOffset;
+    jobWithAlignment.modelCentered = alignment.modelCentered;
+    jobWithAlignment.scaleNormalized = alignment.scaleNormalized;
+    jobWithAlignment.orientationStatus = alignment.orientationStatus;
+    jobWithAlignment.alignedModelPath = alignment.alignedModelPath;
+    jobWithAlignment.alignmentWarnings = alignment.alignmentWarnings;
+    jobWithAlignment.alignmentSuccess = alignment.alignmentSuccess;
+    jobWithAlignment.resultGlbUrl = alignment.alignedModelPath ? jobWithAlignment.publicCleanedMeshUrl : cleanup.publicCleanedMeshUrl;
+    jobWithAlignment.warnings = mergeWarnings(jobWithAlignment.warnings || [], alignment.alignmentWarnings);
+    saveJob(jobWithAlignment);
+    setJobProgress(jobId, STATUSES.aligningModel, 94);
+    await sleep(160);
     if (isCanceled(jobId)) return getJob(jobId);
 
-    const completed = completeWithMockGlb(jobId);
-    if (!isCanceled(jobId)) await cleanupIntermediateArtifacts(jobId);
-    return getJob(jobId) || completed;
+    if (shouldPauseForManualAdjustment(alignment)) {
+      const manualJob = ensureJob(jobId);
+      manualJob.status = STATUSES.manualAdjustmentRequired;
+      manualJob.progress = 94;
+      manualJob.adjustmentWarnings = mergeWarnings(manualJob.adjustmentWarnings || [], [
+        "Manual adjustment required before final export."
+      ]);
+      manualJob.warnings = mergeWarnings(manualJob.warnings || [], manualJob.adjustmentWarnings);
+      saveJob(manualJob);
+      return getJob(jobId);
+    }
+
+    return await finalizeJobAfterAdjustment(jobId);
   } catch (err) {
     if (!getMutableJob(jobId)) return null;
     return failJob(jobId, err.message);
@@ -390,14 +545,32 @@ function startJob(jobId) {
   job.framesDir = "";
   job.frameQualityReport = null;
   job.selectedFrames = [];
+  job.rejectedFrames = [];
   job.selectedFramesCount = 0;
   job.rejectedFramesCount = 0;
+  job.reviewRequired = true;
+  job.reviewedByUser = false;
+  job.reviewCompletedAt = "";
+  job.finalSelectedFrames = [];
+  job.finalSelectedMasks = [];
+  job.finalSelectedFramesCount = 0;
+  job.manuallyExcludedFramesCount = 0;
+  job.manuallyRestoredFramesCount = 0;
   job.segmentationMode = "mock";
   job.masksCount = 0;
+  job.successfulMasksCount = 0;
+  job.failedMasksCount = 0;
+  job.averageMaskCoverage = 0;
+  job.segmentationMasks = [];
   job.masksDir = "";
   job.segmentationWarnings = [];
   job.segmentationQuality = "poor";
   job.reconstructionMode = "mock";
+  job.engineMode = "mock";
+  job.engineCommand = "";
+  job.engineExitCode = null;
+  job.engineStdout = "";
+  job.engineStderr = "";
   job.engineName = "";
   job.engineJobId = "";
   job.datasetPath = "";
@@ -406,25 +579,109 @@ function startJob(jobId) {
   job.rawMeshPath = "";
   job.reconstructionWarnings = [];
   job.reconstructionQuality = "poor";
+  job.inputMeshFormat = "";
+  job.conversionMode = "mock";
+  job.conversionSuccess = false;
+  job.outputGlbPath = "";
+  job.conversionWarnings = [];
   job.cleanupMode = "mock";
   job.inputMeshPath = "";
   job.cleanedMeshPath = "";
   job.publicCleanedMeshUrl = "";
+  job.removedComponentsCount = 0;
   job.removedArtifactsCount = 0;
   job.holesRepairedCount = 0;
   job.decimationRatio = 1;
+  job.cleanupSuccess = false;
   job.cleanupWarnings = [];
   job.cleanupQuality = "poor";
+  job.alignmentMode = "mock";
+  job.boundingBox = null;
+  job.scaleFactor = 1;
+  job.centerOffset = [0, 0, 0];
+  job.modelCentered = false;
+  job.scaleNormalized = false;
+  job.orientationStatus = "";
+  job.alignedModelPath = "";
+  job.alignmentWarnings = [];
+  job.alignmentSuccess = false;
+  job.adjustmentApplied = false;
+  job.adjustmentValues = {
+    rotationX: 0,
+    rotationY: 0,
+    rotationZ: 0,
+    positionX: 0,
+    positionY: 0,
+    positionZ: 0,
+    scale: 1
+  };
+  job.adjustedModelPath = "";
+  job.adjustmentWarnings = [];
   job.resultModelSource = "mock";
   job.resultDeleted = false;
   saveJob(job);
 
-  const promise = processJob(jobId);
+  const promise = processJob(jobId, "analysis");
   activeJobs.set(jobId, promise);
   return getJob(jobId);
 }
 
+function approveReviewAndContinue(jobId, review = {}) {
+  const job = ensureJob(jobId);
+  if (job.status !== STATUSES.reviewRequired) {
+    throw new ApiError(409, ERROR_CODES.jobInvalidState, "Review stage сейчас не активен.");
+  }
+  if (activeJobs.has(jobId)) {
+    throw new ApiError(409, ERROR_CODES.jobInvalidState, "Reconstruction job уже выполняется.");
+  }
+
+  applyReviewSelection(job, review.selectedFrameNames || review.selectedFrames || []);
+  if (!job.finalSelectedFramesCount) {
+    throw new ApiError(400, ERROR_CODES.validationFailed, "Нужно выбрать хотя бы один кадр перед reconstruction.");
+  }
+  saveJob(job);
+  const promise = processJob(jobId, "reconstruction");
+  activeJobs.set(jobId, promise);
+  return getJob(jobId);
+}
+
+async function applyManualAdjustmentToJob(jobId, values = {}) {
+  const job = ensureJob(jobId);
+  if (job.status !== STATUSES.manualAdjustmentRequired) {
+    throw new ApiError(409, ERROR_CODES.jobInvalidState, "Manual adjustment сейчас не требуется.");
+  }
+  const adjustment = await applyManualAdjustment(job, values);
+  const currentJob = ensureJob(jobId);
+  currentJob.adjustmentApplied = adjustment.adjustmentApplied;
+  currentJob.adjustmentValues = adjustment.adjustmentValues;
+  currentJob.adjustedModelPath = adjustment.adjustedModelPath;
+  currentJob.adjustmentWarnings = adjustment.adjustmentWarnings;
+  currentJob.resultGlbUrl = currentJob.publicCleanedMeshUrl;
+  currentJob.warnings = mergeWarnings(currentJob.warnings || [], adjustment.adjustmentWarnings);
+  saveJob(currentJob);
+  return await finalizeJobAfterAdjustment(jobId);
+}
+
+async function skipManualAdjustmentForJob(jobId) {
+  const job = ensureJob(jobId);
+  if (job.status !== STATUSES.manualAdjustmentRequired) {
+    throw new ApiError(409, ERROR_CODES.jobInvalidState, "Manual adjustment сейчас не требуется.");
+  }
+  const adjustment = skipManualAdjustment(job);
+  job.adjustmentApplied = adjustment.adjustmentApplied;
+  job.adjustmentValues = adjustment.adjustmentValues;
+  job.adjustedModelPath = adjustment.adjustedModelPath;
+  job.adjustmentWarnings = adjustment.adjustmentWarnings;
+  job.resultGlbUrl = job.publicCleanedMeshUrl;
+  job.warnings = mergeWarnings(job.warnings || [], adjustment.adjustmentWarnings);
+  saveJob(job);
+  return await finalizeJobAfterAdjustment(jobId);
+}
+
 module.exports = {
   startJob,
-  cancelJob
+  cancelJob,
+  approveReviewAndContinue,
+  applyManualAdjustmentToJob,
+  skipManualAdjustmentForJob
 };

@@ -190,6 +190,7 @@ function selectBestFrames(frameAnalysisResults, options = {}) {
     .filter(result => result.selected)
     .map(result => ({
       fileName: result.fileName,
+      framePath: result.framePath,
       qualityScore: result.qualityScore,
       blurScore: result.blurScore,
       brightness: result.brightness,

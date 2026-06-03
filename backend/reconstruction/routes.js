@@ -5,16 +5,42 @@ const path = require("path");
 const { MAX_FILE_BYTES, ERROR_CODES, STATUSES } = require("./constants");
 const { ApiError, sendError } = require("./errors");
 const { validateUploadedFiles, toSafeFileMeta } = require("./validation");
-const { createUpload, getUpload, createJob, getJob, getMutableJob, deleteJob } = require("./store");
-const { startJob, cancelJob } = require("./processor");
+const {
+  createUpload,
+  getUpload,
+  createCase,
+  getCase,
+  listCases,
+  deleteCase,
+  createJob,
+  getJob,
+  getMutableJob,
+  deleteJob,
+  saveMeasurement,
+  updateMeasurementLabel,
+  deleteMeasurement,
+  listMeasurements,
+  saveSurgicalPlan,
+  listSurgicalPlans,
+  saveLandmark,
+  deleteLandmark,
+  listLandmarks
+} = require("./store");
+const { startJob, cancelJob, approveReviewAndContinue, applyManualAdjustmentToJob, skipManualAdjustmentForJob } = require("./processor");
 const { assertValidReconstructionSettings } = require("./settings");
 const {
   listReconstructionHistory,
   getReconstructionResult,
   buildReconstructionReport,
+  buildCaseReport,
   deleteReconstructionResult,
   getArtifactPath
 } = require("./reconstruction-results");
+const {
+  createModelComparison,
+  listModelComparisons,
+  buildComparisonReport
+} = require("./model-comparison");
 
 const router = express.Router();
 const uploadDir = path.resolve(__dirname, "../tmp/uploads");
@@ -60,21 +86,166 @@ router.post("/upload", (req, res) => {
   });
 });
 
+router.get("/cases", asyncRoute(async (req, res) => {
+  res.json({ cases: listCases() });
+}));
+
+router.post("/cases", asyncRoute(async (req, res) => {
+  const patientName = String(req.body?.patientName || "").trim();
+  if (!patientName) {
+    throw new ApiError(400, ERROR_CODES.validationFailed, "patientName is required.");
+  }
+  res.json(createCase({
+    patientName,
+    patientId: req.body?.patientId || "",
+    notes: req.body?.notes || ""
+  }));
+}));
+
+router.get("/cases/:caseId", asyncRoute(async (req, res) => {
+  const caseItem = getCase(req.params.caseId);
+  if (!caseItem) throw new ApiError(404, ERROR_CODES.validationFailed, "Case not found.");
+  res.json(caseItem);
+}));
+
+router.delete("/cases/:caseId", asyncRoute(async (req, res) => {
+  const caseItem = deleteCase(req.params.caseId);
+  if (!caseItem) throw new ApiError(404, ERROR_CODES.validationFailed, "Case not found.");
+  res.json({ deleted: true, case: caseItem });
+}));
+
+router.get("/cases/:caseId/report", asyncRoute(async (req, res) => {
+  const report = buildCaseReport(req.params.caseId);
+  if (!report) throw new ApiError(404, ERROR_CODES.validationFailed, "Case not found.");
+  res.json(report);
+}));
+
+router.get("/measurements", asyncRoute(async (req, res) => {
+  res.json({
+    measurements: listMeasurements({
+      caseId: req.query?.caseId || "all",
+      jobId: req.query?.jobId || "all",
+      modelId: req.query?.modelId || "all"
+    })
+  });
+}));
+
+router.post("/measurements", asyncRoute(async (req, res) => {
+  const caseId = String(req.body?.caseId || "").trim();
+  const jobId = String(req.body?.jobId || "").trim();
+  const job = getJob(jobId);
+  if (!caseId || !getCase(caseId) || !job || job.caseId !== caseId) {
+    throw new ApiError(400, ERROR_CODES.validationFailed, "Measurement must belong to an existing case and reconstruction job.");
+  }
+  const measurement = saveMeasurement(req.body || {});
+  if (!measurement) {
+    throw new ApiError(400, ERROR_CODES.validationFailed, "Valid caseId, jobId, modelId, and measurement type are required.");
+  }
+  res.json(measurement);
+}));
+
+router.patch("/measurements/:measurementId", asyncRoute(async (req, res) => {
+  const measurement = updateMeasurementLabel(req.params.measurementId, req.body?.label || "");
+  if (!measurement) throw new ApiError(404, ERROR_CODES.validationFailed, "Measurement not found.");
+  res.json(measurement);
+}));
+
+router.delete("/measurements/:measurementId", asyncRoute(async (req, res) => {
+  const measurement = deleteMeasurement(req.params.measurementId);
+  if (!measurement) throw new ApiError(404, ERROR_CODES.validationFailed, "Measurement not found.");
+  res.json({ deleted: true, measurement });
+}));
+
+router.get("/landmarks", asyncRoute(async (req, res) => {
+  res.json({
+    landmarks: listLandmarks({
+      caseId: req.query?.caseId || "all",
+      jobId: req.query?.jobId || "all",
+      modelId: req.query?.modelId || "all"
+    })
+  });
+}));
+
+router.post("/landmarks", asyncRoute(async (req, res) => {
+  const caseId = String(req.body?.caseId || "").trim();
+  const jobId = String(req.body?.jobId || "").trim();
+  const job = getJob(jobId);
+  if (!caseId || !getCase(caseId) || !job || job.caseId !== caseId) {
+    throw new ApiError(400, ERROR_CODES.validationFailed, "Landmark must belong to an existing case and reconstruction job.");
+  }
+  const landmark = saveLandmark(req.body || {});
+  if (!landmark) {
+    throw new ApiError(400, ERROR_CODES.validationFailed, "Valid caseId, jobId, modelId, and position3D are required.");
+  }
+  res.json(landmark);
+}));
+
+router.delete("/landmarks/:landmarkId", asyncRoute(async (req, res) => {
+  const landmark = deleteLandmark(req.params.landmarkId);
+  if (!landmark) throw new ApiError(404, ERROR_CODES.validationFailed, "Landmark not found.");
+  res.json({ deleted: true, landmark });
+}));
+
+router.get("/surgical-plans", asyncRoute(async (req, res) => {
+  res.json({
+    plans: listSurgicalPlans({
+      caseId: req.query?.caseId || "all",
+      jobId: req.query?.jobId || "all",
+      modelId: req.query?.modelId || "all"
+    })
+  });
+}));
+
+router.post("/surgical-plans", asyncRoute(async (req, res) => {
+  const caseId = String(req.body?.caseId || "").trim();
+  const jobId = String(req.body?.jobId || "").trim();
+  const job = jobId ? getJob(jobId) : null;
+  if (!caseId || !getCase(caseId)) {
+    throw new ApiError(400, ERROR_CODES.validationFailed, "Surgical plan must belong to an existing case.");
+  }
+  if (jobId && (!job || job.caseId !== caseId)) {
+    throw new ApiError(400, ERROR_CODES.validationFailed, "Selected model/job must belong to the same case.");
+  }
+  const plan = saveSurgicalPlan(req.body || {});
+  if (!plan) {
+    throw new ApiError(400, ERROR_CODES.validationFailed, "Valid caseId is required for surgical plan.");
+  }
+  res.json(plan);
+}));
+
+router.get("/comparisons", asyncRoute(async (req, res) => {
+  res.json({ comparisons: listModelComparisons(req.query?.caseId || "all") });
+}));
+
+router.post("/comparisons", asyncRoute(async (req, res) => {
+  res.json(createModelComparison(req.body || {}));
+}));
+
+router.get("/comparisons/:comparisonId/report", asyncRoute(async (req, res) => {
+  const report = buildComparisonReport(req.params.comparisonId);
+  if (!report) throw new ApiError(404, ERROR_CODES.validationFailed, "Comparison not found.");
+  res.json(report);
+}));
+
 router.post("/jobs", asyncRoute(async (req, res) => {
   const uploadId = req.body?.uploadId;
+  const caseId = String(req.body?.caseId || "").trim();
   const uploadResult = getUpload(uploadId);
   if (!uploadResult) {
     throw new ApiError(404, ERROR_CODES.uploadNotFound, "Upload result не найден.");
   }
+  if (!caseId || !getCase(caseId)) {
+    throw new ApiError(400, ERROR_CODES.validationFailed, "Выберите или создайте case перед reconstruction.");
+  }
 
   const settings = assertValidReconstructionSettings(req.body?.settings || {});
-  const job = createJob(uploadResult, settings);
+  const job = createJob(uploadResult, settings, caseId);
   res.json(job);
 }));
 
 router.get("/jobs", asyncRoute(async (req, res) => {
   res.json({
-    jobs: listReconstructionHistory(req.query?.status || "all")
+    jobs: listReconstructionHistory(req.query?.status || "all", req.query?.caseId || "all")
   });
 }));
 
@@ -95,9 +266,12 @@ router.delete("/jobs/:jobId", asyncRoute(async (req, res) => {
     STATUSES.extractingFrames,
     STATUSES.analyzingFrames,
     STATUSES.segmentingHead,
+    STATUSES.reviewRequired,
     STATUSES.queued,
     STATUSES.reconstructing3d,
     STATUSES.cleaningMesh,
+    STATUSES.aligningModel,
+    STATUSES.manualAdjustmentRequired,
     STATUSES.exporting
   ].includes(job.status)) {
     cancelJob(req.params.jobId, "Deleted by user");
@@ -119,6 +293,11 @@ router.delete("/jobs/:jobId", asyncRoute(async (req, res) => {
 
 router.post("/jobs/:jobId/start", asyncRoute(async (req, res) => {
   const job = startJob(req.params.jobId);
+  res.json(job);
+}));
+
+router.post("/jobs/:jobId/review/approve", asyncRoute(async (req, res) => {
+  const job = approveReviewAndContinue(req.params.jobId, req.body || {});
   res.json(job);
 }));
 
@@ -157,6 +336,16 @@ router.post("/jobs/:jobId/cancel", asyncRoute(async (req, res) => {
   res.json(job);
 }));
 
+router.post("/jobs/:jobId/adjustment/apply", asyncRoute(async (req, res) => {
+  const job = await applyManualAdjustmentToJob(req.params.jobId, req.body?.adjustmentValues || req.body || {});
+  res.json(job);
+}));
+
+router.post("/jobs/:jobId/adjustment/skip", asyncRoute(async (req, res) => {
+  const job = await skipManualAdjustmentForJob(req.params.jobId);
+  res.json(job);
+}));
+
 router.get("/artifacts/:jobId/mesh/cleaned-model.glb", asyncRoute(async (req, res) => {
   const job = getJob(req.params.jobId);
   if (!job || !job.cleanedMeshPath) {
@@ -169,6 +358,33 @@ router.get("/artifacts/:jobId/mesh/cleaned-model.glb", asyncRoute(async (req, re
   }
   res.type("model/gltf-binary");
   res.sendFile(artifactPath);
+}));
+
+router.get("/artifacts/:jobId/frames/:frameName", asyncRoute(async (req, res) => {
+  const job = getMutableJob(req.params.jobId);
+  if (!job) throw new ApiError(404, ERROR_CODES.jobNotFound, "Reconstruction job не найден.");
+  const frameName = req.params.frameName;
+  const frame = [...(job.selectedFrames || []), ...(job.rejectedFrames || []), ...(job.finalSelectedFrames || [])]
+    .find(item => item.fileName === frameName);
+  const framePath = frame?.framePath || (job.framesDir ? path.join(job.framesDir, frameName) : "");
+  if (!framePath || !fs.existsSync(framePath)) {
+    throw new ApiError(404, ERROR_CODES.resultNotReady, "Frame preview не найден.");
+  }
+  res.sendFile(framePath);
+}));
+
+router.get("/artifacts/:jobId/masks/:maskName", asyncRoute(async (req, res) => {
+  const job = getMutableJob(req.params.jobId);
+  if (!job) throw new ApiError(404, ERROR_CODES.jobNotFound, "Reconstruction job не найден.");
+  const maskName = req.params.maskName;
+  const mask = [...(job.segmentationMasks || []), ...(job.finalSelectedMasks || [])]
+    .find(item => item.maskName === maskName);
+  const maskPath = mask?.maskPath || (job.masksDir ? path.join(job.masksDir, maskName) : "");
+  if (!maskPath || !fs.existsSync(maskPath)) {
+    throw new ApiError(404, ERROR_CODES.resultNotReady, "Mask preview не найден.");
+  }
+  res.type("image/png");
+  res.sendFile(maskPath);
 }));
 
 module.exports = router;
