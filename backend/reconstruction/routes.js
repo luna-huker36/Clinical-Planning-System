@@ -22,6 +22,12 @@ const {
   listMeasurements,
   saveSurgicalPlan,
   listSurgicalPlans,
+  saveSimulation,
+  listSimulations,
+  listCaseTeamMembers,
+  saveCaseTeamMember,
+  updateCaseTeamMemberRole,
+  removeCaseTeamMember,
   saveLandmark,
   deleteLandmark,
   listLandmarks,
@@ -36,6 +42,7 @@ const {
   getReconstructionResult,
   buildReconstructionReport,
   buildCaseReport,
+  buildCaseTimeline,
   deleteReconstructionResult,
   getArtifactPath
 } = require("./reconstruction-results");
@@ -121,6 +128,46 @@ router.get("/cases/:caseId/report", asyncRoute(async (req, res) => {
   const report = buildCaseReport(req.params.caseId);
   if (!report) throw new ApiError(404, ERROR_CODES.validationFailed, "Case not found.");
   res.json(report);
+}));
+
+router.get("/cases/:caseId/timeline", asyncRoute(async (req, res) => {
+  const timeline = buildCaseTimeline(req.params.caseId);
+  if (!timeline) throw new ApiError(404, ERROR_CODES.validationFailed, "Case not found.");
+  res.json(timeline);
+}));
+
+router.get("/cases/:caseId/team", asyncRoute(async (req, res) => {
+  const caseItem = getCase(req.params.caseId);
+  if (!caseItem) throw new ApiError(404, ERROR_CODES.validationFailed, "Case not found.");
+  res.json({
+    ownerId: caseItem.ownerId || "",
+    permissions: caseItem.permissions || {},
+    teamMembers: listCaseTeamMembers(req.params.caseId)
+  });
+}));
+
+router.post("/cases/:caseId/team", asyncRoute(async (req, res) => {
+  if (!getCase(req.params.caseId)) throw new ApiError(404, ERROR_CODES.validationFailed, "Case not found.");
+  // TODO: enforce backend auth and permission checks before mutating team membership.
+  const member = saveCaseTeamMember(req.params.caseId, req.body || {});
+  if (!member) throw new ApiError(400, ERROR_CODES.validationFailed, "Valid team member data is required.");
+  res.json(member);
+}));
+
+router.patch("/cases/:caseId/team/:memberId", asyncRoute(async (req, res) => {
+  if (!getCase(req.params.caseId)) throw new ApiError(404, ERROR_CODES.validationFailed, "Case not found.");
+  // TODO: enforce backend auth and owner/admin permission checks.
+  const member = updateCaseTeamMemberRole(req.params.caseId, req.params.memberId, req.body?.role || "");
+  if (!member) throw new ApiError(404, ERROR_CODES.validationFailed, "Team member not found.");
+  res.json(member);
+}));
+
+router.delete("/cases/:caseId/team/:memberId", asyncRoute(async (req, res) => {
+  if (!getCase(req.params.caseId)) throw new ApiError(404, ERROR_CODES.validationFailed, "Case not found.");
+  // TODO: enforce backend auth and owner/admin permission checks.
+  const member = removeCaseTeamMember(req.params.caseId, req.params.memberId);
+  if (!member) throw new ApiError(404, ERROR_CODES.validationFailed, "Team member not found or owner cannot be removed.");
+  res.json({ deleted: true, member });
 }));
 
 router.get("/measurements", asyncRoute(async (req, res) => {
@@ -230,6 +277,34 @@ router.post("/surgical-plans", asyncRoute(async (req, res) => {
     throw new ApiError(400, ERROR_CODES.validationFailed, "Valid caseId is required for surgical plan.");
   }
   res.json(plan);
+}));
+
+router.get("/simulations", asyncRoute(async (req, res) => {
+  res.json({
+    simulations: listSimulations({
+      caseId: req.query?.caseId || "all",
+      jobId: req.query?.jobId || "all",
+      modelId: req.query?.modelId || "all"
+    })
+  });
+}));
+
+router.post("/simulations", asyncRoute(async (req, res) => {
+  const caseId = String(req.body?.caseId || "").trim();
+  const jobId = String(req.body?.jobId || "").trim();
+  const modelId = String(req.body?.modelId || req.body?.originalModelId || "").trim();
+  const job = jobId ? getJob(jobId) : null;
+  if (!caseId || !getCase(caseId) || !modelId) {
+    throw new ApiError(400, ERROR_CODES.validationFailed, "Surgical simulation must belong to an existing case and model.");
+  }
+  if (jobId && (!job || job.caseId !== caseId)) {
+    throw new ApiError(400, ERROR_CODES.validationFailed, "Selected simulation model/job must belong to the same case.");
+  }
+  const simulation = saveSimulation(req.body || {});
+  if (!simulation) {
+    throw new ApiError(400, ERROR_CODES.validationFailed, "Valid caseId, modelId, and simulation parameters are required.");
+  }
+  res.json(simulation);
 }));
 
 router.get("/comparisons", asyncRoute(async (req, res) => {

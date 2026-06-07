@@ -2,7 +2,7 @@ const fs = require("fs/promises");
 const fsSync = require("fs");
 const path = require("path");
 const { STATUSES } = require("./constants");
-const { getCase, getMutableJob, listMutableJobs, saveJob, addModelToCase, addReportToCase, listComparisons, listMeasurements, listSurgicalPlans, listLandmarks } = require("./store");
+const { getCase, getMutableJob, listMutableJobs, saveJob, addModelToCase, addReportToCase, listComparisons, listMeasurements, listSurgicalPlans, listLandmarks, listSimulations } = require("./store");
 const { checkModelReadiness } = require("./model-readiness-check");
 const { normalizeReconstructionSettings } = require("./settings");
 
@@ -315,6 +315,11 @@ function buildReconstructionReport(jobId) {
   const measurementTemplateReport = summarizeMeasurementTemplates(measurements);
   const autoMeasurementReport = summarizeCalculatedMeasurements(measurements);
   const clinicalAnalysisPresetReport = summarizeClinicalAnalysisPresets(landmarks, measurements);
+  const surgicalSimulations = listSimulations({
+    caseId: job.caseId || "all",
+    jobId: job.jobId,
+    modelId: result.resultGlbUrl || job.jobId
+  });
   // TODO: Add PDF/DOCX reconstruction report exporters from this JSON shape without reusing 2D/3D clinical export functions.
   const report = {
     jobId: job.jobId,
@@ -443,6 +448,9 @@ function buildReconstructionReport(jobId) {
     aiCorrectedLandmarksCount: aiLandmarkReport.correctedCount,
     aiRejectedLandmarksCount: aiLandmarkReport.rejectedCount,
     aiAverageConfidence: aiLandmarkReport.averageConfidence,
+    surgicalSimulations,
+    surgicalSimulationsCount: surgicalSimulations.length,
+    simulationWarnings: Array.from(new Set(surgicalSimulations.flatMap(item => item.warnings || []))),
     finalResult: result,
     warnings: result.warnings
   };
@@ -463,6 +471,24 @@ function buildCaseReport(caseId) {
   const clinicalAnalysisPresetReport = summarizeClinicalAnalysisPresets(landmarks, measurements);
   const comparisons = listComparisons(caseId);
   const surgicalPlanningNotes = listSurgicalPlans({ caseId });
+  const surgicalSimulations = listSimulations({ caseId });
+  const teamMembers = caseItem.teamMembers || [];
+  const caseOwner = teamMembers.find(member => member.memberId === caseItem.ownerId) || teamMembers.find(member => member.role === "owner") || null;
+  const contributors = teamMembers
+    .filter(member => member.role !== "viewer")
+    .map(member => ({
+      memberId: member.memberId,
+      name: member.name || "",
+      role: member.role || "viewer",
+      permissions: member.permissions || []
+    }));
+  const timeline = buildCaseTimeline(caseId, {
+    caseItem,
+    jobs,
+    measurements,
+    surgicalPlanningNotes,
+    surgicalSimulations
+  });
   const resultModels = jobs
     .filter(job => job.resultGlbUrl)
     .map(job => ({
@@ -494,6 +520,12 @@ function buildCaseReport(caseId) {
     updatedAt: caseItem.updatedAt,
     generatedAt: new Date().toISOString(),
     notes: caseItem.notes || "",
+    ownerId: caseItem.ownerId || "",
+    caseOwner,
+    teamMembers,
+    teamMembersCount: teamMembers.length,
+    casePermissions: caseItem.permissions || {},
+    contributors,
     reconstructionJobs: jobs,
     jobs,
     resultModels,
@@ -525,15 +557,126 @@ function buildCaseReport(caseId) {
     aiAverageConfidence: aiLandmarkReport.averageConfidence,
     surgicalPlanningNotes,
     surgicalPlanningNotesCount: surgicalPlanningNotes.length,
+    surgicalSimulations,
+    surgicalSimulationsCount: surgicalSimulations.length,
+    simulationWarnings: Array.from(new Set(surgicalSimulations.flatMap(item => item.warnings || []))),
+    timeline,
+    timelineSummary: {
+      timelineId: timeline.timelineId,
+      entriesCount: timeline.entries.length,
+      reconstructionEntriesCount: timeline.entries.filter(item => item.entryType === "reconstruction").length,
+      simulationEntriesCount: timeline.entries.filter(item => item.entryType === "simulation").length,
+      reportEntriesCount: timeline.entries.filter(item => item.entryType === "report").length,
+      measurementSnapshotEntriesCount: timeline.entries.filter(item => item.entryType === "measurement_snapshot").length,
+      noteEntriesCount: timeline.entries.filter(item => item.entryType === "note").length
+    },
     TODO: [
       "multiple scans",
       "before/after comparison",
       "operation planning",
-      "timeline"
+      "timeline",
+      "soft tissue simulation",
+      "bone movement simulation",
+      "orthognathic planning",
+      "rhinoplasty planning",
+      "AI surgical planning"
     ]
   };
   addReportToCase(caseId, `${caseId}:case-report`);
   return report;
+}
+
+function buildCaseTimeline(caseId, preloaded = {}) {
+  const caseItem = preloaded.caseItem || getCase(caseId);
+  if (!caseItem) return null;
+  const jobs = preloaded.jobs || listReconstructionHistory("all", caseId);
+  const measurements = preloaded.measurements || listMeasurements({ caseId });
+  const surgicalPlanningNotes = preloaded.surgicalPlanningNotes || listSurgicalPlans({ caseId });
+  const surgicalSimulations = preloaded.surgicalSimulations || listSimulations({ caseId });
+  const entries = [];
+
+  jobs.forEach(job => {
+    entries.push({
+      entryId: `timeline-entry-${job.jobId}`,
+      caseId,
+      modelId: job.resultGlbUrl || job.jobId || "",
+      reconstructionJobId: job.jobId,
+      entryType: "reconstruction",
+      title: `Reconstruction ${job.status || ""}`.trim(),
+      description: `3D reconstruction job ${job.jobId} · readiness ${job.readinessLevel || "unknown"}`,
+      createdAt: job.createdAt || job.updatedAt || caseItem.createdAt
+    });
+  });
+
+  surgicalSimulations.forEach(simulation => {
+    entries.push({
+      entryId: `timeline-entry-${simulation.simulationId}`,
+      caseId,
+      modelId: simulation.simulatedModelId || simulation.modelId || "",
+      reconstructionJobId: simulation.jobId || "",
+      entryType: "simulation",
+      title: `Simulation ${String(simulation.simulationType || "custom_simulation").replace(/_/g, " ")}`,
+      description: `Before ${simulation.originalModelId || simulation.modelId || "model"} · simulated ${simulation.simulatedModelId || "model"}`,
+      createdAt: simulation.createdAt || simulation.updatedAt || caseItem.updatedAt
+    });
+  });
+
+  const measurementsByModel = new Map();
+  measurements.forEach(measurement => {
+    const modelId = measurement.modelId || measurement.jobId || "case";
+    if (!measurementsByModel.has(modelId)) measurementsByModel.set(modelId, []);
+    measurementsByModel.get(modelId).push(measurement);
+  });
+  measurementsByModel.forEach((items, modelId) => {
+    const latest = items.reduce((best, item) => String(item.updatedAt || item.createdAt || "").localeCompare(String(best.updatedAt || best.createdAt || "")) > 0 ? item : best, items[0]);
+    entries.push({
+      entryId: `timeline-entry-measurements-${String(modelId).replace(/[^\w.-]+/g, "_")}`,
+      caseId,
+      modelId,
+      reconstructionJobId: latest?.jobId || "",
+      entryType: "measurement_snapshot",
+      title: "Measurement snapshot",
+      description: `${items.length} measurement(s) linked to model ${modelId}`,
+      createdAt: latest?.updatedAt || latest?.createdAt || caseItem.updatedAt
+    });
+  });
+
+  (caseItem.reports || []).forEach(reportId => {
+    entries.push({
+      entryId: `timeline-entry-report-${String(reportId).replace(/[^\w.-]+/g, "_")}`,
+      caseId,
+      modelId: "",
+      reconstructionJobId: String(reportId).split(":")[0] || "",
+      entryType: "report",
+      title: "Report",
+      description: String(reportId),
+      createdAt: caseItem.updatedAt || caseItem.createdAt
+    });
+  });
+
+  surgicalPlanningNotes.forEach(plan => {
+    entries.push({
+      entryId: `timeline-entry-note-${plan.planId}`,
+      caseId,
+      modelId: plan.modelId || "",
+      reconstructionJobId: plan.jobId || "",
+      entryType: "note",
+      title: plan.title || plan.procedureType || "Surgical note",
+      description: plan.notes || plan.diagnosis || plan.goals || "Clinical planning note",
+      createdAt: plan.updatedAt || plan.createdAt || caseItem.updatedAt
+    });
+  });
+
+  entries.sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+  const createdAt = entries.length ? entries[entries.length - 1].createdAt : caseItem.createdAt;
+  const updatedAt = entries.length ? entries[0].createdAt : caseItem.updatedAt;
+  return {
+    timelineId: `timeline-${caseId}`,
+    caseId,
+    entries,
+    createdAt,
+    updatedAt
+  };
 }
 
 async function deleteReconstructionResult(jobId) {
@@ -576,6 +719,7 @@ module.exports = {
   getReconstructionResult,
   buildReconstructionReport,
   buildCaseReport,
+  buildCaseTimeline,
   deleteReconstructionResult,
   getArtifactPath,
   getPublicArtifactUrl

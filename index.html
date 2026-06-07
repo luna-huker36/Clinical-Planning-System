@@ -622,6 +622,35 @@
           </div>
         </div>
 
+        <div class="card reconstruction-card" id="reconstructionCaseTeam">
+          <div class="card-title">Case Team</div>
+          <div class="reconstruction-settings-summary" id="caseTeamSummary">Select a case to manage team access.</div>
+          <div class="reconstruction-settings-grid">
+            <div>
+              <label class="label-sm" for="caseTeamMemberName">Member name</label>
+              <input id="caseTeamMemberName" class="reconstruction-setting-control" type="text" placeholder="Name" />
+            </div>
+            <div>
+              <label class="label-sm" for="caseTeamMemberEmail">Email</label>
+              <input id="caseTeamMemberEmail" class="reconstruction-setting-control" type="email" placeholder="email@example.com" />
+            </div>
+            <div>
+              <label class="label-sm" for="caseTeamMemberRole">Role</label>
+              <select id="caseTeamMemberRole" class="reconstruction-setting-control">
+                <option value="surgeon">surgeon</option>
+                <option value="assistant">assistant</option>
+                <option value="viewer" selected>viewer</option>
+              </select>
+            </div>
+          </div>
+          <div class="reconstruction-result-actions">
+            <button class="btn btn-primary" id="btnAddCaseTeamMember">Add Member</button>
+          </div>
+          <div id="caseTeamList" class="reconstruction-history-list">
+            <div class="hint">No team members yet.</div>
+          </div>
+        </div>
+
         <div class="card reconstruction-card">
           <div class="card-title">📥 Входные файлы</div>
           <label class="reconstruction-dropzone" id="reconstructionDropzone" for="reconstructionFileInput">
@@ -1137,6 +1166,75 @@
           </div>
         </div>
 
+        <div class="card reconstruction-card" id="reconstructionSurgicalSimulation">
+          <div class="card-title">Surgical Simulation</div>
+          <div class="reconstruction-settings-summary" id="surgicalSimulationSummary">Select a case and ready model to prepare a surgical simulation.</div>
+          <div class="reconstruction-settings-grid">
+            <div>
+              <label class="label-sm" for="surgicalSimulationBeforeModel">Before model</label>
+              <select id="surgicalSimulationBeforeModel" class="reconstruction-setting-control">
+                <option value="">Select before model...</option>
+              </select>
+            </div>
+            <div>
+              <label class="label-sm" for="surgicalSimulationType">Simulation type</label>
+              <select id="surgicalSimulationType" class="reconstruction-setting-control">
+                <option value="nasal_adjustment">nasal adjustment</option>
+                <option value="chin_adjustment">chin adjustment</option>
+                <option value="jaw_adjustment">jaw adjustment</option>
+                <option value="facial_projection">facial projection</option>
+                <option value="custom_simulation">custom simulation</option>
+              </select>
+            </div>
+            <div>
+              <label class="label-sm" for="simulationMoveX">Move X</label>
+              <input id="simulationMoveX" class="reconstruction-setting-control" type="number" step="0.1" value="0" />
+            </div>
+            <div>
+              <label class="label-sm" for="simulationMoveY">Move Y</label>
+              <input id="simulationMoveY" class="reconstruction-setting-control" type="number" step="0.1" value="0" />
+            </div>
+            <div>
+              <label class="label-sm" for="simulationMoveZ">Move Z</label>
+              <input id="simulationMoveZ" class="reconstruction-setting-control" type="number" step="0.1" value="0" />
+            </div>
+            <div>
+              <label class="label-sm" for="simulationRotateX">Rotate X</label>
+              <input id="simulationRotateX" class="reconstruction-setting-control" type="number" step="0.1" value="0" />
+            </div>
+            <div>
+              <label class="label-sm" for="simulationRotateY">Rotate Y</label>
+              <input id="simulationRotateY" class="reconstruction-setting-control" type="number" step="0.1" value="0" />
+            </div>
+            <div>
+              <label class="label-sm" for="simulationRotateZ">Rotate Z</label>
+              <input id="simulationRotateZ" class="reconstruction-setting-control" type="number" step="0.1" value="0" />
+            </div>
+            <div>
+              <label class="label-sm" for="simulationScale">Scale</label>
+              <input id="simulationScale" class="reconstruction-setting-control" type="number" step="0.01" min="0.01" value="1" />
+            </div>
+            <div>
+              <label class="label-sm" for="simulationCustomParameters">Custom parameters</label>
+              <input id="simulationCustomParameters" class="reconstruction-setting-control" type="text" placeholder="Optional custom parameters" />
+            </div>
+          </div>
+          <div class="reconstruction-result-actions">
+            <button class="btn btn-primary" id="btnRunSurgicalSimulation">Run Simulation</button>
+          </div>
+          <div id="surgicalSimulationList" class="reconstruction-history-list">
+            <div class="hint">No surgical simulations yet.</div>
+          </div>
+        </div>
+
+        <div class="card reconstruction-card" id="reconstructionCaseTimeline">
+          <div class="card-title">Case Timeline</div>
+          <div class="reconstruction-settings-summary" id="caseTimelineSummary">Select a patient case to view the timeline.</div>
+          <div id="caseTimelineList" class="reconstruction-history-list">
+            <div class="hint">No timeline events yet.</div>
+          </div>
+        </div>
+
         <div class="card reconstruction-card" id="reconstructionSurgicalPlanningNotes">
           <div class="card-title">Surgical Planning Notes</div>
           <div class="reconstruction-settings-summary" id="surgicalPlanningSummary">Select a case to save clinical planning notes.</div>
@@ -1505,8 +1603,8 @@
 <script src="./assets/js/11-persistence-init.js"></script>
 <script src="./assets/js/14-reconstruction-preprocessing.js?v=1"></script>
 <script src="./assets/js/13-reconstruction-pipeline.js?v=2"></script>
-<script src="./assets/js/15-reconstruction-api.js?v=3"></script>
-<script src="./assets/js/12-reconstruction.js?v=8"></script>
+<script src="./assets/js/15-reconstruction-api.js?v=6"></script>
+<script src="./assets/js/12-reconstruction.js?v=11"></script>
 
 
 <script type="module" src="./assets/js/app.js?v=61"></script>

@@ -7,6 +7,7 @@
   const MOCK_LANDMARKS_KEY = "pmas.reconstruction.landmarks.v1";
   const MOCK_LANDMARK_TEMPLATES_KEY = "pmas.reconstruction.landmark-templates.v1";
   const MOCK_SURGICAL_PLANS_KEY = "pmas.reconstruction.surgical-plans.v1";
+  const MOCK_SURGICAL_SIMULATIONS_KEY = "pmas.reconstruction.surgical-simulations.v1";
   const REPORT_EXPORT_FORMATS = ["json"];
   const DEFAULT_RECONSTRUCTION_SETTINGS = Object.freeze({
     processingMode: "balanced",
@@ -30,6 +31,9 @@
     upload: "/api/reconstruction/upload",
     cases: "/api/reconstruction/cases",
     caseReport: caseId => `/api/reconstruction/cases/${encodeURIComponent(caseId)}/report`,
+    caseTimeline: caseId => `/api/reconstruction/cases/${encodeURIComponent(caseId)}/timeline`,
+    caseTeam: caseId => `/api/reconstruction/cases/${encodeURIComponent(caseId)}/team`,
+    caseTeamMember: (caseId, memberId) => `/api/reconstruction/cases/${encodeURIComponent(caseId)}/team/${encodeURIComponent(memberId)}`,
     comparisons: "/api/reconstruction/comparisons",
     comparisonReport: comparisonId => `/api/reconstruction/comparisons/${encodeURIComponent(comparisonId)}/report`,
     measurements: "/api/reconstruction/measurements",
@@ -39,6 +43,7 @@
     landmarkTemplates: "/api/reconstruction/landmark-templates",
     landmarkTemplate: templateId => `/api/reconstruction/landmark-templates/${encodeURIComponent(templateId)}`,
     surgicalPlans: "/api/reconstruction/surgical-plans",
+    surgicalSimulations: "/api/reconstruction/simulations",
     jobs: "/api/reconstruction/jobs",
     job: jobId => `/api/reconstruction/jobs/${encodeURIComponent(jobId)}`,
     startJob: jobId => `/api/reconstruction/jobs/${encodeURIComponent(jobId)}/start`,
@@ -57,6 +62,14 @@
     jobFailed: "JOB_FAILED",
     canceledByUser: "CANCELED_BY_USER"
   };
+
+  const TEAM_ROLES = ["owner", "surgeon", "assistant", "viewer"];
+  const ROLE_PERMISSIONS = Object.freeze({
+    owner: ["view_case", "edit_case", "add_measurements", "edit_measurements", "add_notes", "export_reports", "run_reconstruction", "run_simulation"],
+    surgeon: ["view_case", "edit_case", "add_measurements", "edit_measurements", "add_notes", "export_reports", "run_reconstruction", "run_simulation"],
+    assistant: ["view_case", "add_measurements", "add_notes"],
+    viewer: ["view_case"]
+  });
 
   const DEFAULT_LANDMARK_TEMPLATES = Object.freeze([
     {
@@ -170,6 +183,32 @@
   function makeMockCaseId() {
     if (window.crypto?.randomUUID) return `case-${window.crypto.randomUUID()}`;
     return `case-${Date.now().toString(36)}-${Math.random().toString(16).slice(2)}`;
+  }
+
+  function makeMockTeamMemberId() {
+    if (window.crypto?.randomUUID) return `member-${window.crypto.randomUUID()}`;
+    return `member-${Date.now().toString(36)}-${Math.random().toString(16).slice(2)}`;
+  }
+
+  function permissionsForRole(role) {
+    return Array.from(new Set(ROLE_PERMISSIONS[role] || ROLE_PERMISSIONS.viewer));
+  }
+
+  function normalizeTeamMember(input = {}, existing = null) {
+    const role = TEAM_ROLES.includes(input.role || existing?.role) ? (input.role || existing?.role) : "viewer";
+    return {
+      memberId: String(input.memberId || existing?.memberId || makeMockTeamMemberId()).trim(),
+      name: String(input.name ?? existing?.name ?? "Team member").trim() || "Team member",
+      role,
+      email: String(input.email ?? existing?.email ?? "").trim(),
+      permissions: Array.isArray(input.permissions)
+        ? input.permissions.filter(permission => permissionsForRole("owner").includes(permission))
+        : Array.isArray(existing?.permissions) && existing.permissions.length
+          ? existing.permissions
+          : permissionsForRole(role),
+      createdAt: existing?.createdAt || new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
   }
 
   function readMockComparisons() {
@@ -422,6 +461,131 @@
     return `surgical-plan-${Date.now().toString(36)}-${Math.random().toString(16).slice(2)}`;
   }
 
+  function readMockSurgicalSimulations() {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(MOCK_SURGICAL_SIMULATIONS_KEY) || "[]");
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (err) {
+      return [];
+    }
+  }
+
+  function writeMockSurgicalSimulations(items) {
+    try {
+      localStorage.setItem(MOCK_SURGICAL_SIMULATIONS_KEY, JSON.stringify(items.slice(0, 500)));
+    } catch (err) {
+      console.warn("Unable to save surgical simulations.", err);
+    }
+  }
+
+  function makeMockSurgicalSimulationId() {
+    if (window.crypto?.randomUUID) return `simulation-${window.crypto.randomUUID()}`;
+    return `simulation-${Date.now().toString(36)}-${Math.random().toString(16).slice(2)}`;
+  }
+
+  function normalizeSimulationParameters(parameters = {}) {
+    return {
+      moveX: Number(parameters.moveX) || 0,
+      moveY: Number(parameters.moveY) || 0,
+      moveZ: Number(parameters.moveZ) || 0,
+      rotateX: Number(parameters.rotateX) || 0,
+      rotateY: Number(parameters.rotateY) || 0,
+      rotateZ: Number(parameters.rotateZ) || 0,
+      scale: Number(parameters.scale) || 1,
+      customParameters: String(parameters.customParameters || "").trim()
+    };
+  }
+
+  function simulationMatchesFilter(item, filter = {}) {
+    const caseId = String(filter.caseId || "all");
+    const jobId = String(filter.jobId || "all");
+    const modelId = String(filter.modelId || "all");
+    return (caseId === "all" || item.caseId === caseId)
+      && (jobId === "all" || item.jobId === jobId)
+      && (modelId === "all" || item.modelId === modelId || item.originalModelId === modelId || item.simulatedModelId === modelId);
+  }
+
+  function buildMockCaseTimeline(caseId) {
+    const caseItem = readMockCases().find(item => item.caseId === caseId);
+    if (!caseItem) return null;
+    const entries = [];
+    readMockHistory().filter(item => item.caseId === caseId).forEach(job => {
+      entries.push({
+        entryId: `timeline-entry-${job.jobId}`,
+        caseId,
+        modelId: job.resultGlbUrl || job.jobId || "",
+        reconstructionJobId: job.jobId,
+        entryType: "reconstruction",
+        title: `Reconstruction ${job.status || ""}`.trim(),
+        description: `3D reconstruction job ${job.jobId} · readiness ${job.readinessLevel || "unknown"}`,
+        createdAt: job.createdAt || job.updatedAt || caseItem.createdAt
+      });
+    });
+    readMockSurgicalSimulations().filter(item => item.caseId === caseId).forEach(simulation => {
+      entries.push({
+        entryId: `timeline-entry-${simulation.simulationId}`,
+        caseId,
+        modelId: simulation.simulatedModelId || simulation.modelId || "",
+        reconstructionJobId: simulation.jobId || "",
+        entryType: "simulation",
+        title: `Simulation ${String(simulation.simulationType || "custom_simulation").replace(/_/g, " ")}`,
+        description: `Before ${simulation.originalModelId || simulation.modelId || "model"} · simulated ${simulation.simulatedModelId || "model"}`,
+        createdAt: simulation.createdAt || simulation.updatedAt || caseItem.updatedAt
+      });
+    });
+    const measurementsByModel = new Map();
+    readMockMeasurements().filter(item => item.caseId === caseId).forEach(measurement => {
+      const modelId = measurement.modelId || measurement.jobId || "case";
+      if (!measurementsByModel.has(modelId)) measurementsByModel.set(modelId, []);
+      measurementsByModel.get(modelId).push(measurement);
+    });
+    measurementsByModel.forEach((items, modelId) => {
+      const latest = items.reduce((best, item) => String(item.updatedAt || item.createdAt || "").localeCompare(String(best.updatedAt || best.createdAt || "")) > 0 ? item : best, items[0]);
+      entries.push({
+        entryId: `timeline-entry-measurements-${String(modelId).replace(/[^\w.-]+/g, "_")}`,
+        caseId,
+        modelId,
+        reconstructionJobId: latest?.jobId || "",
+        entryType: "measurement_snapshot",
+        title: "Measurement snapshot",
+        description: `${items.length} measurement(s) linked to model ${modelId}`,
+        createdAt: latest?.updatedAt || latest?.createdAt || caseItem.updatedAt
+      });
+    });
+    (caseItem.reports || []).forEach(reportId => {
+      entries.push({
+        entryId: `timeline-entry-report-${String(reportId).replace(/[^\w.-]+/g, "_")}`,
+        caseId,
+        modelId: "",
+        reconstructionJobId: String(reportId).split(":")[0] || "",
+        entryType: "report",
+        title: "Report",
+        description: String(reportId),
+        createdAt: caseItem.updatedAt || caseItem.createdAt
+      });
+    });
+    readMockSurgicalPlans().filter(item => item.caseId === caseId).forEach(plan => {
+      entries.push({
+        entryId: `timeline-entry-note-${plan.planId}`,
+        caseId,
+        modelId: plan.modelId || "",
+        reconstructionJobId: plan.jobId || "",
+        entryType: "note",
+        title: plan.title || plan.procedureType || "Surgical note",
+        description: plan.notes || plan.diagnosis || plan.goals || "Clinical planning note",
+        createdAt: plan.updatedAt || plan.createdAt || caseItem.updatedAt
+      });
+    });
+    entries.sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+    return {
+      timelineId: `timeline-${caseId}`,
+      caseId,
+      entries,
+      createdAt: entries.length ? entries[entries.length - 1].createdAt : caseItem.createdAt,
+      updatedAt: entries.length ? entries[0].createdAt : caseItem.updatedAt
+    };
+  }
+
   function makeMockComparisonId() {
     if (window.crypto?.randomUUID) return `comparison-${window.crypto.randomUUID()}`;
     return `comparison-${Date.now().toString(36)}-${Math.random().toString(16).slice(2)}`;
@@ -652,8 +816,20 @@
         comparisons: [],
         measurements: [],
         landmarks: [],
-        surgicalPlans: []
+        surgicalPlans: [],
+        simulations: [],
+        ownerId: "",
+        teamMembers: [],
+        permissions: {}
       };
+      const owner = normalizeTeamMember({
+        name: String(caseInput.ownerName || "Case Owner"),
+        role: "owner",
+        email: String(caseInput.ownerEmail || "")
+      });
+      caseItem.ownerId = owner.memberId;
+      caseItem.teamMembers = [owner];
+      caseItem.permissions = { [owner.memberId]: owner.permissions };
       writeMockCases([caseItem, ...readMockCases()]);
       return caseItem;
     }
@@ -678,6 +854,7 @@
       writeMockMeasurements(readMockMeasurements().filter(item => item.caseId !== normalizedCaseId));
       writeMockLandmarks(readMockLandmarks().filter(item => item.caseId !== normalizedCaseId));
       writeMockSurgicalPlans(readMockSurgicalPlans().filter(item => item.caseId !== normalizedCaseId));
+      writeMockSurgicalSimulations(readMockSurgicalSimulations().filter(item => item.caseId !== normalizedCaseId));
       return { deleted: true, case: existing };
     }
 
@@ -1026,6 +1203,17 @@
       const autoMeasurementReport = summarizeCalculatedMeasurements(measurements);
       const clinicalAnalysisPresetReport = summarizeClinicalAnalysisPresets(landmarks, measurements);
       const surgicalPlanningNotes = readMockSurgicalPlans().filter(item => item.caseId === caseId);
+      const surgicalSimulations = readMockSurgicalSimulations().filter(item => item.caseId === caseId);
+      const teamMembers = (caseItem.teamMembers || []).map(member => normalizeTeamMember(member, member));
+      const caseOwner = teamMembers.find(member => member.memberId === caseItem.ownerId) || teamMembers.find(member => member.role === "owner") || null;
+      const contributors = teamMembers
+        .filter(member => member.role !== "viewer")
+        .map(member => ({
+          memberId: member.memberId,
+          name: member.name,
+          role: member.role,
+          permissions: member.permissions || []
+        }));
       const resultModels = jobs
         .filter(item => item.resultGlbUrl)
         .map(item => ({
@@ -1050,9 +1238,16 @@
           readinessLevel: item.readinessLevel || "poor"
         }));
       addMockReportToCase(caseId, `${caseId}:case-report`);
+      const timeline = buildMockCaseTimeline(caseId);
       return {
         ...caseItem,
         generatedAt: new Date().toISOString(),
+        ownerId: caseItem.ownerId || "",
+        caseOwner,
+        teamMembers,
+        teamMembersCount: teamMembers.length,
+        casePermissions: caseItem.permissions || {},
+        contributors,
         reconstructionJobs: jobs,
         jobs,
         resultModels,
@@ -1081,10 +1276,119 @@
         aiRejectedLandmarksCount: aiLandmarkReport.rejectedCount,
         aiAverageConfidence: aiLandmarkReport.averageConfidence,
         surgicalPlanningNotes,
-        surgicalPlanningNotesCount: surgicalPlanningNotes.length
+        surgicalPlanningNotesCount: surgicalPlanningNotes.length,
+        surgicalSimulations,
+        surgicalSimulationsCount: surgicalSimulations.length,
+        simulationWarnings: Array.from(new Set(surgicalSimulations.flatMap(item => item.warnings || []))),
+        timeline,
+        timelineSummary: {
+          timelineId: timeline?.timelineId || `timeline-${caseId}`,
+          entriesCount: timeline?.entries?.length || 0,
+          reconstructionEntriesCount: (timeline?.entries || []).filter(item => item.entryType === "reconstruction").length,
+          simulationEntriesCount: (timeline?.entries || []).filter(item => item.entryType === "simulation").length,
+          reportEntriesCount: (timeline?.entries || []).filter(item => item.entryType === "report").length,
+          measurementSnapshotEntriesCount: (timeline?.entries || []).filter(item => item.entryType === "measurement_snapshot").length,
+          noteEntriesCount: (timeline?.entries || []).filter(item => item.entryType === "note").length
+        }
       };
     }
     return await backendJson(ENDPOINTS.caseReport(caseId), { method: "GET" }, ERROR_CODES.jobFailed);
+  }
+
+  async function listCaseTeamMembers(caseId) {
+    const normalizedCaseId = String(caseId || "").trim();
+    if (!normalizedCaseId) throw apiError(ERROR_CODES.jobFailed, "caseId is required.");
+    if (reconstructionMode === "mock") {
+      const caseItem = readMockCases().find(item => item.caseId === normalizedCaseId);
+      if (!caseItem) throw apiError(ERROR_CODES.jobFailed, "Case not found.");
+      return {
+        ownerId: caseItem.ownerId || "",
+        permissions: caseItem.permissions || {},
+        teamMembers: (caseItem.teamMembers || []).map(member => normalizeTeamMember(member, member))
+      };
+    }
+    return await backendJson(ENDPOINTS.caseTeam(normalizedCaseId), { method: "GET" }, ERROR_CODES.jobFailed);
+  }
+
+  async function saveCaseTeamMember(caseId, input = {}) {
+    const normalizedCaseId = String(caseId || "").trim();
+    if (!normalizedCaseId) throw apiError(ERROR_CODES.jobFailed, "caseId is required.");
+    if (reconstructionMode === "mock") {
+      const cases = readMockCases();
+      const caseItem = cases.find(item => item.caseId === normalizedCaseId);
+      if (!caseItem) throw apiError(ERROR_CODES.jobFailed, "Case not found.");
+      const existing = (caseItem.teamMembers || []).find(item => item.memberId === input.memberId);
+      const member = normalizeTeamMember(input, existing);
+      caseItem.teamMembers = [member, ...(caseItem.teamMembers || []).filter(item => item.memberId !== member.memberId)];
+      caseItem.permissions = caseItem.permissions || {};
+      caseItem.permissions[member.memberId] = member.permissions;
+      if (member.role === "owner" || !caseItem.ownerId) caseItem.ownerId = member.memberId;
+      caseItem.updatedAt = new Date().toISOString();
+      writeMockCases([caseItem, ...cases.filter(item => item.caseId !== normalizedCaseId)]);
+      return member;
+    }
+    return await backendJson(ENDPOINTS.caseTeam(normalizedCaseId), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input)
+    }, ERROR_CODES.jobFailed);
+  }
+
+  async function updateCaseTeamMemberRole(caseId, memberId, role) {
+    const normalizedCaseId = String(caseId || "").trim();
+    const normalizedMemberId = String(memberId || "").trim();
+    if (!normalizedCaseId || !normalizedMemberId) throw apiError(ERROR_CODES.jobFailed, "caseId and memberId are required.");
+    if (reconstructionMode === "mock") {
+      const cases = readMockCases();
+      const caseItem = cases.find(item => item.caseId === normalizedCaseId);
+      if (!caseItem) throw apiError(ERROR_CODES.jobFailed, "Case not found.");
+      const existing = (caseItem.teamMembers || []).find(item => item.memberId === normalizedMemberId);
+      if (!existing) throw apiError(ERROR_CODES.jobFailed, "Team member not found.");
+      const nextRole = TEAM_ROLES.includes(role) ? role : existing.role;
+      const member = normalizeTeamMember({ ...existing, role: nextRole, permissions: permissionsForRole(nextRole) }, existing);
+      caseItem.teamMembers = (caseItem.teamMembers || []).map(item => item.memberId === normalizedMemberId ? member : item);
+      caseItem.permissions = caseItem.permissions || {};
+      caseItem.permissions[member.memberId] = member.permissions;
+      if (nextRole === "owner") caseItem.ownerId = member.memberId;
+      caseItem.updatedAt = new Date().toISOString();
+      writeMockCases([caseItem, ...cases.filter(item => item.caseId !== normalizedCaseId)]);
+      return member;
+    }
+    return await backendJson(ENDPOINTS.caseTeamMember(normalizedCaseId, normalizedMemberId), {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ role })
+    }, ERROR_CODES.jobFailed);
+  }
+
+  async function removeCaseTeamMember(caseId, memberId) {
+    const normalizedCaseId = String(caseId || "").trim();
+    const normalizedMemberId = String(memberId || "").trim();
+    if (!normalizedCaseId || !normalizedMemberId) throw apiError(ERROR_CODES.jobFailed, "caseId and memberId are required.");
+    if (reconstructionMode === "mock") {
+      const cases = readMockCases();
+      const caseItem = cases.find(item => item.caseId === normalizedCaseId);
+      if (!caseItem) throw apiError(ERROR_CODES.jobFailed, "Case not found.");
+      const existing = (caseItem.teamMembers || []).find(item => item.memberId === normalizedMemberId);
+      if (!existing || existing.memberId === caseItem.ownerId) throw apiError(ERROR_CODES.jobFailed, "Team member not found or owner cannot be removed.");
+      caseItem.teamMembers = (caseItem.teamMembers || []).filter(item => item.memberId !== normalizedMemberId);
+      if (caseItem.permissions) delete caseItem.permissions[normalizedMemberId];
+      caseItem.updatedAt = new Date().toISOString();
+      writeMockCases([caseItem, ...cases.filter(item => item.caseId !== normalizedCaseId)]);
+      return { deleted: true, member: existing };
+    }
+    return await backendJson(ENDPOINTS.caseTeamMember(normalizedCaseId, normalizedMemberId), { method: "DELETE" }, ERROR_CODES.jobFailed);
+  }
+
+  async function getPatientCaseTimeline(caseId) {
+    const normalizedCaseId = String(caseId || "").trim();
+    if (!normalizedCaseId) throw apiError(ERROR_CODES.jobFailed, "caseId is required.");
+    if (reconstructionMode === "mock") {
+      const timeline = buildMockCaseTimeline(normalizedCaseId);
+      if (!timeline) throw apiError(ERROR_CODES.jobFailed, "Case not found.");
+      return timeline;
+    }
+    return await backendJson(ENDPOINTS.caseTimeline(normalizedCaseId), { method: "GET" }, ERROR_CODES.jobFailed);
   }
 
   async function listSurgicalPlanningNotes(filter = {}) {
@@ -1146,6 +1450,95 @@
     }
 
     return await backendJson(ENDPOINTS.surgicalPlans, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input)
+    }, ERROR_CODES.jobFailed);
+  }
+
+  async function listSurgicalSimulations(filter = {}) {
+    if (reconstructionMode === "mock") {
+      return readMockSurgicalSimulations()
+        .filter(item => simulationMatchesFilter(item, filter))
+        .sort((a, b) => String(b.updatedAt || b.createdAt || "").localeCompare(String(a.updatedAt || a.createdAt || "")));
+    }
+    const params = new URLSearchParams();
+    if (filter.caseId && filter.caseId !== "all") params.set("caseId", filter.caseId);
+    if (filter.jobId && filter.jobId !== "all") params.set("jobId", filter.jobId);
+    if (filter.modelId && filter.modelId !== "all") params.set("modelId", filter.modelId);
+    const query = params.toString() ? `?${params.toString()}` : "";
+    const payload = await backendJson(`${ENDPOINTS.surgicalSimulations}${query}`, { method: "GET" }, ERROR_CODES.networkUnavailable);
+    return payload?.simulations || [];
+  }
+
+  async function saveSurgicalSimulation(input = {}) {
+    if (reconstructionMode === "mock") {
+      const timestamp = new Date().toISOString();
+      const caseId = String(input.caseId || "").trim();
+      const jobId = String(input.jobId || "").trim();
+      const caseItem = readMockCases().find(item => item.caseId === caseId);
+      const job = jobId ? readMockHistory().find(item => item.jobId === jobId) : null;
+      if (!caseItem) throw apiError(ERROR_CODES.jobFailed, "Surgical simulation must belong to an existing case.");
+      if (jobId && (!job || job.caseId !== caseId)) {
+        throw apiError(ERROR_CODES.jobFailed, "Selected simulation model/job must belong to the same case.");
+      }
+      const existing = readMockSurgicalSimulations().find(item => item.simulationId === input.simulationId);
+      const modelId = String(input.modelId || existing?.modelId || input.originalModelId || job?.resultGlbUrl || jobId || "").trim();
+      const simulationId = String(input.simulationId || existing?.simulationId || makeMockSurgicalSimulationId());
+      const simulatedModelId = String(input.simulatedModelId || existing?.simulatedModelId || `${modelId || jobId}:simulated:${simulationId}`).trim();
+      const warnings = Array.from(new Set([
+        ...(Array.isArray(input.warnings) ? input.warnings.map(String) : existing?.warnings || []),
+        "Surgical simulation foundation only: simulated mesh deformation is not clinically validated yet.",
+        "Mock simulation reuses the source GLB until real soft tissue/bone engines are integrated."
+      ]));
+      const simulation = {
+        simulationId,
+        caseId,
+        jobId,
+        modelId,
+        simulationType: ["nasal_adjustment", "chin_adjustment", "jaw_adjustment", "facial_projection", "custom_simulation"].includes(input.simulationType || existing?.simulationType)
+          ? (input.simulationType || existing?.simulationType)
+          : "custom_simulation",
+        parameters: normalizeSimulationParameters(input.parameters || existing?.parameters || {}),
+        originalModel: input.originalModel || existing?.originalModel || {
+          modelId,
+          jobId,
+          resultGlbUrl: job?.resultGlbUrl || modelId,
+          createdAt: job?.createdAt || timestamp
+        },
+        simulatedModel: input.simulatedModel || existing?.simulatedModel || {
+          modelId: simulatedModelId,
+          sourceModelId: modelId,
+          resultGlbUrl: input.simulatedModelUrl || job?.resultGlbUrl || modelId,
+          createdAt: timestamp
+        },
+        originalModelId: String(input.originalModelId || existing?.originalModelId || modelId).trim(),
+        simulatedModelId,
+        comparisonId: String(input.comparisonId || existing?.comparisonId || "").trim(),
+        warnings,
+        createdAt: existing?.createdAt || timestamp,
+        updatedAt: timestamp
+      };
+      if (!simulation.caseId || !simulation.modelId) {
+        throw apiError(ERROR_CODES.jobFailed, "caseId and modelId are required for surgical simulation.");
+      }
+      writeMockSurgicalSimulations([simulation, ...readMockSurgicalSimulations().filter(item => item.simulationId !== simulation.simulationId)]);
+      const cases = readMockCases();
+      const updatedCase = cases.find(item => item.caseId === caseId);
+      if (updatedCase) {
+        updatedCase.simulations = updatedCase.simulations || [];
+        if (!updatedCase.simulations.includes(simulation.simulationId)) updatedCase.simulations.push(simulation.simulationId);
+        updatedCase.models = updatedCase.models || [];
+        [simulation.originalModelId, simulation.simulatedModelId].filter(Boolean).forEach(model => {
+          if (!updatedCase.models.includes(model)) updatedCase.models.push(model);
+        });
+        updatedCase.updatedAt = timestamp;
+        writeMockCases([updatedCase, ...cases.filter(item => item.caseId !== caseId)]);
+      }
+      return simulation;
+    }
+
+    return await backendJson(ENDPOINTS.surgicalSimulations, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(input)
@@ -1283,6 +1676,10 @@
       const measurementTemplateReport = summarizeMeasurementTemplates(reportMeasurements);
       const autoMeasurementReport = summarizeCalculatedMeasurements(reportMeasurements);
       const clinicalAnalysisPresetReport = summarizeClinicalAnalysisPresets(landmarks, reportMeasurements);
+      const surgicalSimulations = readMockSurgicalSimulations().filter(item => (
+        item.caseId === (job.caseId || "")
+        && (item.jobId === jobId || item.modelId === modelId || item.originalModelId === modelId || item.simulatedModelId === modelId)
+      ));
       const report = {
         jobId,
         caseId: job.caseId || "",
@@ -1391,6 +1788,9 @@
         aiCorrectedLandmarksCount: aiLandmarkReport.correctedCount,
         aiRejectedLandmarksCount: aiLandmarkReport.rejectedCount,
         aiAverageConfidence: aiLandmarkReport.averageConfidence,
+        surgicalSimulations,
+        surgicalSimulationsCount: surgicalSimulations.length,
+        simulationWarnings: Array.from(new Set(surgicalSimulations.flatMap(item => item.warnings || []))),
         finalResult: job.status === "ready" && job.resultGlbUrl
           ? await getBackendReconstructionResult(jobId)
           : null,
@@ -1573,6 +1973,11 @@
     createPatientCase,
     deletePatientCase,
     getPatientCaseReport,
+    listCaseTeamMembers,
+    saveCaseTeamMember,
+    updateCaseTeamMemberRole,
+    removeCaseTeamMember,
+    getPatientCaseTimeline,
     listModelComparisons,
     createModelComparison,
     getModelComparisonReport,
@@ -1588,6 +1993,8 @@
     deleteLandmarkTemplate,
     listSurgicalPlanningNotes,
     saveSurgicalPlanningNote,
+    listSurgicalSimulations,
+    saveSurgicalSimulation,
     errorCodes: ERROR_CODES,
     uploadReconstructionFiles,
     createBackendReconstructionJob,

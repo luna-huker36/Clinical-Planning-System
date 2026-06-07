@@ -13,6 +13,11 @@
     currentReport: null,
     cases: [],
     currentCaseId: "",
+    caseTeam: {
+      ownerId: "",
+      teamMembers: [],
+      permissions: {}
+    },
     clinicalAnalysisPresets: [],
     currentAnalysisPreset: null,
     analysisPresetReportDraft: null,
@@ -29,6 +34,9 @@
     landmarkDetectionMode: "ai_assisted",
     activeMeasurementContext: null,
     surgicalPlanningNotes: [],
+    surgicalSimulations: [],
+    caseTimeline: null,
+    currentSimulation: null,
     currentSurgicalPlanId: "",
     currentCaseReport: null,
     caseDashboardSearch: "",
@@ -89,7 +97,21 @@
     measurements: [],
     landmarks: [],
     landmarkTemplates: [],
-    surgicalPlans: []
+    surgicalPlans: [],
+    simulations: [],
+    ownerId: "demo-member-owner",
+    teamMembers: [{
+      memberId: "demo-member-owner",
+      name: "Demo Owner",
+      role: "owner",
+      email: "demo-owner@pmas.local",
+      permissions: ["view_case", "edit_case", "add_measurements", "edit_measurements", "add_notes", "export_reports", "run_reconstruction", "run_simulation"],
+      createdAt: "2026-01-01T09:00:00.000Z",
+      updatedAt: "2026-01-01T09:00:00.000Z"
+    }],
+    permissions: {
+      "demo-member-owner": ["view_case", "edit_case", "add_measurements", "edit_measurements", "add_notes", "export_reports", "run_reconstruction", "run_simulation"]
+    }
   }]);
   const DEMO_HISTORY = Object.freeze([{
     jobId: DEMO_JOB_ID,
@@ -152,7 +174,7 @@
   }
 
   function hasRecoverableSession(snapshot) {
-    return Boolean(snapshot?.caseId || snapshot?.currentJobId || snapshot?.activeMeasurementContext?.modelId || snapshot?.surgicalDraft?.hasContent);
+    return Boolean(snapshot?.caseId || snapshot?.currentJobId || snapshot?.activeMeasurementContext?.modelId || snapshot?.surgicalDraft?.hasContent || snapshot?.simulationDraft?.hasContent);
   }
 
   function setInputValue(id, value) {
@@ -234,6 +256,12 @@
     return draft;
   }
 
+  function readSimulationDraftForSession() {
+    const draft = readSurgicalSimulationForm();
+    draft.hasContent = Boolean(draft.jobId || draft.simulationType !== "nasal_adjustment" || Object.values(draft.parameters || {}).some(value => String(value || "").trim() && String(value) !== "0" && String(value) !== "1"));
+    return draft;
+  }
+
   function readSelectedFileDraft() {
     return state.selectedFiles.map(file => ({
       name: file.name || "",
@@ -263,6 +291,7 @@
       },
       manualAdjustmentDraft: readManualAdjustmentValues(),
       surgicalDraft: readSurgicalDraftForSession(),
+      simulationDraft: readSimulationDraftForSession(),
       comparisonDraft: readComparisonDraft(),
       currentComparisonId: state.currentComparison?.comparisonId || "",
       dashboardDraft: {
@@ -276,7 +305,10 @@
       },
       measurementsCount: state.caseMeasurements.length,
       landmarksCount: state.caseLandmarks.length,
-      surgicalNotesCount: state.surgicalPlanningNotes.length
+      surgicalNotesCount: state.surgicalPlanningNotes.length,
+      surgicalSimulationsCount: state.surgicalSimulations.length,
+      timelineEntriesCount: state.caseTimeline?.entries?.length || 0,
+      teamMembersCount: state.caseTeam?.teamMembers?.length || 0
     };
     return snapshot;
   }
@@ -700,6 +732,48 @@
     return state.cases.find(item => item.caseId === state.currentCaseId) || null;
   }
 
+  const TEAM_ROLES = ["owner", "surgeon", "assistant", "viewer"];
+
+  function teamRoleLabel(role) {
+    return String(role || "viewer").replace(/_/g, " ");
+  }
+
+  function renderCaseTeam() {
+    const summary = byId("caseTeamSummary");
+    const list = byId("caseTeamList");
+    const members = state.caseTeam?.teamMembers || [];
+    const owner = members.find(member => member.memberId === state.caseTeam?.ownerId) || members.find(member => member.role === "owner");
+    if (summary) {
+      summary.textContent = state.currentCaseId
+        ? `owner ${owner?.name || "not assigned"} · ${members.length} member(s)`
+        : "Select a case to manage team access.";
+    }
+    if (!list) return;
+    if (!members.length) {
+      list.innerHTML = '<div class="hint">No team members yet.</div>';
+      return;
+    }
+    list.innerHTML = members.map(member => `
+      <div class="reconstruction-history-row" data-team-member-id="${escapeHtml(member.memberId)}">
+        <div class="reconstruction-history-main">
+          <strong>${escapeHtml(member.name || "Team member")}</strong>
+          <div class="reconstruction-history-id">${escapeHtml(member.email || "no email")}</div>
+          <div class="reconstruction-history-id">${escapeHtml(member.memberId)}</div>
+        </div>
+        <div class="reconstruction-history-cell">
+          <select class="reconstruction-setting-control" data-team-role ${member.memberId === state.caseTeam?.ownerId ? "disabled" : ""}>
+            ${TEAM_ROLES.map(role => `<option value="${escapeHtml(role)}" ${role === member.role ? "selected" : ""}>${escapeHtml(teamRoleLabel(role))}</option>`).join("")}
+          </select>
+        </div>
+        <div class="reconstruction-history-cell">${escapeHtml((member.permissions || []).join(", ") || "view_case")}</div>
+        <div class="reconstruction-history-actions">
+          <button class="btn btn-sm" data-team-action="change-role" ${member.memberId === state.caseTeam?.ownerId ? "disabled" : ""}>change role</button>
+          <button class="btn btn-sm btn-danger" data-team-action="remove" ${member.memberId === state.caseTeam?.ownerId ? "disabled" : ""}>remove</button>
+        </div>
+      </div>
+    `).join("");
+  }
+
   function renderCaseSummary() {
     const box = byId("reconstructionCaseSummary");
     if (!box) return;
@@ -707,6 +781,7 @@
     updateCaseReportButtons();
     if (!caseItem) {
       box.innerHTML = '<div class="hint">Select or create a case before reconstruction.</div>';
+      renderCaseTeam();
       return;
     }
     box.innerHTML = [
@@ -715,9 +790,13 @@
       ["Created", formatDateTime(caseItem.createdAt)],
       ["Jobs", String(caseItem.reconstructionJobs?.length || 0)],
       ["Models", String(caseItem.models?.length || 0)],
+      ["Simulations", String(caseItem.simulations?.length || 0)],
+      ["Timeline", String(state.caseTimeline?.entries?.length || 0)],
+      ["Team", String(state.caseTeam?.teamMembers?.length || caseItem.teamMembers?.length || 0)],
       ["Plans", String(caseItem.surgicalPlans?.length || 0)]
     ].map(([label, value]) => `<div class="reconstruction-case-stat"><span class="label-sm">${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`).join("");
     renderComparisonOptions();
+    renderCaseTeam();
     renderClinicalReportBuilder();
     scheduleSessionAutoSave();
   }
@@ -895,6 +974,7 @@
     afterSelect.value = models.some(item => item.jobId === currentAfter) ? currentAfter : "";
     renderComparisonDetails();
     renderSurgicalPlanningModelOptions();
+    renderSurgicalSimulationModelOptions();
   }
 
   function renderComparisonDetails() {
@@ -1159,11 +1239,14 @@
 
   const CLINICAL_REPORT_SECTIONS = Object.freeze([
     { sectionId: "case_info", label: "Patient / Case Info" },
+    { sectionId: "case_team", label: "Case Team" },
     { sectionId: "reconstruction_summary", label: "Reconstruction Summary" },
     { sectionId: "model_readiness", label: "Model Readiness" },
     { sectionId: "landmarks_summary", label: "Landmarks Summary" },
     { sectionId: "measurements_summary", label: "Measurements Summary" },
+    { sectionId: "case_timeline", label: "Case Timeline" },
     { sectionId: "before_after_comparison", label: "Before / After Comparison" },
+    { sectionId: "surgical_simulation", label: "Surgical Simulation" },
     { sectionId: "surgical_planning_notes", label: "Surgical Planning Notes" },
     { sectionId: "warnings", label: "Warnings" },
     { sectionId: "doctor_notes", label: "Doctor Notes" }
@@ -1412,6 +1495,11 @@
           createdAt: report.createdAt || currentCase()?.createdAt || "",
           updatedAt: report.updatedAt || currentCase()?.updatedAt || ""
         },
+        case_team: {
+          owner: report.caseOwner || (state.caseTeam?.teamMembers || []).find(member => member.memberId === state.caseTeam?.ownerId) || null,
+          teamMembers: report.teamMembers || state.caseTeam?.teamMembers || [],
+          contributors: report.contributors || (state.caseTeam?.teamMembers || []).filter(member => member.role !== "viewer")
+        },
         reconstruction_summary: report.reconstructionJobs || report.jobs || [],
         model_readiness: report.readinessScores || [],
         landmarks_summary: {
@@ -1424,12 +1512,16 @@
           measurementTemplateReport: report.measurementTemplateReport || {},
           autoMeasurementReport: report.autoMeasurementReport || {}
         },
+        case_timeline: report.timeline || state.caseTimeline || null,
         before_after_comparison: report.comparisons || state.comparisons,
+        surgical_simulation: report.surgicalSimulations || state.surgicalSimulations,
         surgical_planning_notes: report.surgicalPlanningNotes || state.surgicalPlanningNotes,
         warnings: [
           ...(report.warnings || []),
           ...(report.clinicalAnalysisPresetReport?.warnings || []),
-          ...(report.autoMeasurementReport?.warnings || [])
+          ...(report.autoMeasurementReport?.warnings || []),
+          ...(report.simulationWarnings || []),
+          ...((report.surgicalSimulations || state.surgicalSimulations || []).flatMap(item => item.warnings || []))
         ],
         doctor_notes: byId("clinicalReportDoctorNotes")?.value || ""
       }
@@ -1464,6 +1556,14 @@
           String(job.warningsCount || 0)
         ]));
       }
+      if (sectionId === "case_team") {
+        return table(["Member", "Role", "Email", "Permissions"], (content?.teamMembers || []).map(member => [
+          member.name || member.memberId || "—",
+          teamRoleLabel(member.role),
+          member.email || "—",
+          (member.permissions || []).join(", ") || "view_case"
+        ]));
+      }
       if (sectionId === "model_readiness") {
         return table(["Job", "Score", "Level"], (content || []).map(item => [
           item.jobId || "—",
@@ -1494,6 +1594,24 @@
           item.beforeJobId || "—",
           item.afterJobId || "—",
           item.comparisonMode || "—"
+        ]));
+      }
+      if (sectionId === "case_timeline") {
+        return table(["Date", "Type", "Model", "Description"], (content?.entries || []).map(item => [
+          formatDateTime(item.createdAt),
+          item.entryType || "—",
+          item.modelId || item.reconstructionJobId || "—",
+          item.description || item.title || "—"
+        ]));
+      }
+      if (sectionId === "surgical_simulation") {
+        return table(["Simulation", "Type", "Parameters", "Before", "Simulated", "Warnings"], (content || []).map(item => [
+          item.simulationId || "—",
+          simulationTypeLabel(item.simulationType),
+          simulationParameterSummary(item.parameters || {}),
+          item.jobId || item.originalModelId || item.modelId || "—",
+          item.simulatedModelId || item.simulatedModel?.modelId || "—",
+          (item.warnings || []).join("; ") || "—"
         ]));
       }
       if (sectionId === "surgical_planning_notes") {
@@ -2713,6 +2831,7 @@
       const plan = await api().saveSurgicalPlanningNote(readSurgicalPlanningForm());
       state.currentSurgicalPlanId = plan.planId;
       await loadSurgicalPlanningNotes();
+      await loadCaseTimeline();
       await loadCases();
       setStatusText("Surgical planning notes saved.");
       scheduleSessionAutoSave();
@@ -2733,6 +2852,380 @@
     }
   }
 
+  function simulationTypeLabel(type) {
+    return String(type || "custom_simulation").replace(/_/g, " ");
+  }
+
+  function simulationParameterSummary(parameters = {}) {
+    const normalized = {
+      moveX: Number(parameters.moveX) || 0,
+      moveY: Number(parameters.moveY) || 0,
+      moveZ: Number(parameters.moveZ) || 0,
+      rotateX: Number(parameters.rotateX) || 0,
+      rotateY: Number(parameters.rotateY) || 0,
+      rotateZ: Number(parameters.rotateZ) || 0,
+      scale: Number(parameters.scale) || 1
+    };
+    return `move ${normalized.moveX}/${normalized.moveY}/${normalized.moveZ} · rotate ${normalized.rotateX}/${normalized.rotateY}/${normalized.rotateZ} · scale ${normalized.scale}`;
+  }
+
+  function renderSurgicalSimulationModelOptions() {
+    const select = byId("surgicalSimulationBeforeModel");
+    if (!select) return;
+    const currentValue = select.value || state.activeMeasurementContext?.jobId || "";
+    const models = readyCaseModels();
+    select.innerHTML = ['<option value="">Select before model...</option>']
+      .concat(models.map(item => `<option value="${escapeHtml(item.jobId)}">${escapeHtml(modelOptionLabel(item))}</option>`))
+      .join("");
+    select.value = models.some(item => item.jobId === currentValue) ? currentValue : "";
+    renderSurgicalSimulation();
+  }
+
+  function readSurgicalSimulationForm() {
+    const jobId = byId("surgicalSimulationBeforeModel")?.value || "";
+    const model = readyCaseModels().find(item => item.jobId === jobId);
+    return {
+      caseId: state.currentCaseId || "",
+      jobId,
+      modelId: model?.resultGlbUrl || "",
+      simulationType: byId("surgicalSimulationType")?.value || "nasal_adjustment",
+      parameters: {
+        moveX: Number(byId("simulationMoveX")?.value) || 0,
+        moveY: Number(byId("simulationMoveY")?.value) || 0,
+        moveZ: Number(byId("simulationMoveZ")?.value) || 0,
+        rotateX: Number(byId("simulationRotateX")?.value) || 0,
+        rotateY: Number(byId("simulationRotateY")?.value) || 0,
+        rotateZ: Number(byId("simulationRotateZ")?.value) || 0,
+        scale: Number(byId("simulationScale")?.value) || 1,
+        customParameters: byId("simulationCustomParameters")?.value || ""
+      }
+    };
+  }
+
+  function applySurgicalSimulationDraft(draft = {}) {
+    setInputValue("surgicalSimulationType", draft.simulationType || "nasal_adjustment");
+    setInputValue("simulationMoveX", draft.parameters?.moveX ?? 0);
+    setInputValue("simulationMoveY", draft.parameters?.moveY ?? 0);
+    setInputValue("simulationMoveZ", draft.parameters?.moveZ ?? 0);
+    setInputValue("simulationRotateX", draft.parameters?.rotateX ?? 0);
+    setInputValue("simulationRotateY", draft.parameters?.rotateY ?? 0);
+    setInputValue("simulationRotateZ", draft.parameters?.rotateZ ?? 0);
+    setInputValue("simulationScale", draft.parameters?.scale ?? 1);
+    setInputValue("simulationCustomParameters", draft.parameters?.customParameters || "");
+    renderSurgicalSimulationModelOptions();
+    const select = byId("surgicalSimulationBeforeModel");
+    if (select && draft.jobId && readyCaseModels().some(item => item.jobId === draft.jobId)) select.value = draft.jobId;
+    renderSurgicalSimulation();
+  }
+
+  function renderSurgicalSimulation() {
+    const summary = byId("surgicalSimulationSummary");
+    const list = byId("surgicalSimulationList");
+    const draft = readSurgicalSimulationForm();
+    if (summary) {
+      summary.textContent = state.currentCaseId
+        ? `case ${state.currentCaseId} · ${state.surgicalSimulations.length} simulation(s) · ${simulationParameterSummary(draft.parameters)}`
+        : "Select a case and ready model to prepare a surgical simulation.";
+    }
+    if (!list) return;
+    if (!state.surgicalSimulations.length) {
+      list.innerHTML = '<div class="hint">No surgical simulations yet.</div>';
+      return;
+    }
+    list.innerHTML = state.surgicalSimulations.map(simulation => `
+      <div class="reconstruction-history-row" data-simulation-id="${escapeHtml(simulation.simulationId)}">
+        <div class="reconstruction-history-main">
+          <strong>${escapeHtml(simulationTypeLabel(simulation.simulationType))}</strong>
+          <div class="reconstruction-history-id">${escapeHtml(simulation.simulationId)}</div>
+          <div class="reconstruction-history-id">before ${escapeHtml(simulation.jobId || simulation.originalModelId || "—")} · simulated ${escapeHtml(simulation.simulatedModelId || "—")}</div>
+        </div>
+        <div class="reconstruction-history-cell">${escapeHtml(simulationParameterSummary(simulation.parameters))}</div>
+        <div class="reconstruction-history-cell">${Number(simulation.warnings?.length || 0)} warnings</div>
+        <div class="reconstruction-history-cell">${escapeHtml(formatDateTime(simulation.updatedAt || simulation.createdAt))}</div>
+        <div class="reconstruction-history-actions">
+          <button class="btn btn-sm" data-simulation-action="open-before">before</button>
+          <button class="btn btn-sm" data-simulation-action="open-simulated">simulated</button>
+          <button class="btn btn-sm" data-simulation-action="use-comparison">compare</button>
+        </div>
+      </div>
+    `).join("");
+  }
+
+  async function loadSurgicalSimulations() {
+    if (isDemoMode()) {
+      state.surgicalSimulations = [];
+      renderSurgicalSimulationModelOptions();
+      renderSurgicalSimulation();
+      return;
+    }
+    if (!api()?.listSurgicalSimulations || !state.currentCaseId) {
+      state.surgicalSimulations = [];
+      renderSurgicalSimulationModelOptions();
+      renderSurgicalSimulation();
+      return;
+    }
+    try {
+      state.surgicalSimulations = await api().listSurgicalSimulations({ caseId: state.currentCaseId });
+      renderSurgicalSimulationModelOptions();
+      renderSurgicalSimulation();
+    } catch (err) {
+      setError(apiErrorMessage(err, "Surgical simulations unavailable."));
+    }
+  }
+
+  async function runSurgicalSimulation() {
+    if (!api()?.saveSurgicalSimulation || !state.currentCaseId) {
+      setError("Select a case before running surgical simulation.");
+      return;
+    }
+    if (!canSavePatientData()) {
+      setModeBlocked("Demo mode cannot save surgical simulations.");
+      return;
+    }
+    const draft = readSurgicalSimulationForm();
+    const model = readyCaseModels().find(item => item.jobId === draft.jobId);
+    if (!model?.resultGlbUrl) {
+      setError("Select a ready before model before running simulation.");
+      return;
+    }
+    try {
+      const simulation = await api().saveSurgicalSimulation({
+        ...draft,
+        modelId: model.resultGlbUrl,
+        originalModelId: model.resultGlbUrl,
+        simulatedModelId: `${model.resultGlbUrl}:simulation:${Date.now().toString(36)}`,
+        originalModel: {
+          modelId: model.resultGlbUrl,
+          jobId: model.jobId,
+          resultGlbUrl: model.resultGlbUrl,
+          createdAt: model.createdAt,
+          readinessScore: model.readinessScore || 0,
+          warningsCount: model.warningsCount || 0
+        },
+        simulatedModel: {
+          sourceModelId: model.resultGlbUrl,
+          resultGlbUrl: model.resultGlbUrl,
+          createdAt: new Date().toISOString()
+        },
+        warnings: [
+          "Foundation only: simulated model metadata is stored; real mesh deformation is a future integration.",
+          "Existing PMAS viewer is reused and opens the available GLB for review."
+        ]
+      });
+      state.currentSimulation = simulation;
+      await loadSurgicalSimulations();
+      await loadCases();
+      await loadComparisonModels();
+      await loadCaseTimeline();
+      state.currentCaseReport = null;
+      state.clinicalReportDraft = buildClinicalReportSnapshot(state.currentCaseReport || {});
+      renderClinicalReportBuilder();
+      setStatusText(`Surgical simulation saved: ${simulation.simulationId}`);
+      scheduleSessionAutoSave();
+    } catch (err) {
+      setError(apiErrorMessage(err, "Surgical simulation failed."));
+    }
+  }
+
+  async function openSurgicalSimulationModel(simulation, kind) {
+    const model = kind === "simulated" ? simulation?.simulatedModel : simulation?.originalModel;
+    const resultUrl = model?.resultGlbUrl || simulation?.modelId || "";
+    const label = kind === "simulated" ? (simulation?.simulatedModelId || simulation?.simulationId) : (simulation?.jobId || simulation?.originalModelId || simulation?.modelId);
+    if (!resultUrl) {
+      setError(`Simulation ${kind} model is not available.`);
+      return;
+    }
+    await openResultUrlIn3DViewer(resultUrl, label, "");
+    setStatusText(`Surgical simulation ${kind} model opened in existing PMAS viewer.`);
+  }
+
+  async function handleSurgicalSimulationClick(event) {
+    const button = event.target.closest("[data-simulation-action]");
+    if (!button) return;
+    const row = button.closest("[data-simulation-id]");
+    const simulationId = row?.dataset?.simulationId || "";
+    const simulation = state.surgicalSimulations.find(item => item.simulationId === simulationId);
+    if (!simulation) return;
+    const action = button.dataset.simulationAction;
+    if (action === "open-before") await openSurgicalSimulationModel(simulation, "before");
+    if (action === "open-simulated") await openSurgicalSimulationModel(simulation, "simulated");
+    if (action === "use-comparison") {
+      setInputValue("comparisonBeforeModel", simulation.jobId || "");
+      setInputValue("comparisonMode", "overlay");
+      setInputValue("comparisonNotes", `Surgical simulation ${simulation.simulationId}: ${simulationTypeLabel(simulation.simulationType)}. Simulated model ${simulation.simulatedModelId || "metadata only"}.`);
+      renderComparisonDetails();
+      setStatusText("Simulation linked to Before/After Comparison metadata. Existing viewer opens one GLB at a time until real simulated GLB export is integrated.");
+    }
+  }
+
+  function demoCaseTimeline() {
+    const entries = DEMO_HISTORY.map(item => ({
+      entryId: `timeline-entry-${item.jobId}`,
+      caseId: DEMO_CASE_ID,
+      modelId: item.resultGlbUrl || item.jobId,
+      reconstructionJobId: item.jobId,
+      entryType: "reconstruction",
+      title: "Demo reconstruction",
+      description: `Demo model · readiness ${item.readinessLevel || "medium"}`,
+      createdAt: item.createdAt
+    }));
+    return {
+      timelineId: `timeline-${DEMO_CASE_ID}`,
+      caseId: DEMO_CASE_ID,
+      entries,
+      createdAt: entries[entries.length - 1]?.createdAt || DEMO_CASES[0].createdAt,
+      updatedAt: entries[0]?.createdAt || DEMO_CASES[0].updatedAt
+    };
+  }
+
+  function timelineTypeLabel(type) {
+    return String(type || "note").replace(/_/g, " ");
+  }
+
+  function timelineComparableEntries() {
+    return (state.caseTimeline?.entries || [])
+      .filter(item => item.entryType === "reconstruction" || item.entryType === "simulation")
+      .filter(item => item.reconstructionJobId || item.modelId)
+      .slice()
+      .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+  }
+
+  function previousTimelineModelEntry(entry) {
+    const comparable = timelineComparableEntries();
+    const index = comparable.findIndex(item => item.entryId === entry.entryId);
+    return index >= 0 ? comparable[index + 1] || null : null;
+  }
+
+  function renderCaseTimeline() {
+    const summary = byId("caseTimelineSummary");
+    const list = byId("caseTimelineList");
+    const entries = state.caseTimeline?.entries || [];
+    if (summary) {
+      summary.textContent = state.currentCaseId
+        ? `${entries.length} timeline event(s) · ${state.caseTimeline?.timelineId || `timeline-${state.currentCaseId}`}`
+        : "Select a patient case to view the timeline.";
+    }
+    if (!list) return;
+    if (!entries.length) {
+      list.innerHTML = '<div class="hint">No timeline events yet.</div>';
+      return;
+    }
+    list.innerHTML = entries.map(entry => {
+      const canOpen = ["reconstruction", "simulation", "report", "measurement_snapshot", "note"].includes(entry.entryType);
+      const canCompare = Boolean(previousTimelineModelEntry(entry));
+      return `
+        <div class="reconstruction-history-row" data-timeline-entry-id="${escapeHtml(entry.entryId)}">
+          <div class="reconstruction-history-main">
+            <strong>${escapeHtml(entry.title || timelineTypeLabel(entry.entryType))}</strong>
+            <div class="reconstruction-history-id">${escapeHtml(formatDateTime(entry.createdAt))}</div>
+            <div class="reconstruction-history-id">model ${escapeHtml(entry.modelId || entry.reconstructionJobId || "—")}</div>
+          </div>
+          <div class="reconstruction-history-cell">${escapeHtml(timelineTypeLabel(entry.entryType))}</div>
+          <div class="reconstruction-history-cell">${escapeHtml(entry.description || "—")}</div>
+          <div class="reconstruction-history-actions">
+            <button class="btn btn-sm" data-timeline-action="open" ${canOpen ? "" : "disabled"}>Open</button>
+            <button class="btn btn-sm" data-timeline-action="compare-previous" ${canCompare ? "" : "disabled"}>Compare With Previous</button>
+          </div>
+        </div>
+      `;
+    }).join("");
+  }
+
+  async function loadCaseTimeline() {
+    if (isDemoMode()) {
+      state.caseTimeline = state.currentCaseId === DEMO_CASE_ID ? demoCaseTimeline() : null;
+      renderCaseTimeline();
+      return;
+    }
+    if (!api()?.getPatientCaseTimeline || !state.currentCaseId) {
+      state.caseTimeline = null;
+      renderCaseTimeline();
+      return;
+    }
+    try {
+      state.caseTimeline = await api().getPatientCaseTimeline(state.currentCaseId);
+      renderCaseTimeline();
+    } catch (err) {
+      state.caseTimeline = null;
+      renderCaseTimeline();
+      setError(apiErrorMessage(err, "Case timeline unavailable."));
+    }
+  }
+
+  async function openTimelineEntry(entry) {
+    if (!entry) return;
+    if (entry.entryType === "reconstruction") {
+      if (entry.reconstructionJobId) await openHistoryResult(entry.reconstructionJobId);
+      else if (entry.modelId) await openResultUrlIn3DViewer(entry.modelId, entry.entryId, "");
+      return;
+    }
+    if (entry.entryType === "simulation") {
+      const simulation = state.surgicalSimulations.find(item => item.simulationId && entry.entryId.includes(item.simulationId))
+        || state.surgicalSimulations.find(item => item.simulatedModelId === entry.modelId || item.modelId === entry.modelId);
+      if (simulation) await openSurgicalSimulationModel(simulation, "simulated");
+      else setError("Timeline simulation is not loaded.");
+      return;
+    }
+    if (entry.entryType === "report") {
+      const historyItem = state.historyItems.find(item => item.jobId === entry.reconstructionJobId);
+      if (historyItem) await showReport(entry.reconstructionJobId);
+      else await viewCaseReport(entry.caseId || state.currentCaseId);
+      return;
+    }
+    if (entry.entryType === "measurement_snapshot") {
+      const context = {
+        caseId: entry.caseId || state.currentCaseId,
+        jobId: entry.reconstructionJobId || "",
+        modelId: entry.modelId || ""
+      };
+      state.activeMeasurementContext = context;
+      await loadCaseMeasurements(context, true);
+      setStatusText(`Measurement snapshot loaded: ${entry.description || entry.modelId || entry.entryId}`);
+      return;
+    }
+    if (entry.entryType === "note") {
+      const plan = state.surgicalPlanningNotes.find(item => item.planId && entry.entryId.includes(item.planId));
+      if (plan) applySurgicalPlanningForm(plan);
+      setStatusText(`Timeline note opened: ${entry.title || "note"}`);
+    }
+  }
+
+  async function compareTimelineWithPrevious(entry) {
+    const previous = previousTimelineModelEntry(entry);
+    if (!previous) {
+      setError("No previous model is available in this case timeline.");
+      return;
+    }
+    const beforeJobId = previous.reconstructionJobId || "";
+    const afterJobId = entry.reconstructionJobId || "";
+    if (!beforeJobId || !afterJobId || beforeJobId === afterJobId) {
+      setInputValue("comparisonBeforeModel", beforeJobId);
+      setInputValue("comparisonAfterModel", afterJobId);
+      setInputValue("comparisonMode", "overlay");
+      setInputValue("comparisonNotes", `Timeline comparison: ${previous.title || previous.entryId} -> ${entry.title || entry.entryId}.`);
+      renderComparisonDetails();
+      setStatusText("Timeline comparison prepared as metadata. Select two ready reconstruction jobs to save a formal comparison.");
+      return;
+    }
+    setInputValue("comparisonBeforeModel", beforeJobId);
+    setInputValue("comparisonAfterModel", afterJobId);
+    setInputValue("comparisonMode", "overlay");
+    setInputValue("comparisonNotes", `Timeline comparison: ${previous.title || previous.entryId} -> ${entry.title || entry.entryId}.`);
+    renderComparisonDetails();
+    setStatusText("Compare With Previous prepared in the existing Before/After Comparison panel.");
+  }
+
+  async function handleCaseTimelineClick(event) {
+    const button = event.target.closest("[data-timeline-action]");
+    if (!button) return;
+    const row = button.closest("[data-timeline-entry-id]");
+    const entryId = row?.dataset?.timelineEntryId || "";
+    const entry = (state.caseTimeline?.entries || []).find(item => item.entryId === entryId);
+    if (!entry) return;
+    if (button.dataset.timelineAction === "open") await openTimelineEntry(entry);
+    if (button.dataset.timelineAction === "compare-previous") await compareTimelineWithPrevious(entry);
+  }
+
   async function setAccessMode(mode) {
     if (!["demo", "doctor", "admin"].includes(mode)) return;
     state.accessMode = mode;
@@ -2744,14 +3237,21 @@
     state.activeMeasurementContext = null;
     state.caseMeasurements = [];
     state.surgicalPlanningNotes = [];
+    state.surgicalSimulations = [];
+    state.caseTimeline = null;
+    state.caseTeam = { ownerId: "", teamMembers: [], permissions: {} };
     applySurgicalPlanningForm(null);
+    applySurgicalSimulationDraft({});
     resetJobUi();
     renderAccessModeUi();
     await loadCases();
     await loadHistory();
     await loadComparisonModels();
     await loadComparisons();
+    await loadCaseTeam();
     await loadSurgicalPlanningNotes();
+    await loadSurgicalSimulations();
+    await loadCaseTimeline();
     await loadCaseMeasurements();
     setStatusText(`Current Mode: ${mode}`);
   }
@@ -2777,21 +3277,25 @@
       state.comparisonModels = state.currentCaseId === DEMO_CASE_ID ? DEMO_HISTORY.map(item => ({ ...item, settings: { ...item.settings } })) : [];
       renderComparisonOptions();
       renderSurgicalPlanningModelOptions();
+      renderSurgicalSimulationModelOptions();
       return;
     }
     if (!api()?.listBackendReconstructionJobs || !state.currentCaseId) {
       state.comparisonModels = [];
       renderComparisonOptions();
+      renderSurgicalSimulationModelOptions();
       return;
     }
     try {
       state.comparisonModels = await api().listBackendReconstructionJobs("ready", state.currentCaseId);
       renderComparisonOptions();
       renderSurgicalPlanningModelOptions();
+      renderSurgicalSimulationModelOptions();
     } catch (err) {
       state.comparisonModels = [];
       renderComparisonOptions();
       renderSurgicalPlanningModelOptions();
+      renderSurgicalSimulationModelOptions();
       setError(apiErrorMessage(err, "Comparison models unavailable."));
     }
   }
@@ -2830,6 +3334,101 @@
     }
   }
 
+  async function loadCaseTeam() {
+    if (isDemoMode()) {
+      const caseItem = state.currentCaseId === DEMO_CASE_ID ? DEMO_CASES[0] : null;
+      state.caseTeam = {
+        ownerId: caseItem?.ownerId || "",
+        teamMembers: caseItem?.teamMembers ? caseItem.teamMembers.map(member => ({ ...member, permissions: [...(member.permissions || [])] })) : [],
+        permissions: caseItem?.permissions || {}
+      };
+      renderCaseTeam();
+      renderCaseSummary();
+      return;
+    }
+    if (!api()?.listCaseTeamMembers || !state.currentCaseId) {
+      state.caseTeam = { ownerId: "", teamMembers: [], permissions: {} };
+      renderCaseTeam();
+      renderCaseSummary();
+      return;
+    }
+    try {
+      const team = await api().listCaseTeamMembers(state.currentCaseId);
+      state.caseTeam = {
+        ownerId: team.ownerId || "",
+        teamMembers: team.teamMembers || [],
+        permissions: team.permissions || {}
+      };
+      renderCaseTeam();
+      renderCaseSummary();
+    } catch (err) {
+      setError(apiErrorMessage(err, "Case team unavailable."));
+    }
+  }
+
+  async function addCaseTeamMember() {
+    if (!api()?.saveCaseTeamMember || !state.currentCaseId) {
+      setError("Select a case before adding team members.");
+      return;
+    }
+    if (!canSavePatientData()) {
+      setModeBlocked("Demo mode cannot save real patient team data.");
+      return;
+    }
+    const input = {
+      name: byId("caseTeamMemberName")?.value || "",
+      email: byId("caseTeamMemberEmail")?.value || "",
+      role: byId("caseTeamMemberRole")?.value || "viewer"
+    };
+    if (!input.name.trim()) {
+      setError("Team member name is required.");
+      return;
+    }
+    try {
+      await api().saveCaseTeamMember(state.currentCaseId, input);
+      setInputValue("caseTeamMemberName", "");
+      setInputValue("caseTeamMemberEmail", "");
+      setInputValue("caseTeamMemberRole", "viewer");
+      await loadCaseTeam();
+      await loadCases();
+      state.currentCaseReport = null;
+      setStatusText("Case team member added.");
+      scheduleSessionAutoSave();
+    } catch (err) {
+      setError(apiErrorMessage(err, "Team member save failed."));
+    }
+  }
+
+  async function handleCaseTeamClick(event) {
+    const button = event.target.closest("[data-team-action]");
+    if (!button || !state.currentCaseId) return;
+    if (!canSavePatientData()) {
+      setModeBlocked("Demo mode cannot modify case team data.");
+      return;
+    }
+    const row = button.closest("[data-team-member-id]");
+    const memberId = row?.dataset?.teamMemberId || "";
+    if (!memberId) return;
+    const action = button.dataset.teamAction;
+    try {
+      if (action === "change-role") {
+        const role = row.querySelector("[data-team-role]")?.value || "viewer";
+        await api().updateCaseTeamMemberRole(state.currentCaseId, memberId, role);
+        setStatusText("Case team member role updated.");
+      }
+      if (action === "remove") {
+        await api().removeCaseTeamMember(state.currentCaseId, memberId);
+        setStatusText("Case team member removed.");
+      }
+      await loadCaseTeam();
+      await loadCases();
+      state.currentCaseReport = null;
+      scheduleSessionAutoSave();
+    } catch (err) {
+      setError(apiErrorMessage(err, "Case team update failed."));
+    }
+  }
+
   async function createCaseFromForm() {
     if (!api()?.createPatientCase || state.busy) return;
     if (!canSavePatientData()) {
@@ -2845,8 +3444,12 @@
       await loadCases();
       await loadComparisonModels();
       await loadHistory();
+      await loadCaseTeam();
       await loadSurgicalPlanningNotes();
+      await loadSurgicalSimulations();
+      await loadCaseTimeline();
       applySurgicalPlanningForm(null);
+      applySurgicalSimulationDraft({});
       setStatusText(`Case selected: ${caseItem.patientName}`);
       scheduleSessionAutoSave();
     } catch (err) {
@@ -2860,6 +3463,7 @@
     state.currentSurgicalPlanId = "";
     state.activeMeasurementContext = null;
     applySurgicalPlanningForm(null);
+    applySurgicalSimulationDraft({});
     renderCaseOptions();
     renderJob(currentJob());
     await Promise.all([
@@ -2867,7 +3471,10 @@
       loadComparisons(),
       loadCaseMeasurements(),
       loadCaseLandmarks(),
-      loadSurgicalPlanningNotes()
+      loadCaseTeam(),
+      loadSurgicalPlanningNotes(),
+      loadSurgicalSimulations(),
+      loadCaseTimeline()
     ]);
     setStatusText(`Case opened: ${currentCase()?.patientName || caseId}`);
     scheduleSessionAutoSave();
@@ -2876,13 +3483,18 @@
   function resetCaseFormForCreate() {
     state.currentCaseId = "";
     state.currentSurgicalPlanId = "";
+    state.caseTimeline = null;
+    state.caseTeam = { ownerId: "", teamMembers: [], permissions: {} };
     ["reconstructionCasePatientName", "reconstructionCasePatientId", "reconstructionCaseNotes"].forEach(id => {
       const el = byId(id);
       if (el) el.value = "";
     });
     applySurgicalPlanningForm(null);
+    applySurgicalSimulationDraft({});
     renderCaseOptions();
     renderCaseDashboard();
+    renderCaseTeam();
+    renderCaseTimeline();
     setStatusText("Ready to create a new patient case.");
     scheduleSessionAutoSave();
   }
@@ -2906,14 +3518,20 @@
         state.currentReport = null;
         state.currentCaseReport = null;
         state.activeMeasurementContext = null;
+        state.caseTimeline = null;
+        state.caseTeam = { ownerId: "", teamMembers: [], permissions: {} };
         applySurgicalPlanningForm(null);
+        applySurgicalSimulationDraft({});
         resetJobUi();
       }
       await loadCases();
       await loadHistory();
       await loadComparisonModels();
       await loadComparisons();
+      await loadCaseTeam();
       await loadSurgicalPlanningNotes();
+      await loadSurgicalSimulations();
+      await loadCaseTimeline();
       await loadCaseMeasurements();
       await loadCaseLandmarks();
       setStatusText("Patient case deleted.");
@@ -3000,8 +3618,12 @@
       await loadComparisonModels();
       await loadComparisons();
       applyComparisonDraft(snapshot.comparisonDraft || {});
+      await loadCaseTeam();
       await loadSurgicalPlanningNotes();
       applySurgicalPlanningForm(snapshot.surgicalDraft?.hasContent ? snapshot.surgicalDraft : null);
+      await loadSurgicalSimulations();
+      applySurgicalSimulationDraft(snapshot.simulationDraft?.hasContent ? snapshot.simulationDraft : {});
+      await loadCaseTimeline();
       await loadCaseMeasurements(snapshot.activeMeasurementContext || state.activeMeasurementContext, false);
       await loadCaseLandmarks(snapshot.activeMeasurementContext || state.activeMeasurementContext, true);
 
@@ -3793,6 +4415,7 @@
     renderClinicalAnalysisPresets();
     renderLandmarkTemplates();
     renderSurgicalPlanningModelOptions();
+    renderSurgicalSimulationModelOptions();
     const surgicalModelSelect = byId("surgicalPlanModel");
     if (surgicalModelSelect && readyCaseModels().some(item => item.jobId === jobId)) {
       surgicalModelSelect.value = jobId;
@@ -4014,6 +4637,9 @@
   function caseReportTextLines(report) {
     const jobs = report?.reconstructionJobs || report?.jobs || [];
     const models = report?.resultModels || report?.models || [];
+    const teamMembers = report?.teamMembers || [];
+    const owner = report?.caseOwner || teamMembers.find(member => member.memberId === report?.ownerId) || teamMembers.find(member => member.role === "owner") || null;
+    const contributors = report?.contributors || teamMembers.filter(member => member.role !== "viewer");
     const measurements = report?.measurements || [];
     const measurementTemplateReport = report?.measurementTemplateReport || {};
     const autoMeasurementReport = report?.autoMeasurementReport || {};
@@ -4021,7 +4647,9 @@
     const landmarks = report?.landmarks || [];
     const landmarkTemplateReport = report?.landmarkTemplateReport || {};
     const aiLandmarkReport = report?.aiLandmarkReport || {};
+    const timeline = report?.timeline || null;
     const comparisons = report?.comparisons || [];
+    const simulations = report?.surgicalSimulations || [];
     const plans = report?.surgicalPlanningNotes || [];
     const warnings = report?.warnings || [];
     const lines = [
@@ -4033,6 +4661,10 @@
       `Created: ${formatDateTime(report?.createdAt)}`,
       `Updated: ${formatDateTime(report?.updatedAt)}`,
       `Generated: ${formatDateTime(report?.generatedAt)}`,
+      `Case owner: ${owner?.name || "—"} (${owner?.email || "—"})`,
+      `Team members: ${teamMembers.length}`,
+      ...teamMembers.map(member => `- ${member.name || member.memberId}: ${teamRoleLabel(member.role)} · ${(member.permissions || []).join(", ") || "view_case"}`),
+      `Contributors: ${contributors.map(member => member.name || member.memberId).join(", ") || "none"}`,
       `Selected analysis presets: ${Number(clinicalAnalysisPresetReport.selectedAnalysisPresets?.length || report?.selectedAnalysisPresets?.length || 0)}`,
       ...(clinicalAnalysisPresetReport.selectedAnalysisPresets || report?.selectedAnalysisPresets || []).map(item => `- ${item.name || item.presetId}: landmarks ${item.generatedLandmarksCount || 0}, measurements ${item.generatedMeasurementsCount || 0}`),
       `Analysis preset warnings: ${(clinicalAnalysisPresetReport.warnings || []).join("; ") || "none"}`,
@@ -4052,6 +4684,9 @@
       `Auto measurement warnings: ${(autoMeasurementReport.warnings || []).join("; ") || "none"}`,
       ...measurements.map(item => `- ${item.label || item.type || item.measurementId}: ${item.type || "—"} ${measurementValueText(item)} [${item.status || "ready"}]${item.formula ? ` formula=${item.formula}` : ""}`),
       "",
+      `Case timeline entries: ${timeline?.entries?.length || report?.timelineSummary?.entriesCount || 0}`,
+      ...(timeline?.entries || []).map(item => `- ${formatDateTime(item.createdAt)} · ${timelineTypeLabel(item.entryType)} · ${item.modelId || item.reconstructionJobId || "—"} · ${item.description || item.title || "—"}`),
+      "",
       `Landmarks: ${landmarks.length}`,
       `Landmark templates used: ${Number(landmarkTemplateReport.templatesUsed?.length || 0)}`,
       `Placed landmarks: ${Number(landmarkTemplateReport.placedLandmarksCount || report?.placedLandmarksCount || 0)}`,
@@ -4065,6 +4700,15 @@
       "",
       `Before/After comparisons: ${comparisons.length}`,
       ...comparisons.map(item => `- ${item.comparisonId}: before ${item.beforeJobId}, after ${item.afterJobId}, mode ${item.comparisonMode || "—"}`),
+      "",
+      `Surgical simulations: ${simulations.length}`,
+      ...simulations.flatMap(item => [
+        `- ${item.simulationId}: ${simulationTypeLabel(item.simulationType)}`,
+        `  Parameters: ${simulationParameterSummary(item.parameters || {})}`,
+        `  Before model: ${item.jobId || item.originalModelId || item.modelId || "—"}`,
+        `  Simulated model: ${item.simulatedModelId || item.simulatedModel?.modelId || "—"}`,
+        `  Warnings: ${(item.warnings || []).join("; ") || "none"}`
+      ]),
       "",
       `Surgical planning notes: ${plans.length}`,
       ...plans.flatMap(plan => [
@@ -4148,9 +4792,18 @@
         rejectedCount: aiItems.filter(item => item.status === "rejected").length,
         averageConfidence: aiAverageConfidence
       };
+      const timeline = demoCaseTimeline();
+      const teamMembers = DEMO_CASES[0].teamMembers.map(member => ({ ...member, permissions: [...(member.permissions || [])] }));
+      const caseOwner = teamMembers.find(member => member.memberId === DEMO_CASES[0].ownerId) || teamMembers[0] || null;
       return {
         ...DEMO_CASES[0],
         generatedAt: new Date().toISOString(),
+        ownerId: DEMO_CASES[0].ownerId,
+        caseOwner,
+        teamMembers,
+        teamMembersCount: teamMembers.length,
+        casePermissions: DEMO_CASES[0].permissions,
+        contributors: teamMembers.filter(member => member.role !== "viewer"),
         reconstructionJobs: DEMO_HISTORY.map(item => ({ ...item })),
         jobs: DEMO_HISTORY.map(item => ({ ...item })),
         resultModels: [{
@@ -4183,6 +4836,19 @@
         aiRejectedLandmarksCount: aiLandmarkReport.rejectedCount,
         aiAverageConfidence: aiLandmarkReport.averageConfidence,
         comparisons: [],
+        surgicalSimulations: state.surgicalSimulations,
+        surgicalSimulationsCount: state.surgicalSimulations.length,
+        simulationWarnings: Array.from(new Set(state.surgicalSimulations.flatMap(item => item.warnings || []))),
+        timeline,
+        timelineSummary: {
+          timelineId: timeline.timelineId,
+          entriesCount: timeline.entries.length,
+          reconstructionEntriesCount: timeline.entries.filter(item => item.entryType === "reconstruction").length,
+          simulationEntriesCount: timeline.entries.filter(item => item.entryType === "simulation").length,
+          reportEntriesCount: timeline.entries.filter(item => item.entryType === "report").length,
+          measurementSnapshotEntriesCount: timeline.entries.filter(item => item.entryType === "measurement_snapshot").length,
+          noteEntriesCount: timeline.entries.filter(item => item.entryType === "note").length
+        },
         surgicalPlanningNotes: []
       };
     }
@@ -4392,6 +5058,8 @@
     byId("btnExportCaseDocxReport")?.addEventListener("click", () => exportCaseDocxReport());
     byId("btnDashboardCreateCase")?.addEventListener("click", resetCaseFormForCreate);
     byId("caseDashboardList")?.addEventListener("click", handleCaseDashboardClick);
+    byId("btnAddCaseTeamMember")?.addEventListener("click", addCaseTeamMember);
+    byId("caseTeamList")?.addEventListener("click", handleCaseTeamClick);
     byId("caseDashboardSearch")?.addEventListener("input", handleCaseDashboardFilter);
     byId("caseDashboardStatusFilter")?.addEventListener("change", handleCaseDashboardFilter);
     byId("caseDashboardSort")?.addEventListener("change", handleCaseDashboardFilter);
@@ -4406,8 +5074,11 @@
       renderClinicalAnalysisPresets();
       renderClinicalReportBuilder();
       renderLandmarkTemplates();
+      loadCaseTeam();
       loadSurgicalPlanningNotes();
+      loadSurgicalSimulations();
       applySurgicalPlanningForm(null);
+      applySurgicalSimulationDraft({});
     });
     byId("comparisonBeforeModel")?.addEventListener("change", renderComparisonDetails);
     byId("comparisonAfterModel")?.addEventListener("change", renderComparisonDetails);
@@ -4452,6 +5123,11 @@
     byId("btnSaveSurgicalPlanningNotes")?.addEventListener("click", saveSurgicalPlanningNotes);
     byId("surgicalPlanModel")?.addEventListener("change", renderSurgicalPlanningNotes);
     byId("surgicalPlanningNotesList")?.addEventListener("click", handleSurgicalPlanningClick);
+    byId("btnRunSurgicalSimulation")?.addEventListener("click", runSurgicalSimulation);
+    byId("surgicalSimulationBeforeModel")?.addEventListener("change", renderSurgicalSimulation);
+    byId("surgicalSimulationType")?.addEventListener("change", renderSurgicalSimulation);
+    byId("surgicalSimulationList")?.addEventListener("click", handleSurgicalSimulationClick);
+    byId("caseTimelineList")?.addEventListener("click", handleCaseTimelineClick);
     byId("measurementTemplatesList")?.addEventListener("click", handleMeasurementTemplateAction);
     byId("caseMeasurementsList")?.addEventListener("click", handleMeasurementAction);
     byId("btnApproveReconstructionReview")?.addEventListener("click", approveReview);
@@ -4528,7 +5204,7 @@
     resetJobUi();
     state.restoreCandidate = readSavedSession();
     loadCases().then(async () => {
-      await Promise.all([loadComparisonModels(), loadComparisons(), loadHistory(), loadSurgicalPlanningNotes(), loadCaseLandmarks(), loadLandmarkTemplates()]);
+      await Promise.all([loadComparisonModels(), loadComparisons(), loadHistory(), loadCaseTeam(), loadSurgicalPlanningNotes(), loadSurgicalSimulations(), loadCaseTimeline(), loadCaseLandmarks(), loadLandmarkTemplates()]);
       renderSessionRecoveryPrompt(state.restoreCandidate);
     });
   }

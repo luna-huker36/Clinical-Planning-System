@@ -10,12 +10,23 @@ const measurements = new Map();
 const surgicalPlans = new Map();
 const landmarks = new Map();
 const landmarkTemplates = new Map();
+const simulations = new Map();
 const MEASUREMENT_TYPES = new Set(["distance", "angle", "vector", "point", "annotation", "ratio", "custom"]);
 const MEASUREMENT_STATUSES = new Set(["ready", "missing_landmarks", "needs_review", "calculated", "error"]);
 const LANDMARK_CATEGORIES = new Set(["facial", "nasal", "maxillofacial", "orthodontic", "custom"]);
 const LANDMARK_SOURCES = new Set(["manual", "imported", "ai_generated"]);
 const LANDMARK_STATUSES = new Set(["unplaced", "placed", "hidden", "proposed", "approved", "corrected", "rejected"]);
 const LANDMARK_DETECTION_MODES = new Set(["manual", "ai_assisted", "template_only"]);
+const SURGICAL_SIMULATION_TYPES = new Set(["nasal_adjustment", "chin_adjustment", "jaw_adjustment", "facial_projection", "custom_simulation"]);
+const TEAM_ROLES = new Set(["owner", "surgeon", "assistant", "viewer"]);
+const TEAM_PERMISSIONS = new Set(["view_case", "edit_case", "add_measurements", "edit_measurements", "add_notes", "export_reports", "run_reconstruction", "run_simulation"]);
+
+const ROLE_PERMISSIONS = {
+  owner: ["view_case", "edit_case", "add_measurements", "edit_measurements", "add_notes", "export_reports", "run_reconstruction", "run_simulation"],
+  surgeon: ["view_case", "edit_case", "add_measurements", "edit_measurements", "add_notes", "export_reports", "run_reconstruction", "run_simulation"],
+  assistant: ["view_case", "add_measurements", "add_notes"],
+  viewer: ["view_case"]
+};
 
 const DEFAULT_LANDMARK_TEMPLATES = [
   {
@@ -178,7 +189,41 @@ function cloneCase(caseItem) {
     measurements: Array.from(caseItem.measurements || []),
     surgicalPlans: Array.from(caseItem.surgicalPlans || []),
     landmarks: Array.from(caseItem.landmarks || []),
-    landmarkTemplates: Array.from(caseItem.landmarkTemplates || [])
+    landmarkTemplates: Array.from(caseItem.landmarkTemplates || []),
+    simulations: Array.from(caseItem.simulations || []),
+    ownerId: caseItem.ownerId || "",
+    teamMembers: Array.isArray(caseItem.teamMembers) ? caseItem.teamMembers.map(cloneTeamMember) : [],
+    permissions: cloneCasePermissions(caseItem.permissions || {})
+  };
+}
+
+function normalizePermissions(permissions = []) {
+  const source = Array.isArray(permissions) ? permissions : [];
+  return Array.from(new Set(source.map(String).filter(permission => TEAM_PERMISSIONS.has(permission))));
+}
+
+function permissionsForRole(role) {
+  return normalizePermissions(ROLE_PERMISSIONS[role] || ROLE_PERMISSIONS.viewer);
+}
+
+function cloneCasePermissions(permissions = {}) {
+  return Object.fromEntries(Object.entries(permissions).map(([memberId, memberPermissions]) => [
+    memberId,
+    normalizePermissions(memberPermissions)
+  ]));
+}
+
+function cloneTeamMember(member) {
+  if (!member) return null;
+  const role = TEAM_ROLES.has(member.role) ? member.role : "viewer";
+  return {
+    memberId: member.memberId,
+    name: member.name || "",
+    role,
+    email: member.email || "",
+    permissions: normalizePermissions(member.permissions?.length ? member.permissions : permissionsForRole(role)),
+    createdAt: member.createdAt,
+    updatedAt: member.updatedAt
   };
 }
 
@@ -316,6 +361,39 @@ function cloneComparison(comparison) {
   };
 }
 
+function normalizeSimulationParameters(parameters = {}) {
+  return {
+    moveX: Number(parameters.moveX) || 0,
+    moveY: Number(parameters.moveY) || 0,
+    moveZ: Number(parameters.moveZ) || 0,
+    rotateX: Number(parameters.rotateX) || 0,
+    rotateY: Number(parameters.rotateY) || 0,
+    rotateZ: Number(parameters.rotateZ) || 0,
+    scale: Number(parameters.scale) || 1,
+    customParameters: String(parameters.customParameters || "").trim()
+  };
+}
+
+function cloneSimulation(simulation) {
+  if (!simulation) return null;
+  return {
+    simulationId: simulation.simulationId,
+    caseId: simulation.caseId,
+    modelId: simulation.modelId,
+    jobId: simulation.jobId || "",
+    simulationType: simulation.simulationType || "custom_simulation",
+    parameters: normalizeSimulationParameters(simulation.parameters || {}),
+    originalModel: simulation.originalModel || null,
+    simulatedModel: simulation.simulatedModel || null,
+    originalModelId: simulation.originalModelId || simulation.modelId || "",
+    simulatedModelId: simulation.simulatedModelId || "",
+    comparisonId: simulation.comparisonId || "",
+    warnings: Array.isArray(simulation.warnings) ? simulation.warnings.map(String) : [],
+    createdAt: simulation.createdAt,
+    updatedAt: simulation.updatedAt
+  };
+}
+
 function createUpload(files, fileType) {
   const upload = {
     uploadId: makeId("upload"),
@@ -347,12 +425,30 @@ function createCase(data = {}) {
     measurements: [],
     surgicalPlans: [],
     landmarks: [],
-    landmarkTemplates: []
+    landmarkTemplates: [],
+    simulations: [],
+    ownerId: "",
+    teamMembers: [],
+    permissions: {}
   };
+  const owner = normalizeTeamMemberInput({
+    name: data.ownerName || "Case Owner",
+    role: "owner",
+    email: data.ownerEmail || ""
+  });
+  caseItem.ownerId = owner.memberId;
+  caseItem.teamMembers.push({ ...owner, createdAt: timestamp, updatedAt: timestamp });
+  caseItem.permissions[owner.memberId] = owner.permissions;
   // TODO: multiple scans
   // TODO: before/after comparison
   // TODO: operation planning
   // TODO: timeline
+  // TODO: soft tissue simulation
+  // TODO: bone movement simulation
+  // TODO: orthognathic planning
+  // TODO: rhinoplasty planning
+  // TODO: AI surgical planning
+  // TODO: backend auth and server-side team membership persistence
   cases.set(caseItem.caseId, caseItem);
   return cloneCase(caseItem);
 }
@@ -380,6 +476,7 @@ function deleteCase(caseId) {
   for (const measurementId of caseItem.measurements || []) measurements.delete(measurementId);
   for (const planId of caseItem.surgicalPlans || []) surgicalPlans.delete(planId);
   for (const landmarkId of caseItem.landmarks || []) landmarks.delete(landmarkId);
+  for (const simulationId of caseItem.simulations || []) simulations.delete(simulationId);
   return cloneCase(caseItem);
 }
 
@@ -455,6 +552,102 @@ function addLandmarkTemplateToCase(caseId, templateId) {
   caseItem.landmarkTemplates = caseItem.landmarkTemplates || [];
   if (templateId && !caseItem.landmarkTemplates.includes(templateId)) caseItem.landmarkTemplates.push(templateId);
   return touchCase(caseItem);
+}
+
+function addSimulationToCase(caseId, simulationId) {
+  const caseItem = getMutableCase(caseId);
+  if (!caseItem) return null;
+  caseItem.simulations = caseItem.simulations || [];
+  if (simulationId && !caseItem.simulations.includes(simulationId)) caseItem.simulations.push(simulationId);
+  return touchCase(caseItem);
+}
+
+function normalizeTeamMemberInput(data = {}, existing = null) {
+  const role = TEAM_ROLES.has(String(data.role || existing?.role || "viewer"))
+    ? String(data.role || existing?.role || "viewer")
+    : "viewer";
+  return {
+    memberId: String(data.memberId || existing?.memberId || makeId("member")).trim(),
+    name: String(data.name ?? existing?.name ?? "Team member").trim() || "Team member",
+    role,
+    email: String(data.email ?? existing?.email ?? "").trim(),
+    permissions: normalizePermissions(
+      Array.isArray(data.permissions)
+        ? data.permissions
+        : Array.isArray(existing?.permissions)
+          ? existing.permissions
+          : permissionsForRole(role)
+    )
+  };
+}
+
+function listCaseTeamMembers(caseId) {
+  const caseItem = getMutableCase(caseId);
+  if (!caseItem) return [];
+  return (caseItem.teamMembers || [])
+    .map(member => cloneTeamMember({
+      ...member,
+      permissions: caseItem.permissions?.[member.memberId] || member.permissions
+    }))
+    .filter(Boolean)
+    .sort((a, b) => Number(b.role === "owner") - Number(a.role === "owner") || String(a.name).localeCompare(String(b.name)));
+}
+
+function saveCaseTeamMember(caseId, data = {}) {
+  const caseItem = getMutableCase(caseId);
+  if (!caseItem) return null;
+  const timestamp = nowIso();
+  const existing = (caseItem.teamMembers || []).find(item => item.memberId === data.memberId);
+  const normalized = normalizeTeamMemberInput(data, existing);
+  const member = {
+    ...normalized,
+    createdAt: existing?.createdAt || timestamp,
+    updatedAt: timestamp
+  };
+  caseItem.teamMembers = [
+    member,
+    ...(caseItem.teamMembers || []).filter(item => item.memberId !== member.memberId)
+  ];
+  caseItem.permissions = caseItem.permissions || {};
+  caseItem.permissions[member.memberId] = member.permissions;
+  if (member.role === "owner" || !caseItem.ownerId) caseItem.ownerId = member.memberId;
+  touchCase(caseItem);
+  return cloneTeamMember(member);
+}
+
+function updateCaseTeamMemberRole(caseId, memberId, role) {
+  const caseItem = getMutableCase(caseId);
+  if (!caseItem) return null;
+  const existing = (caseItem.teamMembers || []).find(item => item.memberId === memberId);
+  if (!existing) return null;
+  const nextRole = TEAM_ROLES.has(String(role || "")) ? String(role) : existing.role;
+  const updated = {
+    ...existing,
+    role: nextRole,
+    permissions: permissionsForRole(nextRole),
+    updatedAt: nowIso()
+  };
+  caseItem.teamMembers = caseItem.teamMembers.map(item => item.memberId === memberId ? updated : item);
+  caseItem.permissions = caseItem.permissions || {};
+  caseItem.permissions[memberId] = updated.permissions;
+  if (nextRole === "owner") caseItem.ownerId = memberId;
+  if (caseItem.ownerId === memberId && nextRole !== "owner") {
+    const owner = caseItem.teamMembers.find(item => item.role === "owner");
+    caseItem.ownerId = owner?.memberId || "";
+  }
+  touchCase(caseItem);
+  return cloneTeamMember(updated);
+}
+
+function removeCaseTeamMember(caseId, memberId) {
+  const caseItem = getMutableCase(caseId);
+  if (!caseItem) return null;
+  const existing = (caseItem.teamMembers || []).find(item => item.memberId === memberId);
+  if (!existing || existing.memberId === caseItem.ownerId) return null;
+  caseItem.teamMembers = (caseItem.teamMembers || []).filter(item => item.memberId !== memberId);
+  if (caseItem.permissions) delete caseItem.permissions[memberId];
+  touchCase(caseItem);
+  return cloneTeamMember(existing);
 }
 
 function removeLandmarkFromCase(caseId, landmarkId) {
@@ -640,6 +833,61 @@ function listSurgicalPlans(filter = {}) {
     .filter(item => jobId === "all" || item.jobId === jobId)
     .filter(item => modelId === "all" || item.modelId === modelId)
     .map(cloneSurgicalPlan)
+    .sort((a, b) => String(b.updatedAt || b.createdAt || "").localeCompare(String(a.updatedAt || a.createdAt || "")));
+}
+
+function normalizeSimulationInput(data = {}, existing = null) {
+  const simulationType = SURGICAL_SIMULATION_TYPES.has(String(data.simulationType || existing?.simulationType || "custom_simulation"))
+    ? String(data.simulationType || existing?.simulationType || "custom_simulation")
+    : "custom_simulation";
+  const modelId = String(data.modelId || existing?.modelId || data.originalModelId || "").trim();
+  const simulatedModelId = String(data.simulatedModelId || existing?.simulatedModelId || `${modelId}:simulated`).trim();
+  return {
+    simulationId: String(data.simulationId || existing?.simulationId || makeId("simulation")).trim(),
+    caseId: String(data.caseId || existing?.caseId || "").trim(),
+    modelId,
+    jobId: String(data.jobId || existing?.jobId || "").trim(),
+    simulationType,
+    parameters: normalizeSimulationParameters(data.parameters || existing?.parameters || {}),
+    originalModel: data.originalModel || existing?.originalModel || null,
+    simulatedModel: data.simulatedModel || existing?.simulatedModel || null,
+    originalModelId: String(data.originalModelId || existing?.originalModelId || modelId).trim(),
+    simulatedModelId,
+    comparisonId: String(data.comparisonId || existing?.comparisonId || "").trim(),
+    warnings: Array.isArray(data.warnings) ? data.warnings.map(String) : Array.isArray(existing?.warnings) ? existing.warnings : []
+  };
+}
+
+function saveSimulation(data = {}) {
+  const timestamp = nowIso();
+  const normalized = normalizeSimulationInput(data, simulations.get(data.simulationId));
+  if (!normalized.caseId || !normalized.modelId) return null;
+  const existing = simulations.get(normalized.simulationId);
+  const simulation = {
+    ...normalized,
+    createdAt: existing?.createdAt || timestamp,
+    updatedAt: timestamp
+  };
+  simulations.set(simulation.simulationId, simulation);
+  addSimulationToCase(simulation.caseId, simulation.simulationId);
+  addModelToCase(simulation.caseId, simulation.originalModelId || simulation.modelId);
+  addModelToCase(simulation.caseId, simulation.simulatedModelId);
+  return cloneSimulation(simulation);
+}
+
+function getSimulation(simulationId) {
+  return cloneSimulation(simulations.get(simulationId));
+}
+
+function listSimulations(filter = {}) {
+  const caseId = String(filter.caseId || "all");
+  const jobId = String(filter.jobId || "all");
+  const modelId = String(filter.modelId || "all");
+  return Array.from(simulations.values())
+    .filter(item => caseId === "all" || item.caseId === caseId)
+    .filter(item => jobId === "all" || item.jobId === jobId)
+    .filter(item => modelId === "all" || item.modelId === modelId || item.originalModelId === modelId || item.simulatedModelId === modelId)
+    .map(cloneSimulation)
     .sort((a, b) => String(b.updatedAt || b.createdAt || "").localeCompare(String(a.updatedAt || a.createdAt || "")));
 }
 
@@ -913,6 +1161,11 @@ module.exports = {
   addSurgicalPlanToCase,
   addLandmarkToCase,
   addLandmarkTemplateToCase,
+  addSimulationToCase,
+  listCaseTeamMembers,
+  saveCaseTeamMember,
+  updateCaseTeamMemberRole,
+  removeCaseTeamMember,
   createComparison,
   getComparison,
   getMutableComparison,
@@ -924,6 +1177,9 @@ module.exports = {
   saveSurgicalPlan,
   getSurgicalPlan,
   listSurgicalPlans,
+  saveSimulation,
+  getSimulation,
+  listSimulations,
   saveLandmark,
   deleteLandmark,
   listLandmarks,
