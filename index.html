@@ -1182,6 +1182,77 @@
           </div>
         </div>
 
+        <div class="card reconstruction-card" id="clinicalAnalysisPresetsPanel">
+          <div class="card-title">Clinical Analysis Presets</div>
+          <div class="reconstruction-settings-summary" id="clinicalAnalysisPresetsSummary">Open a case model to apply a clinical analysis preset.</div>
+          <div id="clinicalAnalysisPresetsList" class="reconstruction-history-list">
+            <div class="hint">No clinical analysis presets loaded.</div>
+          </div>
+        </div>
+
+        <div class="card reconstruction-card" id="clinicalReportBuilderPanel">
+          <div class="card-title">Clinical Report Builder</div>
+          <div class="reconstruction-settings-summary" id="clinicalReportBuilderSummary">Select a case and model to build a clinical report draft.</div>
+          <div class="reconstruction-settings-grid">
+            <div>
+              <label class="label-sm" for="clinicalReportTemplateSelect">Report template</label>
+              <select id="clinicalReportTemplateSelect" class="reconstruction-setting-control"></select>
+            </div>
+            <div>
+              <label class="label-sm" for="clinicalReportDoctorNotes">Doctor notes</label>
+              <textarea id="clinicalReportDoctorNotes" class="reconstruction-setting-control reconstruction-textarea" placeholder="Doctor notes for this report"></textarea>
+            </div>
+          </div>
+          <div id="clinicalReportSectionsChecklist" class="reconstruction-settings-grid"></div>
+          <div class="reconstruction-result-actions">
+            <button class="btn btn-primary" id="btnSaveClinicalReportDraft">Save Report Draft</button>
+            <button class="btn" id="btnPreviewClinicalReport">Preview</button>
+            <button class="btn" id="btnDownloadClinicalReportJson">Export JSON</button>
+            <button class="btn" id="btnExportClinicalReportHtml">Export HTML</button>
+            <button class="btn" id="btnExportClinicalReportPdf">Export PDF</button>
+            <button class="btn" id="btnExportClinicalReportDocx">Export DOCX</button>
+          </div>
+          <div id="clinicalReportPreview" class="reconstruction-report-pre">No clinical report preview yet.</div>
+        </div>
+
+        <div class="card reconstruction-card" id="reconstructionLandmarkTemplates">
+          <div class="card-title">Landmark Templates</div>
+          <div class="reconstruction-settings-summary" id="landmarkTemplatesSummary">Load a model from a case to apply landmark templates.</div>
+          <div class="reconstruction-result-actions">
+            <button class="btn btn-primary" id="btnCreateLandmarkTemplate">Create New Template</button>
+          </div>
+          <div id="landmarkTemplatesList" class="reconstruction-history-list">
+            <div class="hint">No landmark templates loaded.</div>
+          </div>
+        </div>
+
+        <div class="card reconstruction-card" id="aiLandmarkDetectionPanel">
+          <div class="card-title">AI Landmark Detection</div>
+          <div class="reconstruction-settings-summary" id="aiLandmarkDetectionSummary">Select a template and open a case model to run detection.</div>
+          <div class="reconstruction-settings-grid">
+            <div>
+              <label class="label-sm" for="landmarkDetectionMode">Detection mode</label>
+              <select id="landmarkDetectionMode" class="reconstruction-setting-control">
+                <option value="ai_assisted" selected>ai_assisted</option>
+                <option value="manual">manual</option>
+                <option value="template_only">template_only</option>
+              </select>
+            </div>
+            <div>
+              <label class="label-sm" for="aiLandmarkTemplateSelect">Template</label>
+              <select id="aiLandmarkTemplateSelect" class="reconstruction-setting-control">
+                <option value="">No template selected</option>
+              </select>
+            </div>
+          </div>
+          <div class="reconstruction-result-actions">
+            <button class="btn btn-primary" id="btnRunAiLandmarkDetection">Run AI Detection</button>
+          </div>
+          <div id="aiLandmarkDetectionList" class="reconstruction-history-list">
+            <div class="hint">No AI landmark proposals yet.</div>
+          </div>
+        </div>
+
         <div class="card reconstruction-card" id="reconstructionLandmarks">
           <div class="card-title">Landmarks</div>
           <div class="reconstruction-settings-summary" id="landmarksSummary">Open a model from a case to manage landmarks.</div>
@@ -1236,6 +1307,14 @@
           </div>
           <div id="landmarksList" class="reconstruction-history-list">
             <div class="hint">No landmarks yet.</div>
+          </div>
+        </div>
+
+        <div class="card reconstruction-card" id="reconstructionMeasurementTemplates">
+          <div class="card-title">Measurement Templates</div>
+          <div class="reconstruction-settings-summary" id="measurementTemplatesSummary">Open a case model with landmarks to generate measurements.</div>
+          <div id="measurementTemplatesList" class="reconstruction-history-list">
+            <div class="hint">No measurement templates loaded.</div>
           </div>
         </div>
 
@@ -1426,11 +1505,11 @@
 <script src="./assets/js/11-persistence-init.js"></script>
 <script src="./assets/js/14-reconstruction-preprocessing.js?v=1"></script>
 <script src="./assets/js/13-reconstruction-pipeline.js?v=2"></script>
-<script src="./assets/js/15-reconstruction-api.js?v=1"></script>
-<script src="./assets/js/12-reconstruction.js?v=4"></script>
+<script src="./assets/js/15-reconstruction-api.js?v=3"></script>
+<script src="./assets/js/12-reconstruction.js?v=8"></script>
 
 
-<script type="module" src="./assets/js/app.js?v=60"></script>
+<script type="module" src="./assets/js/app.js?v=61"></script>
 
 </body>
 </html>

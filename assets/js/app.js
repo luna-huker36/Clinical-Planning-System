@@ -59,6 +59,7 @@ let labels3d = [];
 let landmarkObjects3d = [];
 let landmarkLabels3d = [];
 let selectedLandmark3d = null;
+let pendingLandmark3d = null;
 let plan3dItems = [];
 let selected3dPlan = null;
 let caseMeasurementContext3D = null;
@@ -2326,16 +2327,24 @@ function clearLandmarkVisuals3D() {
   landmarkObjects3d = [];
   landmarkLabels3d = [];
   selectedLandmark3d = null;
+  pendingLandmark3d = null;
 }
 
 function addLandmarkVisual3D(landmark) {
-  if (!scene || landmark?.visible === false) return;
+  if (!scene || landmark?.visible === false || landmark?.status === 'unplaced' || landmark?.status === 'rejected') return;
   const pos = new THREE.Vector3(
     Number(landmark.position3D?.x) || 0,
     Number(landmark.position3D?.y) || 0,
     Number(landmark.position3D?.z) || 0
   );
-  const color = new THREE.Color(landmark.color || '#2563eb');
+  const statusColor = landmark.status === 'proposed'
+    ? '#f59e0b'
+    : landmark.status === 'approved'
+      ? '#16a34a'
+      : landmark.status === 'corrected'
+        ? '#0ea5e9'
+        : landmark.color || '#2563eb';
+  const color = new THREE.Color(statusColor);
   const radius = markerRadius3D() * (selectedLandmark3d === landmark.landmarkId ? 1.75 : 1.35);
   const mesh = new THREE.Mesh(
     new THREE.SphereGeometry(radius, 20, 20),
@@ -2349,9 +2358,10 @@ function addLandmarkVisual3D(landmark) {
 
   const div = document.createElement('div');
   div.className = 'measurement-label-3d';
-  div.style.setProperty('--tool-color', landmark.color || '#2563eb');
+  div.style.setProperty('--tool-color', statusColor);
   div.style.setProperty('--tool-rgb', '37,99,235');
-  div.innerHTML = `<span class="measurement-label-icon">●</span><span>${escHtml(landmark.name || 'Landmark')}</span>`;
+  const confidence = Number.isFinite(Number(landmark.confidence)) ? ` ${Math.round(Number(landmark.confidence))}%` : '';
+  div.innerHTML = `<span class="measurement-label-icon">●</span><span>${escHtml(landmark.name || 'Landmark')}${escHtml(confidence)}</span>`;
   const label = new CSS2DObject(div);
   label.position.copy(pos);
   label.position.y += radius * 2.2;
@@ -2363,6 +2373,8 @@ function loadLandmarks3D(landmarks = []) {
   clearLandmarkVisuals3D();
   if (!Array.isArray(landmarks)) return;
   landmarks.forEach(addLandmarkVisual3D);
+  const firstPending = landmarks.find(item => item?.status === 'unplaced');
+  if (firstPending) setPendingLandmark3D(firstPending);
 }
 
 function selectLandmark3D(landmarkId) {
@@ -2372,6 +2384,12 @@ function selectLandmark3D(landmarkId) {
     obj.scale.setScalar(selected ? 1.45 : 1);
     obj.renderOrder = selected ? 55 : 50;
   });
+}
+
+function setPendingLandmark3D(landmark) {
+  pendingLandmark3d = landmark || null;
+  if (!pendingLandmark3d) return;
+  setStatus3d(`Landmark placement pending: ${pendingLandmark3d.name || pendingLandmark3d.landmarkId || 'landmark'}`);
 }
 function clearAllVisuals() {
   markers3d.forEach(m => { scene.remove(m); disposeObject3D(m); });
@@ -3303,6 +3321,7 @@ window._3d = {
   },
   loadLandmarks: loadLandmarks3D,
   selectLandmark: selectLandmark3D,
+  setPendingLandmark: setPendingLandmark3D,
   clearLandmarks: clearLandmarkVisuals3D,
   raycastAt(cx, cy) {
     const container = document.getElementById('canvas3d-container');

@@ -9,9 +9,75 @@ const comparisons = new Map();
 const measurements = new Map();
 const surgicalPlans = new Map();
 const landmarks = new Map();
-const MEASUREMENT_TYPES = new Set(["distance", "angle", "vector", "point", "annotation"]);
+const landmarkTemplates = new Map();
+const MEASUREMENT_TYPES = new Set(["distance", "angle", "vector", "point", "annotation", "ratio", "custom"]);
+const MEASUREMENT_STATUSES = new Set(["ready", "missing_landmarks", "needs_review", "calculated", "error"]);
 const LANDMARK_CATEGORIES = new Set(["facial", "nasal", "maxillofacial", "orthodontic", "custom"]);
 const LANDMARK_SOURCES = new Set(["manual", "imported", "ai_generated"]);
+const LANDMARK_STATUSES = new Set(["unplaced", "placed", "hidden", "proposed", "approved", "corrected", "rejected"]);
+const LANDMARK_DETECTION_MODES = new Set(["manual", "ai_assisted", "template_only"]);
+
+const DEFAULT_LANDMARK_TEMPLATES = [
+  {
+    templateId: "template-facial-basic",
+    name: "Facial Basic",
+    category: "facial",
+    description: "Core facial reference landmarks for basic 3D face assessment.",
+    landmarks: [
+      { landmarkName: "Nasion", landmarkCategory: "facial", description: "Midline frontonasal point.", required: true, color: "#2563eb" },
+      { landmarkName: "Pronasale", landmarkCategory: "nasal", description: "Most anterior point of the nose tip.", required: true, color: "#0ea5e9" },
+      { landmarkName: "Pogonion", landmarkCategory: "maxillofacial", description: "Most anterior point on the chin.", required: true, color: "#16a34a" },
+      { landmarkName: "Left Zygion", landmarkCategory: "facial", description: "Left lateral zygomatic landmark.", required: false, color: "#9333ea" },
+      { landmarkName: "Right Zygion", landmarkCategory: "facial", description: "Right lateral zygomatic landmark.", required: false, color: "#9333ea" }
+    ]
+  },
+  {
+    templateId: "template-nasal-analysis",
+    name: "Nasal Analysis",
+    category: "nasal",
+    description: "Nasal landmarks for profile and symmetry planning.",
+    landmarks: [
+      { landmarkName: "Nasion", landmarkCategory: "nasal", description: "Root of nose reference.", required: true, color: "#2563eb" },
+      { landmarkName: "Rhinion", landmarkCategory: "nasal", description: "Bony-cartilaginous dorsum transition.", required: true, color: "#0ea5e9" },
+      { landmarkName: "Pronasale", landmarkCategory: "nasal", description: "Nose tip.", required: true, color: "#f97316" },
+      { landmarkName: "Subnasale", landmarkCategory: "nasal", description: "Columella-lip junction.", required: true, color: "#16a34a" }
+    ]
+  },
+  {
+    templateId: "template-orthognathic-analysis",
+    name: "Orthognathic Analysis",
+    category: "orthodontic",
+    description: "Landmarks for jaw relation and orthognathic planning.",
+    landmarks: [
+      { landmarkName: "Subnasale", landmarkCategory: "maxillofacial", description: "Maxillary soft tissue reference.", required: true, color: "#2563eb" },
+      { landmarkName: "Pogonion", landmarkCategory: "maxillofacial", description: "Chin prominence.", required: true, color: "#16a34a" },
+      { landmarkName: "Menton", landmarkCategory: "maxillofacial", description: "Inferior chin point.", required: true, color: "#f97316" },
+      { landmarkName: "Left Gonion", landmarkCategory: "maxillofacial", description: "Left mandibular angle.", required: false, color: "#9333ea" },
+      { landmarkName: "Right Gonion", landmarkCategory: "maxillofacial", description: "Right mandibular angle.", required: false, color: "#9333ea" }
+    ]
+  },
+  {
+    templateId: "template-maxillofacial-analysis",
+    name: "Maxillofacial Analysis",
+    category: "maxillofacial",
+    description: "Broader maxillofacial symmetry and contour landmarks.",
+    landmarks: [
+      { landmarkName: "Nasion", landmarkCategory: "maxillofacial", description: "Craniofacial midline reference.", required: true, color: "#2563eb" },
+      { landmarkName: "Left Orbitale", landmarkCategory: "maxillofacial", description: "Left infraorbital reference.", required: false, color: "#0ea5e9" },
+      { landmarkName: "Right Orbitale", landmarkCategory: "maxillofacial", description: "Right infraorbital reference.", required: false, color: "#0ea5e9" },
+      { landmarkName: "Menton", landmarkCategory: "maxillofacial", description: "Lower facial height reference.", required: true, color: "#f97316" }
+    ]
+  },
+  {
+    templateId: "template-custom",
+    name: "Custom Template",
+    category: "custom",
+    description: "Editable starter template for custom landmark sets.",
+    landmarks: [
+      { landmarkName: "Custom Point 1", landmarkCategory: "custom", description: "Custom landmark placeholder.", required: false, color: "#64748b" }
+    ]
+  }
+];
 
 function nowIso() {
   return new Date().toISOString();
@@ -111,7 +177,8 @@ function cloneCase(caseItem) {
     comparisons: Array.from(caseItem.comparisons || []),
     measurements: Array.from(caseItem.measurements || []),
     surgicalPlans: Array.from(caseItem.surgicalPlans || []),
-    landmarks: Array.from(caseItem.landmarks || [])
+    landmarks: Array.from(caseItem.landmarks || []),
+    landmarkTemplates: Array.from(caseItem.landmarkTemplates || [])
   };
 }
 
@@ -134,8 +201,49 @@ function cloneLandmark(landmark) {
     createdAt: landmark.createdAt,
     updatedAt: landmark.updatedAt,
     source: landmark.source || "manual",
-    visible: landmark.visible !== false
+    visible: landmark.visible !== false,
+    status: LANDMARK_STATUSES.has(landmark.status) ? landmark.status : "placed",
+    templateId: landmark.templateId || "",
+    templateName: landmark.templateName || "",
+    required: Boolean(landmark.required),
+    confidence: Number.isFinite(Number(landmark.confidence)) ? Math.max(0, Math.min(100, Number(landmark.confidence))) : null,
+    detectionMode: LANDMARK_DETECTION_MODES.has(landmark.detectionMode) ? landmark.detectionMode : "manual",
+    detectionSource: landmark.detectionSource || landmark.source || "manual",
+    approvedByUser: Boolean(landmark.approvedByUser),
+    correctedByUser: Boolean(landmark.correctedByUser),
+    analysisPresetId: landmark.analysisPresetId || "",
+    analysisPresetName: landmark.analysisPresetName || ""
   };
+}
+
+function cloneLandmarkTemplate(template) {
+  if (!template) return null;
+  return {
+    templateId: template.templateId,
+    name: template.name || "",
+    category: template.category || "custom",
+    description: template.description || "",
+    landmarks: Array.isArray(template.landmarks) ? template.landmarks.map(item => ({
+      landmarkName: item.landmarkName || "",
+      landmarkCategory: LANDMARK_CATEGORIES.has(item.landmarkCategory) ? item.landmarkCategory : "custom",
+      description: item.description || "",
+      required: Boolean(item.required),
+      color: item.color || "#2563eb"
+    })) : [],
+    createdAt: template.createdAt,
+    updatedAt: template.updatedAt,
+    builtIn: Boolean(template.builtIn)
+  };
+}
+
+for (const template of DEFAULT_LANDMARK_TEMPLATES) {
+  const timestamp = nowIso();
+  landmarkTemplates.set(template.templateId, {
+    ...template,
+    createdAt: template.createdAt || timestamp,
+    updatedAt: template.updatedAt || timestamp,
+    builtIn: true
+  });
 }
 
 function cloneSurgicalPlan(plan) {
@@ -174,6 +282,21 @@ function cloneMeasurement(measurement) {
       : [],
     value: measurement.value,
     unit: measurement.unit || "",
+    landmarksUsed: Array.isArray(measurement.landmarksUsed) ? measurement.landmarksUsed.map(String) : [],
+    source: measurement.source || "manual",
+    templateId: measurement.templateId || "",
+    templateName: measurement.templateName || "",
+    missingLandmarks: Array.isArray(measurement.missingLandmarks) ? measurement.missingLandmarks.map(String) : [],
+    status: MEASUREMENT_STATUSES.has(measurement.status) ? measurement.status : "ready",
+    warnings: Array.isArray(measurement.warnings) ? measurement.warnings.map(String) : [],
+    formula: measurement.formula || "",
+    description: measurement.description || "",
+    fromLandmark: measurement.fromLandmark || "",
+    toLandmark: measurement.toLandmark || "",
+    optionalThirdLandmark: measurement.optionalThirdLandmark || "",
+    analysisPresetId: measurement.analysisPresetId || "",
+    analysisPresetName: measurement.analysisPresetName || "",
+    calculatedAt: measurement.calculatedAt || "",
     createdAt: measurement.createdAt,
     updatedAt: measurement.updatedAt
   };
@@ -223,7 +346,8 @@ function createCase(data = {}) {
     comparisons: [],
     measurements: [],
     surgicalPlans: [],
-    landmarks: []
+    landmarks: [],
+    landmarkTemplates: []
   };
   // TODO: multiple scans
   // TODO: before/after comparison
@@ -325,6 +449,14 @@ function addLandmarkToCase(caseId, landmarkId) {
   return touchCase(caseItem);
 }
 
+function addLandmarkTemplateToCase(caseId, templateId) {
+  const caseItem = getMutableCase(caseId);
+  if (!caseItem) return null;
+  caseItem.landmarkTemplates = caseItem.landmarkTemplates || [];
+  if (templateId && !caseItem.landmarkTemplates.includes(templateId)) caseItem.landmarkTemplates.push(templateId);
+  return touchCase(caseItem);
+}
+
 function removeLandmarkFromCase(caseId, landmarkId) {
   const caseItem = getMutableCase(caseId);
   if (!caseItem) return null;
@@ -339,6 +471,13 @@ function normalizeLandmarkInput(data = {}, existing = null) {
   const source = LANDMARK_SOURCES.has(String(data.source || existing?.source || "manual"))
     ? String(data.source || existing?.source || "manual")
     : "manual";
+  const status = LANDMARK_STATUSES.has(String(data.status || existing?.status || "placed"))
+    ? String(data.status || existing?.status || "placed")
+    : "placed";
+  const detectionMode = LANDMARK_DETECTION_MODES.has(String(data.detectionMode || existing?.detectionMode || "manual"))
+    ? String(data.detectionMode || existing?.detectionMode || "manual")
+    : "manual";
+  const confidence = data.confidence ?? existing?.confidence ?? null;
   return {
     landmarkId: String(data.landmarkId || existing?.landmarkId || makeId("landmark")).trim(),
     caseId: String(data.caseId || existing?.caseId || "").trim(),
@@ -354,7 +493,18 @@ function normalizeLandmarkInput(data = {}, existing = null) {
     color: String(data.color ?? existing?.color ?? "#2563eb").trim() || "#2563eb",
     description: String(data.description ?? existing?.description ?? "").trim(),
     source,
-    visible: data.visible === undefined ? existing?.visible !== false : data.visible !== false
+    visible: (status === "hidden" || status === "rejected") ? false : (data.visible === undefined ? existing?.visible !== false : data.visible !== false),
+    status,
+    templateId: String(data.templateId ?? existing?.templateId ?? "").trim(),
+    templateName: String(data.templateName ?? existing?.templateName ?? "").trim(),
+    required: Boolean(data.required ?? existing?.required),
+    confidence: confidence === null || confidence === "" ? null : Math.max(0, Math.min(100, Number(confidence) || 0)),
+    detectionMode,
+    detectionSource: String(data.detectionSource ?? existing?.detectionSource ?? source).trim() || source,
+    approvedByUser: Boolean(data.approvedByUser ?? existing?.approvedByUser),
+    correctedByUser: Boolean(data.correctedByUser ?? existing?.correctedByUser),
+    analysisPresetId: String(data.analysisPresetId ?? existing?.analysisPresetId ?? "").trim(),
+    analysisPresetName: String(data.analysisPresetName ?? existing?.analysisPresetName ?? "").trim()
   };
 }
 
@@ -370,6 +520,7 @@ function saveLandmark(data = {}) {
   };
   landmarks.set(landmark.landmarkId, landmark);
   addLandmarkToCase(landmark.caseId, landmark.landmarkId);
+  if (landmark.templateId) addLandmarkTemplateToCase(landmark.caseId, landmark.templateId);
   return cloneLandmark(landmark);
 }
 
@@ -391,6 +542,59 @@ function listLandmarks(filter = {}) {
     .filter(item => modelId === "all" || item.modelId === modelId)
     .map(cloneLandmark)
     .sort((a, b) => String(b.updatedAt || b.createdAt || "").localeCompare(String(a.updatedAt || a.createdAt || "")));
+}
+
+function normalizeLandmarkTemplateInput(data = {}, existing = null) {
+  const category = LANDMARK_CATEGORIES.has(String(data.category || existing?.category || "custom"))
+    ? String(data.category || existing?.category || "custom")
+    : "custom";
+  const items = Array.isArray(data.landmarks) ? data.landmarks : existing?.landmarks || [];
+  return {
+    templateId: String(data.templateId || existing?.templateId || makeId("landmark-template")).trim(),
+    name: String(data.name ?? existing?.name ?? "Custom Template").trim() || "Custom Template",
+    category,
+    description: String(data.description ?? existing?.description ?? "").trim(),
+    landmarks: items.map(item => ({
+      landmarkName: String(item.landmarkName || item.name || "Landmark").trim() || "Landmark",
+      landmarkCategory: LANDMARK_CATEGORIES.has(String(item.landmarkCategory || item.category || "custom"))
+        ? String(item.landmarkCategory || item.category || "custom")
+        : "custom",
+      description: String(item.description || "").trim(),
+      required: Boolean(item.required),
+      color: String(item.color || "#2563eb").trim() || "#2563eb"
+    })),
+    builtIn: Boolean(existing?.builtIn || data.builtIn)
+  };
+}
+
+function listLandmarkTemplates() {
+  return Array.from(landmarkTemplates.values())
+    .map(cloneLandmarkTemplate)
+    .sort((a, b) => Number(b.builtIn) - Number(a.builtIn) || String(a.name).localeCompare(String(b.name)));
+}
+
+function getLandmarkTemplate(templateId) {
+  return cloneLandmarkTemplate(landmarkTemplates.get(templateId));
+}
+
+function saveLandmarkTemplate(data = {}) {
+  const timestamp = nowIso();
+  const existing = landmarkTemplates.get(data.templateId);
+  const normalized = normalizeLandmarkTemplateInput(data, existing);
+  const template = {
+    ...normalized,
+    createdAt: existing?.createdAt || timestamp,
+    updatedAt: timestamp
+  };
+  landmarkTemplates.set(template.templateId, template);
+  return cloneLandmarkTemplate(template);
+}
+
+function deleteLandmarkTemplate(templateId) {
+  const existing = landmarkTemplates.get(templateId);
+  if (!existing || existing.builtIn) return null;
+  landmarkTemplates.delete(templateId);
+  return cloneLandmarkTemplate(existing);
 }
 
 function normalizeSurgicalPlanInput(data = {}, existing = null) {
@@ -457,7 +661,22 @@ function normalizeMeasurementInput(data = {}, existing = null) {
       }))
       : Array.isArray(existing?.points) ? existing.points : [],
     value: rawValue === null || rawValue === "" || !Number.isFinite(Number(rawValue)) ? null : Number(rawValue),
-    unit: String(data.unit ?? existing?.unit ?? "").trim()
+    unit: String(data.unit ?? existing?.unit ?? "").trim(),
+    landmarksUsed: Array.isArray(data.landmarksUsed) ? data.landmarksUsed.map(String) : Array.isArray(existing?.landmarksUsed) ? existing.landmarksUsed : [],
+    source: String(data.source ?? existing?.source ?? "manual").trim() || "manual",
+    templateId: String(data.templateId ?? existing?.templateId ?? "").trim(),
+    templateName: String(data.templateName ?? existing?.templateName ?? "").trim(),
+    missingLandmarks: Array.isArray(data.missingLandmarks) ? data.missingLandmarks.map(String) : Array.isArray(existing?.missingLandmarks) ? existing.missingLandmarks : [],
+    status: MEASUREMENT_STATUSES.has(String(data.status ?? existing?.status ?? "ready")) ? String(data.status ?? existing?.status ?? "ready") : "ready",
+    warnings: Array.isArray(data.warnings) ? data.warnings.map(String) : Array.isArray(existing?.warnings) ? existing.warnings : [],
+    formula: String(data.formula ?? existing?.formula ?? "").trim(),
+    description: String(data.description ?? existing?.description ?? "").trim(),
+    fromLandmark: String(data.fromLandmark ?? existing?.fromLandmark ?? "").trim(),
+    toLandmark: String(data.toLandmark ?? existing?.toLandmark ?? "").trim(),
+    optionalThirdLandmark: String(data.optionalThirdLandmark ?? existing?.optionalThirdLandmark ?? "").trim(),
+    analysisPresetId: String(data.analysisPresetId ?? existing?.analysisPresetId ?? "").trim(),
+    analysisPresetName: String(data.analysisPresetName ?? existing?.analysisPresetName ?? "").trim(),
+    calculatedAt: String(data.calculatedAt ?? existing?.calculatedAt ?? "").trim()
   };
 }
 
@@ -693,6 +912,7 @@ module.exports = {
   addMeasurementToCase,
   addSurgicalPlanToCase,
   addLandmarkToCase,
+  addLandmarkTemplateToCase,
   createComparison,
   getComparison,
   getMutableComparison,
@@ -707,6 +927,10 @@ module.exports = {
   saveLandmark,
   deleteLandmark,
   listLandmarks,
+  listLandmarkTemplates,
+  getLandmarkTemplate,
+  saveLandmarkTemplate,
+  deleteLandmarkTemplate,
   createJob,
   getMutableJob,
   getJob,

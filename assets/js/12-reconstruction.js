@@ -13,11 +13,20 @@
     currentReport: null,
     cases: [],
     currentCaseId: "",
+    clinicalAnalysisPresets: [],
+    currentAnalysisPreset: null,
+    analysisPresetReportDraft: null,
+    clinicalReportTemplates: [],
+    clinicalReportDraft: null,
     comparisons: [],
     comparisonModels: [],
     currentComparison: null,
     caseMeasurements: [],
+    measurementTemplates: [],
     caseLandmarks: [],
+    landmarkTemplates: [],
+    currentLandmarkTemplateId: "",
+    landmarkDetectionMode: "ai_assisted",
     activeMeasurementContext: null,
     surgicalPlanningNotes: [],
     currentSurgicalPlanId: "",
@@ -79,6 +88,7 @@
     comparisons: [],
     measurements: [],
     landmarks: [],
+    landmarkTemplates: [],
     surgicalPlans: []
   }]);
   const DEMO_HISTORY = Object.freeze([{
@@ -708,6 +718,7 @@
       ["Plans", String(caseItem.surgicalPlans?.length || 0)]
     ].map(([label, value]) => `<div class="reconstruction-case-stat"><span class="label-sm">${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`).join("");
     renderComparisonOptions();
+    renderClinicalReportBuilder();
     scheduleSessionAutoSave();
   }
 
@@ -906,6 +917,16 @@
     return `${value.toFixed(item.type === "angle" ? 1 : 4)}${unit}`;
   }
 
+  function measurementSourceLandmarkText(item) {
+    const names = [item.fromLandmark, item.toLandmark, item.optionalThirdLandmark].filter(Boolean);
+    if (names.length) return names.join(", ");
+    if (!Array.isArray(item.landmarksUsed) || !item.landmarksUsed.length) return "";
+    return item.landmarksUsed.map(id => {
+      const landmark = state.caseLandmarks.find(candidate => candidate.landmarkId === id);
+      return landmark?.name || id;
+    }).join(", ");
+  }
+
   function renderCaseMeasurements() {
     const summary = byId("caseMeasurementsSummary");
     const list = byId("caseMeasurementsList");
@@ -925,9 +946,14 @@
         <div class="reconstruction-history-main">
           <strong>${escapeHtml(item.label || item.type || "Measurement")}</strong>
           <div class="reconstruction-history-id">${escapeHtml(item.measurementId)}</div>
+          ${item.templateName ? `<div class="reconstruction-history-id">template: ${escapeHtml(item.templateName)}</div>` : ""}
+          ${measurementSourceLandmarkText(item) ? `<div class="reconstruction-history-id">landmarks: ${escapeHtml(measurementSourceLandmarkText(item))}</div>` : ""}
+          ${item.warnings?.length ? `<div class="reconstruction-history-id">warning: ${escapeHtml(item.warnings.join("; "))}</div>` : ""}
         </div>
         <div class="reconstruction-history-cell">${escapeHtml(item.type || "—")}</div>
         <div class="reconstruction-history-cell">${escapeHtml(measurementValueText(item))}</div>
+        <div class="reconstruction-history-cell">${escapeHtml(item.status || "ready")}</div>
+        <div class="reconstruction-history-cell">${escapeHtml(item.source || "manual")}</div>
         <div class="reconstruction-history-actions">
           <button class="btn btn-sm" data-measurement-action="edit-label">edit label</button>
           <button class="btn btn-sm btn-danger" data-measurement-action="delete">delete</button>
@@ -940,11 +966,15 @@
     if (!api()?.listCaseMeasurements || !context?.caseId || !context?.jobId || !context?.modelId) {
       state.caseMeasurements = [];
       renderCaseMeasurements();
+      renderMeasurementTemplates();
+      renderClinicalAnalysisPresets();
       return;
     }
     try {
       state.caseMeasurements = await api().listCaseMeasurements(context);
       renderCaseMeasurements();
+      renderMeasurementTemplates();
+      renderClinicalAnalysisPresets();
       if (syncViewer && window._3d?.loadCaseMeasurements) {
         window._3d.loadCaseMeasurements(state.caseMeasurements);
       }
@@ -1003,7 +1033,1362 @@
     }
   }
 
+  const DEFAULT_MEASUREMENT_TEMPLATES = Object.freeze([
+    {
+      templateId: "measurement-template-facial-basic",
+      name: "Facial Basic Measurements",
+      category: "facial",
+      description: "Core distances from basic facial landmarks.",
+      requiredLandmarks: ["Nasion", "Pronasale", "Pogonion", "Left Zygion", "Right Zygion"],
+      measurements: [
+        { measurementName: "Nasion to Pronasale", type: "distance", fromLandmark: "Nasion", toLandmark: "Pronasale", formula: "distance", unit: "model units", description: "Nasal projection reference distance." },
+        { measurementName: "Pronasale to Pogonion", type: "distance", fromLandmark: "Pronasale", toLandmark: "Pogonion", formula: "distance", unit: "model units", description: "Midface to chin soft tissue distance." },
+        { measurementName: "Bizygomatic width", type: "distance", fromLandmark: "Left Zygion", toLandmark: "Right Zygion", formula: "distance", unit: "model units", description: "Facial width estimate." }
+      ]
+    },
+    {
+      templateId: "measurement-template-nasal-analysis",
+      name: "Nasal Analysis Measurements",
+      category: "nasal",
+      description: "Nasal profile distances and angle.",
+      requiredLandmarks: ["Nasion", "Rhinion", "Pronasale", "Subnasale"],
+      measurements: [
+        { measurementName: "Nasal dorsum length", type: "distance", fromLandmark: "Nasion", toLandmark: "Rhinion", formula: "distance", unit: "model units", description: "Upper nasal dorsum length." },
+        { measurementName: "Tip projection", type: "distance", fromLandmark: "Subnasale", toLandmark: "Pronasale", formula: "distance", unit: "model units", description: "Nasal tip projection." },
+        { measurementName: "Nasolabial angle", type: "angle", fromLandmark: "Pronasale", toLandmark: "Nasion", optionalThirdLandmark: "Subnasale", formula: "angle", unit: "deg", description: "Approximate profile angle using Subnasale as vertex." }
+      ]
+    },
+    {
+      templateId: "measurement-template-orthognathic",
+      name: "Orthognathic Measurements",
+      category: "orthodontic",
+      description: "Jaw relation and lower face references.",
+      requiredLandmarks: ["Subnasale", "Pogonion", "Menton", "Left Gonion", "Right Gonion"],
+      measurements: [
+        { measurementName: "Lower facial height", type: "distance", fromLandmark: "Subnasale", toLandmark: "Menton", formula: "distance", unit: "model units", description: "Lower facial vertical reference." },
+        { measurementName: "Mandibular width", type: "distance", fromLandmark: "Left Gonion", toLandmark: "Right Gonion", formula: "distance", unit: "model units", description: "Mandibular transverse width." },
+        { measurementName: "Chin vector", type: "vector", fromLandmark: "Subnasale", toLandmark: "Pogonion", formula: "vector_magnitude", unit: "model units", description: "Soft tissue chin vector magnitude." }
+      ]
+    },
+    {
+      templateId: "measurement-template-maxillofacial",
+      name: "Maxillofacial Measurements",
+      category: "maxillofacial",
+      description: "Broader craniofacial contour and symmetry references.",
+      requiredLandmarks: ["Nasion", "Left Orbitale", "Right Orbitale", "Menton"],
+      measurements: [
+        { measurementName: "Orbital width", type: "distance", fromLandmark: "Left Orbitale", toLandmark: "Right Orbitale", formula: "distance", unit: "model units", description: "Orbital transverse reference." },
+        { measurementName: "Facial height", type: "distance", fromLandmark: "Nasion", toLandmark: "Menton", formula: "distance", unit: "model units", description: "Upper-to-lower facial height." },
+        { measurementName: "Height to orbital width ratio", type: "ratio", fromLandmark: "Nasion", toLandmark: "Menton", formula: "Nasion-Menton/Left Orbitale-Right Orbitale", unit: "ratio", description: "Simple proportional index." }
+      ]
+    },
+    {
+      templateId: "measurement-template-custom",
+      name: "Custom Measurements",
+      category: "custom",
+      description: "Starter custom measurement set.",
+      requiredLandmarks: ["Custom Point 1"],
+      measurements: [
+        { measurementName: "Custom point marker", type: "custom", fromLandmark: "Custom Point 1", toLandmark: "Custom Point 1", formula: "point", unit: "", description: "Template placeholder measurement." }
+      ]
+    }
+  ]);
+
+  const DEFAULT_CLINICAL_ANALYSIS_PRESETS = Object.freeze([
+    {
+      presetId: "analysis-preset-facial-basic",
+      name: "Facial Basic Analysis",
+      category: "facial",
+      description: "Basic facial landmarking, distances, and case report draft.",
+      landmarkTemplateId: "template-facial-basic",
+      measurementTemplateId: "measurement-template-facial-basic",
+      reportTemplateId: "case-report-facial-basic",
+      requiredModelQuality: "medium",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z"
+    },
+    {
+      presetId: "analysis-preset-nasal",
+      name: "Nasal Analysis",
+      category: "nasal",
+      description: "Nasal landmark proposals, nasal measurements, and report draft.",
+      landmarkTemplateId: "template-nasal-analysis",
+      measurementTemplateId: "measurement-template-nasal-analysis",
+      reportTemplateId: "case-report-nasal",
+      requiredModelQuality: "medium",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z"
+    },
+    {
+      presetId: "analysis-preset-orthognathic",
+      name: "Orthognathic Planning",
+      category: "orthodontic",
+      description: "Orthognathic landmark proposals, jaw measurements, and planning report draft.",
+      landmarkTemplateId: "template-orthognathic-analysis",
+      measurementTemplateId: "measurement-template-orthognathic",
+      reportTemplateId: "case-report-orthognathic",
+      requiredModelQuality: "good",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z"
+    },
+    {
+      presetId: "analysis-preset-maxillofacial",
+      name: "Maxillofacial Analysis",
+      category: "maxillofacial",
+      description: "Maxillofacial landmarks, proportional measurements, and report draft.",
+      landmarkTemplateId: "template-maxillofacial-analysis",
+      measurementTemplateId: "measurement-template-maxillofacial",
+      reportTemplateId: "case-report-maxillofacial",
+      requiredModelQuality: "good",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z"
+    },
+    {
+      presetId: "analysis-preset-custom",
+      name: "Custom Analysis",
+      category: "custom",
+      description: "Custom landmark and measurement starter workflow.",
+      landmarkTemplateId: "template-custom",
+      measurementTemplateId: "measurement-template-custom",
+      reportTemplateId: "case-report-custom",
+      requiredModelQuality: "medium",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z"
+    }
+  ]);
+
+  const CLINICAL_REPORT_SECTIONS = Object.freeze([
+    { sectionId: "case_info", label: "Patient / Case Info" },
+    { sectionId: "reconstruction_summary", label: "Reconstruction Summary" },
+    { sectionId: "model_readiness", label: "Model Readiness" },
+    { sectionId: "landmarks_summary", label: "Landmarks Summary" },
+    { sectionId: "measurements_summary", label: "Measurements Summary" },
+    { sectionId: "before_after_comparison", label: "Before / After Comparison" },
+    { sectionId: "surgical_planning_notes", label: "Surgical Planning Notes" },
+    { sectionId: "warnings", label: "Warnings" },
+    { sectionId: "doctor_notes", label: "Doctor Notes" }
+  ]);
+
+  const DEFAULT_REPORT_TEMPLATES = Object.freeze([
+    {
+      reportTemplateId: "case-report-facial-basic",
+      name: "Facial Basic Clinical Report",
+      category: "facial",
+      sections: CLINICAL_REPORT_SECTIONS.map(item => item.sectionId),
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z"
+    },
+    {
+      reportTemplateId: "case-report-nasal",
+      name: "Nasal Analysis Clinical Report",
+      category: "nasal",
+      sections: CLINICAL_REPORT_SECTIONS.map(item => item.sectionId),
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z"
+    },
+    {
+      reportTemplateId: "case-report-orthognathic",
+      name: "Orthognathic Planning Clinical Report",
+      category: "orthodontic",
+      sections: CLINICAL_REPORT_SECTIONS.map(item => item.sectionId),
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z"
+    },
+    {
+      reportTemplateId: "case-report-maxillofacial",
+      name: "Maxillofacial Clinical Report",
+      category: "maxillofacial",
+      sections: CLINICAL_REPORT_SECTIONS.map(item => item.sectionId),
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z"
+    },
+    {
+      reportTemplateId: "case-report-custom",
+      name: "Custom Clinical Report",
+      category: "custom",
+      sections: CLINICAL_REPORT_SECTIONS.map(item => item.sectionId),
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z"
+    }
+  ]);
+
+  function qualityScoreRequirement(quality) {
+    if (quality === "good") return 80;
+    if (quality === "medium") return 50;
+    return 0;
+  }
+
+  function activeReadinessScore() {
+    const job = currentJob();
+    const result = state.currentResult;
+    const contextJob = state.historyItems.find(item => item.jobId === state.activeMeasurementContext?.jobId);
+    return Number(result?.readinessScore ?? job?.readinessScore ?? contextJob?.readinessScore ?? 0);
+  }
+
+  function analysisPresetWarnings(preset) {
+    const warnings = [];
+    const context = state.activeMeasurementContext || {};
+    if (!context.caseId || !context.jobId || !context.modelId) warnings.push("Open a case model first.");
+    const score = activeReadinessScore();
+    const requiredScore = qualityScoreRequirement(preset.requiredModelQuality);
+    if (score && score < requiredScore) warnings.push(`Readiness score ${Math.round(score)}/100 is below ${preset.requiredModelQuality}.`);
+    if (!score && requiredScore) warnings.push(`Model readiness is unknown; ${preset.requiredModelQuality} quality is recommended.`);
+    return warnings;
+  }
+
+  function presetTemplateDetails(preset) {
+    const landmarkTemplate = state.landmarkTemplates.find(item => item.templateId === preset.landmarkTemplateId);
+    const measurementTemplate = (state.measurementTemplates.length ? state.measurementTemplates : DEFAULT_MEASUREMENT_TEMPLATES)
+      .find(item => item.templateId === preset.measurementTemplateId);
+    return { landmarkTemplate, measurementTemplate };
+  }
+
+  function renderClinicalAnalysisPresets() {
+    const list = byId("clinicalAnalysisPresetsList");
+    const summary = byId("clinicalAnalysisPresetsSummary");
+    const presets = state.clinicalAnalysisPresets.length ? state.clinicalAnalysisPresets : DEFAULT_CLINICAL_ANALYSIS_PRESETS;
+    if (summary) {
+      summary.textContent = state.activeMeasurementContext?.caseId
+        ? `${presets.length} preset(s) available · readiness ${Math.round(activeReadinessScore() || 0)}/100`
+        : "Open a case model to apply a clinical analysis preset.";
+    }
+    if (!list) return;
+    list.innerHTML = presets.map(preset => {
+      const { landmarkTemplate, measurementTemplate } = presetTemplateDetails(preset);
+      const warnings = analysisPresetWarnings(preset);
+      return `
+        <div class="reconstruction-history-row" data-analysis-preset-id="${escapeHtml(preset.presetId)}">
+          <div class="reconstruction-history-main">
+            <strong>${escapeHtml(preset.name)}</strong>
+            <div class="reconstruction-history-id">${escapeHtml(preset.description || "")}</div>
+            <div class="reconstruction-history-id">landmarks: ${escapeHtml((landmarkTemplate?.landmarks || []).map(item => item.landmarkName).join(", ") || "template missing")}</div>
+          </div>
+          <div class="reconstruction-history-cell">${escapeHtml(preset.category || "custom")}</div>
+          <div class="reconstruction-history-cell">${Number(measurementTemplate?.measurements?.length || 0)} measurements</div>
+          <div class="reconstruction-history-cell">quality: ${escapeHtml(preset.requiredModelQuality || "medium")}${warnings.length ? ` · ${escapeHtml(warnings.join(" "))}` : ""}</div>
+          <div class="reconstruction-history-actions">
+            <button class="btn btn-sm" data-analysis-preset-action="apply">apply</button>
+          </div>
+        </div>
+      `;
+    }).join("");
+  }
+
+  async function applyClinicalAnalysisPreset(preset) {
+    const warnings = analysisPresetWarnings(preset);
+    const hardBlock = warnings.some(item => item.includes("Open a case model"));
+    if (hardBlock) {
+      setError(warnings.join(" "));
+      renderClinicalAnalysisPresets();
+      return;
+    }
+    const { landmarkTemplate, measurementTemplate } = presetTemplateDetails(preset);
+    if (!landmarkTemplate || !measurementTemplate) {
+      setError("Clinical preset template dependencies are missing.");
+      return;
+    }
+    state.currentAnalysisPreset = preset;
+    state.analysisPresetReportDraft = {
+      presetId: preset.presetId,
+      name: preset.name,
+      category: preset.category,
+      reportTemplateId: preset.reportTemplateId,
+      warnings: warnings.slice(),
+      startedAt: new Date().toISOString()
+    };
+    try {
+      state.currentLandmarkTemplateId = landmarkTemplate.templateId;
+      setInputValue("aiLandmarkTemplateSelect", landmarkTemplate.templateId);
+      setInputValue("landmarkDetectionMode", "ai_assisted");
+      state.landmarkDetectionMode = "ai_assisted";
+      await runAiLandmarkDetection();
+      await loadCaseLandmarks(state.activeMeasurementContext, true);
+      await applyMeasurementTemplate(measurementTemplate);
+      await recalculateAllMeasurementsForModel(state.activeMeasurementContext?.modelId);
+      const generatedLandmarks = state.caseLandmarks.filter(item => item.analysisPresetId === preset.presetId);
+      const generatedMeasurements = state.caseMeasurements.filter(item => item.analysisPresetId === preset.presetId);
+      state.analysisPresetReportDraft = {
+        ...state.analysisPresetReportDraft,
+        generatedLandmarksCount: generatedLandmarks.length,
+        generatedMeasurementsCount: generatedMeasurements.length,
+        completedAt: new Date().toISOString()
+      };
+      state.clinicalReportDraft = buildClinicalReportSnapshot(state.currentCaseReport || {});
+      renderClinicalAnalysisPresets();
+      renderClinicalReportBuilder();
+      setStatusText(`Clinical analysis preset applied: ${preset.name}. Report draft prepared.`);
+    } catch (err) {
+      setError(apiErrorMessage(err, "Clinical analysis preset failed."));
+    } finally {
+      state.currentAnalysisPreset = null;
+    }
+  }
+
+  async function handleClinicalAnalysisPresetAction(event) {
+    const button = event.target.closest("[data-analysis-preset-action]");
+    if (!button) return;
+    const row = button.closest("[data-analysis-preset-id]");
+    const presetId = row?.dataset?.analysisPresetId || "";
+    const preset = (state.clinicalAnalysisPresets.length ? state.clinicalAnalysisPresets : DEFAULT_CLINICAL_ANALYSIS_PRESETS)
+      .find(item => item.presetId === presetId);
+    if (!preset) return;
+    if (button.dataset.analysisPresetAction === "apply") await applyClinicalAnalysisPreset(preset);
+  }
+
+  function reportTemplates() {
+    return state.clinicalReportTemplates.length ? state.clinicalReportTemplates : DEFAULT_REPORT_TEMPLATES;
+  }
+
+  function selectedReportTemplate() {
+    const selectedId = byId("clinicalReportTemplateSelect")?.value || state.analysisPresetReportDraft?.reportTemplateId || "case-report-custom";
+    return reportTemplates().find(item => item.reportTemplateId === selectedId) || reportTemplates()[0];
+  }
+
+  function clinicalReportSelectedSections() {
+    const checked = Array.from(document.querySelectorAll("[data-clinical-report-section]:checked")).map(input => input.value);
+    return checked.length ? checked : selectedReportTemplate()?.sections || CLINICAL_REPORT_SECTIONS.map(item => item.sectionId);
+  }
+
+  function selectedAnalysisPresetForReport(report = state.currentCaseReport) {
+    const fromDraft = state.analysisPresetReportDraft?.presetId
+      ? { presetId: state.analysisPresetReportDraft.presetId, name: state.analysisPresetReportDraft.name }
+      : null;
+    return fromDraft || report?.selectedAnalysisPresets?.[0] || report?.clinicalAnalysisPresetReport?.selectedAnalysisPresets?.[0] || null;
+  }
+
+  function renderClinicalReportBuilder() {
+    const templateSelect = byId("clinicalReportTemplateSelect");
+    const checklist = byId("clinicalReportSectionsChecklist");
+    const summary = byId("clinicalReportBuilderSummary");
+    const templates = reportTemplates();
+    const selectedTemplateId = templateSelect?.value || state.analysisPresetReportDraft?.reportTemplateId || templates[0]?.reportTemplateId || "";
+    if (templateSelect) {
+      templateSelect.innerHTML = templates.map(template => `<option value="${escapeHtml(template.reportTemplateId)}">${escapeHtml(template.name)}</option>`).join("");
+      templateSelect.value = templates.some(item => item.reportTemplateId === selectedTemplateId) ? selectedTemplateId : templates[0]?.reportTemplateId || "";
+    }
+    if (checklist) {
+      const enabled = new Set(state.clinicalReportDraft?.enabledSections || selectedReportTemplate()?.sections || CLINICAL_REPORT_SECTIONS.map(item => item.sectionId));
+      checklist.innerHTML = CLINICAL_REPORT_SECTIONS.map(section => `
+        <label class="reconstruction-setting-toggle">
+          <input type="checkbox" data-clinical-report-section value="${escapeHtml(section.sectionId)}" ${enabled.has(section.sectionId) ? "checked" : ""} />
+          <span>${escapeHtml(section.label)}</span>
+        </label>
+      `).join("");
+    }
+    const caseText = state.currentCaseId || "no case";
+    const modelText = state.activeMeasurementContext?.jobId || "no model";
+    const preset = selectedAnalysisPresetForReport();
+    if (summary) summary.textContent = `case ${caseText} · model ${modelText} · preset ${preset?.name || "not selected"}`;
+    renderClinicalReportPreview(state.clinicalReportDraft || buildClinicalReportSnapshot());
+  }
+
+  function buildClinicalReportSnapshot(report = state.currentCaseReport || {}) {
+    const template = selectedReportTemplate() || DEFAULT_REPORT_TEMPLATES[0];
+    const enabledSections = clinicalReportSelectedSections();
+    const preset = selectedAnalysisPresetForReport(report);
+    return {
+      reportDraftId: `clinical-report-draft-${Date.now().toString(36)}`,
+      reportTemplate: {
+        reportTemplateId: template?.reportTemplateId || "",
+        name: template?.name || "",
+        category: template?.category || "",
+        sections: enabledSections,
+        createdAt: template?.createdAt || "",
+        updatedAt: template?.updatedAt || ""
+      },
+      caseId: state.currentCaseId || report.caseId || "",
+      patientName: report.patientName || currentCase()?.patientName || "",
+      patientId: report.patientId || currentCase()?.patientId || "",
+      model: state.activeMeasurementContext || null,
+      analysisPreset: preset,
+      enabledSections,
+      doctorNotes: byId("clinicalReportDoctorNotes")?.value || "",
+      generatedAt: new Date().toISOString(),
+      sections: {
+        case_info: {
+          caseId: state.currentCaseId || report.caseId || "",
+          patientName: report.patientName || currentCase()?.patientName || "",
+          patientId: report.patientId || currentCase()?.patientId || "",
+          createdAt: report.createdAt || currentCase()?.createdAt || "",
+          updatedAt: report.updatedAt || currentCase()?.updatedAt || ""
+        },
+        reconstruction_summary: report.reconstructionJobs || report.jobs || [],
+        model_readiness: report.readinessScores || [],
+        landmarks_summary: {
+          landmarks: report.landmarks || state.caseLandmarks,
+          landmarkTemplateReport: report.landmarkTemplateReport || {},
+          aiLandmarkReport: report.aiLandmarkReport || {}
+        },
+        measurements_summary: {
+          measurements: report.measurements || state.caseMeasurements,
+          measurementTemplateReport: report.measurementTemplateReport || {},
+          autoMeasurementReport: report.autoMeasurementReport || {}
+        },
+        before_after_comparison: report.comparisons || state.comparisons,
+        surgical_planning_notes: report.surgicalPlanningNotes || state.surgicalPlanningNotes,
+        warnings: [
+          ...(report.warnings || []),
+          ...(report.clinicalAnalysisPresetReport?.warnings || []),
+          ...(report.autoMeasurementReport?.warnings || [])
+        ],
+        doctor_notes: byId("clinicalReportDoctorNotes")?.value || ""
+      }
+    };
+  }
+
+  function clinicalReportDraftToHtml(draft) {
+    const sectionLabel = id => CLINICAL_REPORT_SECTIONS.find(item => item.sectionId === id)?.label || id;
+    const table = (headers, rows) => `
+      <table style="width:100%;border-collapse:collapse;margin:8px 0 14px">
+        <thead><tr>${headers.map(header => `<th style="text-align:left;border-bottom:1px solid #cbd5e1;padding:6px">${escapeHtml(header)}</th>`).join("")}</tr></thead>
+        <tbody>${rows.length ? rows.map(row => `<tr>${row.map(cell => `<td style="border-bottom:1px solid #e2e8f0;padding:6px;vertical-align:top">${escapeHtml(cell ?? "—")}</td>`).join("")}</tr>`).join("") : `<tr><td colspan="${headers.length}" style="padding:6px;color:#64748b">No data</td></tr>`}</tbody>
+      </table>
+    `;
+    const renderSection = sectionId => {
+      const content = draft.sections?.[sectionId];
+      if (sectionId === "case_info") {
+        return table(["Field", "Value"], [
+          ["Patient", content?.patientName || draft.patientName || "—"],
+          ["Patient ID", content?.patientId || draft.patientId || "—"],
+          ["Case ID", content?.caseId || draft.caseId || "—"],
+          ["Created", formatDateTime(content?.createdAt)],
+          ["Updated", formatDateTime(content?.updatedAt)],
+          ["Generated", formatDateTime(draft.generatedAt)]
+        ]);
+      }
+      if (sectionId === "reconstruction_summary") {
+        return table(["Job", "Status", "Readiness", "Warnings"], (content || []).map(job => [
+          job.jobId || "—",
+          job.status || "—",
+          `${job.readinessLevel || "—"} ${Number.isFinite(Number(job.readinessScore)) ? Math.round(Number(job.readinessScore)) + "/100" : ""}`,
+          String(job.warningsCount || 0)
+        ]));
+      }
+      if (sectionId === "model_readiness") {
+        return table(["Job", "Score", "Level"], (content || []).map(item => [
+          item.jobId || "—",
+          Number.isFinite(Number(item.readinessScore)) ? `${Math.round(Number(item.readinessScore))}/100` : "—",
+          item.readinessLevel || "—"
+        ]));
+      }
+      if (sectionId === "landmarks_summary") {
+        return table(["Landmark", "Category", "Status", "Confidence"], (content?.landmarks || []).map(item => [
+          item.name || item.landmarkId,
+          item.category || "custom",
+          item.status || "placed",
+          confidenceText(item.confidence)
+        ]));
+      }
+      if (sectionId === "measurements_summary") {
+        return table(["Measurement", "Type", "Value", "Status", "Formula"], (content?.measurements || []).map(item => [
+          item.label || item.measurementId,
+          item.type || "—",
+          measurementValueText(item),
+          item.status || "ready",
+          item.formula || "—"
+        ]));
+      }
+      if (sectionId === "before_after_comparison") {
+        return table(["Comparison", "Before", "After", "Mode"], (content || []).map(item => [
+          item.comparisonId || "—",
+          item.beforeJobId || "—",
+          item.afterJobId || "—",
+          item.comparisonMode || "—"
+        ]));
+      }
+      if (sectionId === "surgical_planning_notes") {
+        return table(["Plan", "Procedure", "Diagnosis", "Notes"], (content || []).map(item => [
+          item.title || item.planId || "—",
+          item.procedureType || "—",
+          item.diagnosis || "—",
+          item.notes || "—"
+        ]));
+      }
+      if (sectionId === "warnings") {
+        const warnings = Array.from(new Set((content || []).map(item => typeof item === "string" ? item : JSON.stringify(item))));
+        return `<div style="border:1px solid #f59e0b;background:#fffbeb;padding:10px;border-radius:6px">${warnings.length ? warnings.map(item => `<div>• ${escapeHtml(item)}</div>`).join("") : "No warnings"}</div>`;
+      }
+      if (sectionId === "doctor_notes") return `<p>${escapeHtml(draft.doctorNotes || "—")}</p>`;
+      return `<pre>${escapeHtml(JSON.stringify(content ?? null, null, 2))}</pre>`;
+    };
+    const rows = (draft.enabledSections || []).map(sectionId => {
+      return `<section style="margin:18px 0"><h4 style="margin:0 0 8px;color:#0f172a">${escapeHtml(sectionLabel(sectionId))}</h4>${renderSection(sectionId)}</section>`;
+    }).join("");
+    return `
+      <article class="clinical-report-preview" style="font-family:Inter,Arial,sans-serif;line-height:1.45;color:#1e293b">
+        <h2 style="margin:0 0 4px;color:#0f172a">PMAS Clinical Report</h2>
+        <h3 style="margin:0 0 12px;color:#334155">${escapeHtml(draft.reportTemplate?.name || "Clinical Report")}</h3>
+        <p><strong>Case:</strong> ${escapeHtml(draft.caseId || "—")} · <strong>Patient:</strong> ${escapeHtml(draft.patientName || "—")} · <strong>Model:</strong> ${escapeHtml(draft.model?.jobId || "—")} · <strong>Generated:</strong> ${escapeHtml(formatDateTime(draft.generatedAt))}</p>
+        <p><strong>Analysis preset:</strong> ${escapeHtml(draft.analysisPreset?.name || "—")}</p>
+        ${rows}
+      </article>
+    `;
+  }
+
+  function clinicalReportTextSections(draft) {
+    const label = id => CLINICAL_REPORT_SECTIONS.find(item => item.sectionId === id)?.label || id;
+    const lines = [
+      "PMAS Clinical Report",
+      draft.reportTemplate?.name || "Clinical Report",
+      `Case: ${draft.caseId || "—"}`,
+      `Patient: ${draft.patientName || "—"} (${draft.patientId || "—"})`,
+      `Model: ${draft.model?.jobId || "—"}`,
+      `Analysis preset: ${draft.analysisPreset?.name || "—"}`,
+      `Generated: ${formatDateTime(draft.generatedAt)}`,
+      ""
+    ];
+    (draft.enabledSections || []).forEach(sectionId => {
+      lines.push(label(sectionId));
+      if (sectionId === "doctor_notes") lines.push(draft.doctorNotes || "—");
+      else if (sectionId === "warnings") lines.push(...((draft.sections?.warnings || []).map(item => typeof item === "string" ? item : JSON.stringify(item))));
+      else lines.push(JSON.stringify(draft.sections?.[sectionId] ?? null, null, 2));
+      lines.push("");
+    });
+    return lines;
+  }
+
+  function renderClinicalReportPreview(draft) {
+    const preview = byId("clinicalReportPreview");
+    if (!preview) return;
+    preview.innerHTML = draft ? clinicalReportDraftToHtml(draft) : "No clinical report preview yet.";
+  }
+
+  async function saveClinicalReportDraft() {
+    const report = state.currentCaseId ? await fetchCaseReport(state.currentCaseId) : null;
+    state.clinicalReportDraft = buildClinicalReportSnapshot(report || {});
+    renderClinicalReportPreview(state.clinicalReportDraft);
+    setStatusText("Clinical report draft saved.");
+    return state.clinicalReportDraft;
+  }
+
+  async function previewClinicalReport() {
+    const draft = await saveClinicalReportDraft();
+    renderClinicalReportPreview(draft);
+    setStatusText("Clinical report preview updated.");
+  }
+
+  function downloadClinicalReportJson() {
+    const draft = state.clinicalReportDraft || buildClinicalReportSnapshot();
+    const blob = new Blob([JSON.stringify(draft, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${draft.caseId || "case"}-clinical-report-draft.json`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+    setStatusText("Clinical report JSON exported.");
+  }
+
+  function exportClinicalReportHtml() {
+    const draft = state.clinicalReportDraft || buildClinicalReportSnapshot();
+    const html = `<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(draft.reportTemplate?.name || "Clinical Report")}</title></head><body>${clinicalReportDraftToHtml(draft)}</body></html>`;
+    const blob = new Blob([html], { type: "text/html" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${draft.caseId || "case"}-clinical-report-draft.html`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+    setStatusText("Clinical report HTML exported.");
+  }
+
+  async function exportClinicalReportPdf() {
+    const draft = state.clinicalReportDraft || await saveClinicalReportDraft();
+    if (!window.jspdf?.jsPDF) {
+      const html = `<!doctype html><html><head><meta charset="utf-8"><title>PMAS Clinical Report</title></head><body>${clinicalReportDraftToHtml(draft)}<script>window.print()</script></body></html>`;
+      const printWindow = window.open("", "_blank");
+      if (printWindow) {
+        printWindow.document.write(html);
+        printWindow.document.close();
+        setStatusText("PDF library unavailable. Opened HTML print fallback.");
+      } else {
+        setError("PDF export unavailable: browser blocked HTML print fallback.");
+      }
+      return;
+    }
+    const { jsPDF } = window.jspdf;
+    const pdf = new jsPDF("p", "mm", "a4");
+    const lines = clinicalReportTextSections(draft);
+    let y = 14;
+    pdf.setFont("helvetica", "bold");
+    pdf.setFontSize(14);
+    pdf.text("PMAS Clinical Report", 10, y);
+    y += 8;
+    pdf.setFont("helvetica", "normal");
+    pdf.setFontSize(9);
+    lines.forEach(line => {
+      pdf.splitTextToSize(line, 185).forEach(part => {
+        if (y > 284) {
+          pdf.addPage();
+          y = 12;
+        }
+        pdf.text(part, 10, y);
+        y += 4.5;
+      });
+    });
+    pdf.save(`${draft.caseId || "case"}-clinical-report-draft.pdf`);
+    setStatusText("Clinical report PDF exported.");
+  }
+
+  async function exportClinicalReportDocx() {
+    const draft = state.clinicalReportDraft || await saveClinicalReportDraft();
+    if (!window.docx) {
+      setError("DOCX export unavailable: docx.js library is not loaded.");
+      return;
+    }
+    const D = window.docx;
+    const paragraphs = clinicalReportTextSections(draft).map((line, index) => new D.Paragraph({
+      children: [new D.TextRun({ text: line || " ", bold: index === 0 })],
+      spacing: { after: line ? 80 : 40 }
+    }));
+    const doc = new D.Document({ sections: [{ children: paragraphs }] });
+    const blob = await D.Packer.toBlob(doc);
+    saveAs(blob, `${draft.caseId || "case"}-clinical-report-draft.docx`);
+    setStatusText("Clinical report DOCX exported.");
+  }
+
+  function normalizeLandmarkName(name) {
+    return String(name || "").trim().toLowerCase();
+  }
+
+  function usableLandmark(landmark) {
+    return Boolean(landmark) && !["unplaced", "hidden", "rejected"].includes(landmark.status) && landmark.visible !== false;
+  }
+
+  function findLandmarkByName(name) {
+    const normalized = normalizeLandmarkName(name);
+    return state.caseLandmarks.find(item => normalizeLandmarkName(item.name) === normalized && usableLandmark(item)) || null;
+  }
+
+  function distanceBetween(a, b) {
+    const pa = a?.position3D || {};
+    const pb = b?.position3D || {};
+    return Math.sqrt(
+      Math.pow(Number(pa.x || 0) - Number(pb.x || 0), 2)
+      + Math.pow(Number(pa.y || 0) - Number(pb.y || 0), 2)
+      + Math.pow(Number(pa.z || 0) - Number(pb.z || 0), 2)
+    );
+  }
+
+  function calculateDistanceBetweenLandmarks(landmarkA, landmarkB) {
+    return distanceBetween(landmarkA, landmarkB);
+  }
+
+  function calculateAngleBetweenLandmarks(landmarkA, landmarkB, landmarkC) {
+    return angleBetween(landmarkA, landmarkB, landmarkC);
+  }
+
+  function calculateVectorBetweenLandmarks(landmarkA, landmarkB) {
+    const pa = landmarkA?.position3D || {};
+    const pb = landmarkB?.position3D || {};
+    return {
+      x: Number(pb.x || 0) - Number(pa.x || 0),
+      y: Number(pb.y || 0) - Number(pa.y || 0),
+      z: Number(pb.z || 0) - Number(pa.z || 0),
+      magnitude: calculateDistanceBetweenLandmarks(landmarkA, landmarkB)
+    };
+  }
+
+  function calculateRatio(valueA, valueB) {
+    const a = Number(valueA);
+    const b = Number(valueB);
+    if (!Number.isFinite(a) || !Number.isFinite(b) || b === 0) return null;
+    return a / b;
+  }
+
+  function angleBetween(a, vertex, c) {
+    const pa = a?.position3D || {};
+    const pv = vertex?.position3D || {};
+    const pc = c?.position3D || {};
+    const va = [Number(pa.x || 0) - Number(pv.x || 0), Number(pa.y || 0) - Number(pv.y || 0), Number(pa.z || 0) - Number(pv.z || 0)];
+    const vc = [Number(pc.x || 0) - Number(pv.x || 0), Number(pc.y || 0) - Number(pv.y || 0), Number(pc.z || 0) - Number(pv.z || 0)];
+    const dot = va.reduce((sum, value, index) => sum + value * vc[index], 0);
+    const ma = Math.sqrt(va.reduce((sum, value) => sum + value * value, 0));
+    const mc = Math.sqrt(vc.reduce((sum, value) => sum + value * value, 0));
+    if (!ma || !mc) return 0;
+    return Math.acos(Math.max(-1, Math.min(1, dot / (ma * mc)))) * 180 / Math.PI;
+  }
+
+  function calculateMeasurementTemplateValue(item) {
+    const from = findLandmarkByName(item.fromLandmark);
+    const to = findLandmarkByName(item.toLandmark);
+    const third = item.optionalThirdLandmark ? findLandmarkByName(item.optionalThirdLandmark) : null;
+    if (item.type === "angle") return angleBetween(from, third, to);
+    if (item.type === "ratio") {
+      const [top, bottom] = String(item.formula || "").split("/");
+      const pairDistance = part => {
+        const [aName, bName] = String(part || "").split("-").map(value => value.trim());
+        const a = findLandmarkByName(aName);
+        const b = findLandmarkByName(bName);
+        return a && b ? distanceBetween(a, b) : 0;
+      };
+      const denominator = pairDistance(bottom);
+      return denominator ? pairDistance(top) / denominator : null;
+    }
+    if (item.type === "custom") return from && to ? distanceBetween(from, to) : 0;
+    return distanceBetween(from, to);
+  }
+
+  function findLandmarkForMeasurement(nameOrId) {
+    const raw = String(nameOrId || "").trim();
+    if (!raw) return null;
+    return state.caseLandmarks.find(item => item.landmarkId === raw) || findLandmarkByName(raw);
+  }
+
+  function measurementLandmarkNames(measurement) {
+    if (measurement.type === "ratio" && measurement.formula) {
+      return String(measurement.formula)
+        .split("/")
+        .flatMap(part => String(part || "").split("-"))
+        .map(value => value.trim())
+        .filter(Boolean);
+    }
+    if (measurement.fromLandmark || measurement.toLandmark || measurement.optionalThirdLandmark) {
+      return [measurement.fromLandmark, measurement.toLandmark, measurement.optionalThirdLandmark].filter(Boolean);
+    }
+    return Array.isArray(measurement.landmarksUsed) ? measurement.landmarksUsed : [];
+  }
+
+  function recalculateMeasurementObject(measurement) {
+    if (!measurement?.landmarksUsed?.length && !measurement?.fromLandmark && !measurement?.toLandmark) return measurement;
+    const names = measurementLandmarkNames(measurement);
+    const landmarks = names.map(findLandmarkForMeasurement);
+    const missing = names.filter((name, index) => !usableLandmark(landmarks[index]));
+    const warnings = landmarks
+      .filter(Boolean)
+      .filter(item => item.status === "proposed" || (item.detectionMode === "ai_assisted" && !item.approvedByUser))
+      .map(item => `${item.name || item.landmarkId} is proposed/not approved`);
+    if (missing.length) {
+      return {
+        ...measurement,
+        value: null,
+        status: "missing_landmarks",
+        missingLandmarks: missing,
+        warnings,
+        calculatedAt: new Date().toISOString()
+      };
+    }
+    let value = null;
+    if (measurement.type === "angle") value = calculateAngleBetweenLandmarks(landmarks[0], landmarks[1], landmarks[2]);
+    else if (measurement.type === "vector") value = calculateVectorBetweenLandmarks(landmarks[0], landmarks[1]).magnitude;
+    else if (measurement.type === "ratio") {
+      const [top, bottom] = String(measurement.formula || "").split("/");
+      const pairDistance = part => {
+        const [aName, bName] = String(part || "").split("-").map(value => value.trim());
+        const a = findLandmarkForMeasurement(aName);
+        const b = findLandmarkForMeasurement(bName);
+        return a && b ? calculateDistanceBetweenLandmarks(a, b) : null;
+      };
+      value = calculateRatio(pairDistance(top), pairDistance(bottom));
+    } else {
+      value = calculateDistanceBetweenLandmarks(landmarks[0], landmarks[1]);
+    }
+    return {
+      ...measurement,
+      value,
+      points: landmarks.filter(Boolean).map(item => item.position3D),
+      landmarksUsed: landmarks.filter(Boolean).map(item => item.landmarkId),
+      status: warnings.length ? "needs_review" : "calculated",
+      missingLandmarks: [],
+      warnings,
+      calculatedAt: new Date().toISOString()
+    };
+  }
+
+  async function recalculateMeasurement(measurementId) {
+    const measurement = state.caseMeasurements.find(item => item.measurementId === measurementId);
+    if (!measurement) return null;
+    const next = recalculateMeasurementObject(measurement);
+    if (isDemoMode()) {
+      state.caseMeasurements = state.caseMeasurements.map(item => item.measurementId === measurementId ? next : item);
+      renderCaseMeasurements();
+      return next;
+    }
+    await api().saveCaseMeasurement(next);
+    return next;
+  }
+
+  async function recalculateAllMeasurementsForModel(modelId = state.activeMeasurementContext?.modelId) {
+    const recalculable = state.caseMeasurements.filter(item => (
+      (!modelId || item.modelId === modelId)
+      && (item.landmarksUsed?.length || item.fromLandmark || item.toLandmark)
+    ));
+    if (!recalculable.length) return [];
+    const updated = recalculable.map(recalculateMeasurementObject);
+    if (isDemoMode()) {
+      const byId = new Map(updated.map(item => [item.measurementId, item]));
+      state.caseMeasurements = state.caseMeasurements.map(item => byId.get(item.measurementId) || item);
+      renderCaseMeasurements();
+      return updated;
+    }
+    for (const item of updated) await api().saveCaseMeasurement(item);
+    await loadCaseMeasurements(state.activeMeasurementContext, true);
+    return updated;
+  }
+
+  window.PMASAutoMeasurements = {
+    calculateDistanceBetweenLandmarks,
+    calculateAngleBetweenLandmarks,
+    calculateVectorBetweenLandmarks,
+    calculateRatio,
+    recalculateMeasurement,
+    recalculateAllMeasurementsForModel
+  };
+
+  function measurementTemplateMissing(template) {
+    return (template.requiredLandmarks || []).filter(name => !findLandmarkByName(name));
+  }
+
+  function measurementTemplateWarnings(template) {
+    return (template.requiredLandmarks || []).filter(name => {
+      const landmark = findLandmarkByName(name);
+      return landmark?.status === "proposed";
+    });
+  }
+
+  function renderMeasurementTemplates() {
+    const summary = byId("measurementTemplatesSummary");
+    const list = byId("measurementTemplatesList");
+    const context = state.activeMeasurementContext;
+    const templates = state.measurementTemplates.length ? state.measurementTemplates : DEFAULT_MEASUREMENT_TEMPLATES;
+    if (summary) {
+      summary.textContent = context?.caseId
+        ? `${templates.length} measurement template(s) · ${state.caseLandmarks.length} landmark(s) available`
+        : "Open a case model with landmarks to generate measurements.";
+    }
+    if (!list) return;
+    list.innerHTML = templates.map(template => {
+      const missing = measurementTemplateMissing(template);
+      const warnings = measurementTemplateWarnings(template);
+      return `
+        <div class="reconstruction-history-row" data-measurement-template-id="${escapeHtml(template.templateId)}">
+          <div class="reconstruction-history-main">
+            <strong>${escapeHtml(template.name)}</strong>
+            <div class="reconstruction-history-id">${escapeHtml(template.description || "")}</div>
+            <div class="reconstruction-history-id">required: ${escapeHtml((template.requiredLandmarks || []).join(", ") || "none")}</div>
+          </div>
+          <div class="reconstruction-history-cell">${escapeHtml(template.category || "custom")}</div>
+          <div class="reconstruction-history-cell">${Number(template.measurements?.length || 0)} measurements</div>
+          <div class="reconstruction-history-cell">${missing.length ? `missing: ${escapeHtml(missing.join(", "))}` : "ready"}${warnings.length ? ` · proposed: ${escapeHtml(warnings.join(", "))}` : ""}</div>
+          <div class="reconstruction-history-actions">
+            <button class="btn btn-sm" data-measurement-template-action="apply" ${missing.length ? "disabled" : ""}>apply</button>
+          </div>
+        </div>
+      `;
+    }).join("");
+  }
+
+  async function applyMeasurementTemplate(template) {
+    const context = state.activeMeasurementContext || {};
+    if (!context.caseId || !context.jobId || !context.modelId) {
+      setError("Open a case model before applying measurement templates.");
+      return;
+    }
+    const missing = measurementTemplateMissing(template);
+    if (missing.length) {
+      setError(`Missing landmarks: ${missing.join(", ")}`);
+      renderMeasurementTemplates();
+      return;
+    }
+    const warnings = measurementTemplateWarnings(template);
+    const generated = [];
+    try {
+      for (const item of template.measurements || []) {
+        const from = findLandmarkByName(item.fromLandmark);
+        const to = findLandmarkByName(item.toLandmark);
+        const third = item.optionalThirdLandmark ? findLandmarkByName(item.optionalThirdLandmark) : null;
+        const landmarksUsed = [from, to, third].filter(Boolean).map(landmark => landmark.landmarkId);
+        const points = [from, to, third].filter(Boolean).map(landmark => landmark.position3D);
+        const value = calculateMeasurementTemplateValue(item);
+        const measurement = recalculateMeasurementObject({
+          caseId: context.caseId,
+          jobId: context.jobId,
+          modelId: context.modelId,
+          type: item.type || "custom",
+          label: item.measurementName || item.type || "Template measurement",
+          points,
+          landmarksUsed,
+          value,
+          unit: item.unit || "",
+          source: "template",
+          templateId: template.templateId,
+          templateName: template.name,
+          missingLandmarks: [],
+          formula: item.formula || "",
+          description: item.description || "",
+          fromLandmark: item.fromLandmark || "",
+          toLandmark: item.toLandmark || "",
+          optionalThirdLandmark: item.optionalThirdLandmark || "",
+          analysisPresetId: state.currentAnalysisPreset?.presetId || "",
+          analysisPresetName: state.currentAnalysisPreset?.name || "",
+          status: warnings.length ? "needs_review" : "calculated",
+          warnings: warnings.map(name => `${name} is proposed/not approved`),
+          calculatedAt: new Date().toISOString()
+        });
+        if (isDemoMode()) {
+          generated.push({
+            ...measurement,
+            measurementId: `demo-template-measurement-${Date.now().toString(36)}-${generated.length}`,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString()
+          });
+        } else {
+          generated.push(await api().saveCaseMeasurement(measurement));
+        }
+      }
+      if (isDemoMode()) {
+        state.caseMeasurements = [...generated, ...state.caseMeasurements];
+        renderCaseMeasurements();
+      } else {
+        await loadCaseMeasurements(state.activeMeasurementContext, true);
+        await loadCases();
+      }
+      renderMeasurementTemplates();
+      const warningText = warnings.length ? ` Proposed landmarks used: ${warnings.join(", ")}.` : "";
+      setStatusText(`Measurement template applied: ${generated.length} measurement(s).${warningText}`);
+    } catch (err) {
+      setError(apiErrorMessage(err, "Measurement template apply failed."));
+    }
+  }
+
+  async function handleMeasurementTemplateAction(event) {
+    const button = event.target.closest("[data-measurement-template-action]");
+    if (!button) return;
+    const row = button.closest("[data-measurement-template-id]");
+    const templateId = row?.dataset?.measurementTemplateId || "";
+    const template = (state.measurementTemplates.length ? state.measurementTemplates : DEFAULT_MEASUREMENT_TEMPLATES)
+      .find(item => item.templateId === templateId);
+    if (!template) return;
+    if (button.dataset.measurementTemplateAction === "apply") await applyMeasurementTemplate(template);
+  }
+
+  function renderLandmarkTemplates() {
+    const summary = byId("landmarkTemplatesSummary");
+    const list = byId("landmarkTemplatesList");
+    const context = state.activeMeasurementContext;
+    if (summary) {
+      summary.textContent = context?.caseId
+        ? `${state.landmarkTemplates.length} template(s) available · current model ${context.jobId || "—"}`
+        : `${state.landmarkTemplates.length} template(s) available · open a case model to apply`;
+    }
+    if (!list) return;
+    if (!state.landmarkTemplates.length) {
+      list.innerHTML = '<div class="hint">No landmark templates loaded.</div>';
+      return;
+    }
+    list.innerHTML = state.landmarkTemplates.map(template => `
+      <div class="reconstruction-history-row" data-landmark-template-id="${escapeHtml(template.templateId)}">
+        <div class="reconstruction-history-main">
+          <strong>${escapeHtml(template.name || "Landmark Template")}</strong>
+          <div class="reconstruction-history-id">${escapeHtml(template.templateId || "")}</div>
+          <div class="reconstruction-history-id">${escapeHtml(template.description || "")}</div>
+        </div>
+        <div class="reconstruction-history-cell">${escapeHtml(template.category || "custom")}</div>
+        <div class="reconstruction-history-cell">${Number(template.landmarks?.length || 0)} landmarks</div>
+        <div class="reconstruction-history-cell">${template.builtIn ? "built-in" : "custom"}</div>
+        <div class="reconstruction-history-actions">
+          <button class="btn btn-sm" data-landmark-template-action="apply">Apply Template</button>
+          <button class="btn btn-sm" data-landmark-template-action="duplicate">Duplicate</button>
+          <button class="btn btn-sm" data-landmark-template-action="edit">Edit</button>
+          <button class="btn btn-sm btn-danger" data-landmark-template-action="delete" ${template.builtIn ? "disabled" : ""}>Delete Custom</button>
+        </div>
+      </div>
+    `).join("");
+    renderAiTemplateOptions();
+  }
+
+  function renderAiTemplateOptions() {
+    const select = byId("aiLandmarkTemplateSelect");
+    if (!select) return;
+    const current = select.value || state.currentLandmarkTemplateId || "";
+    select.innerHTML = ['<option value="">No template selected</option>']
+      .concat(state.landmarkTemplates.map(template => `<option value="${escapeHtml(template.templateId)}">${escapeHtml(template.name || template.templateId)}</option>`))
+      .join("");
+    select.value = state.landmarkTemplates.some(item => item.templateId === current) ? current : "";
+  }
+
+  function aiLandmarkItems() {
+    return state.caseLandmarks.filter(item => (
+      item.detectionMode === "ai_assisted"
+      || item.source === "ai_generated"
+      || ["proposed", "approved", "corrected", "rejected"].includes(item.status)
+    ));
+  }
+
+  function confidenceText(value) {
+    return Number.isFinite(Number(value)) ? `${Math.round(Number(value))}%` : "—";
+  }
+
+  function renderAiLandmarkDetection() {
+    const summary = byId("aiLandmarkDetectionSummary");
+    const list = byId("aiLandmarkDetectionList");
+    const modeSelect = byId("landmarkDetectionMode");
+    if (modeSelect) modeSelect.value = state.landmarkDetectionMode || "ai_assisted";
+    renderAiTemplateOptions();
+    const items = aiLandmarkItems();
+    const average = items.length
+      ? Math.round(items.reduce((sum, item) => sum + (Number(item.confidence) || 0), 0) / items.length)
+      : 0;
+    if (summary) {
+      summary.textContent = `${items.length} AI proposal(s) · approved ${items.filter(item => item.status === "approved").length} · corrected ${items.filter(item => item.status === "corrected").length} · rejected ${items.filter(item => item.status === "rejected").length} · avg confidence ${average || 0}%`;
+    }
+    if (!list) return;
+    if (!items.length) {
+      list.innerHTML = '<div class="hint">No AI landmark proposals yet.</div>';
+      return;
+    }
+    list.innerHTML = items.map(item => `
+      <div class="reconstruction-history-row" data-ai-landmark-id="${escapeHtml(item.landmarkId)}">
+        <div class="reconstruction-history-main">
+          <strong><span style="color:${escapeHtml(aiLandmarkColor(item))}">●</span> ${escapeHtml(item.name || "Landmark")}</strong>
+          <div class="reconstruction-history-id">${escapeHtml(item.templateName || item.templateId || "no template")}</div>
+          <div class="reconstruction-history-id">${escapeHtml(item.detectionSource || "PMAS AI Landmark Detection")}</div>
+        </div>
+        <div class="reconstruction-history-cell">${confidenceText(item.confidence)}</div>
+        <div class="reconstruction-history-cell">${escapeHtml(item.status || "proposed")}</div>
+        <div class="reconstruction-history-cell">${escapeHtml(landmarkCoordsText(item))}</div>
+        <div class="reconstruction-history-actions">
+          <button class="btn btn-sm" data-ai-landmark-action="approve" ${item.status === "approved" ? "disabled" : ""}>approve</button>
+          <button class="btn btn-sm" data-ai-landmark-action="correct">edit position</button>
+          <button class="btn btn-sm btn-danger" data-ai-landmark-action="reject" ${item.status === "rejected" ? "disabled" : ""}>reject</button>
+        </div>
+      </div>
+    `).join("");
+  }
+
+  function aiLandmarkColor(landmark) {
+    if (landmark?.status === "approved") return "#16a34a";
+    if (landmark?.status === "corrected") return "#0ea5e9";
+    if (landmark?.status === "rejected") return "#94a3b8";
+    if (landmark?.status === "proposed") return "#f59e0b";
+    return landmark?.color || "#2563eb";
+  }
+
+  async function loadLandmarkTemplates() {
+    if (!api()?.listLandmarkTemplates) {
+      state.landmarkTemplates = [];
+      renderLandmarkTemplates();
+      return;
+    }
+    try {
+      state.landmarkTemplates = await api().listLandmarkTemplates();
+      renderLandmarkTemplates();
+      renderClinicalAnalysisPresets();
+    } catch (err) {
+      setError(apiErrorMessage(err, "Landmark templates unavailable."));
+    }
+  }
+
+  function templateEditorPayload(template = {}) {
+    return {
+      templateId: template.templateId || "",
+      name: template.name || "Custom Template",
+      category: template.category || "custom",
+      description: template.description || "",
+      landmarks: Array.isArray(template.landmarks) ? template.landmarks : [{
+        landmarkName: "Custom Point",
+        landmarkCategory: "custom",
+        description: "",
+        required: false,
+        color: "#64748b"
+      }]
+    };
+  }
+
+  function readTemplateFromPrompt(title, template) {
+    const raw = window.prompt(title, JSON.stringify(templateEditorPayload(template), null, 2));
+    if (raw === null) return null;
+    try {
+      const parsed = JSON.parse(raw);
+      return { ...parsed, landmarks: Array.isArray(parsed.landmarks) ? parsed.landmarks : [] };
+    } catch (err) {
+      setError("Template JSON is invalid.");
+      return null;
+    }
+  }
+
+  async function saveLandmarkTemplateRecord(template) {
+    if (isDemoMode()) {
+      const timestamp = new Date().toISOString();
+      const next = {
+        ...template,
+        templateId: template.templateId || `demo-template-${Date.now().toString(36)}`,
+        builtIn: false,
+        createdAt: template.createdAt || timestamp,
+        updatedAt: timestamp
+      };
+      state.landmarkTemplates = [next, ...state.landmarkTemplates.filter(item => item.templateId !== next.templateId)];
+      renderLandmarkTemplates();
+      setStatusText("Demo mode: template changed for this session only.");
+      return next;
+    }
+    const saved = await api().saveLandmarkTemplate(template);
+    await loadLandmarkTemplates();
+    setStatusText("Landmark template saved.");
+    return saved;
+  }
+
+  async function createLandmarkTemplate() {
+    const template = readTemplateFromPrompt("New landmark template JSON", {
+      name: "Custom Template",
+      category: "custom",
+      description: "Custom landmark set.",
+      landmarks: [{ landmarkName: "Custom Point", landmarkCategory: "custom", description: "", required: false, color: "#64748b" }]
+    });
+    if (!template) return;
+    delete template.templateId;
+    delete template.builtIn;
+    try {
+      await saveLandmarkTemplateRecord(template);
+    } catch (err) {
+      setError(apiErrorMessage(err, "Landmark template save failed."));
+    }
+  }
+
+  async function applyLandmarkTemplate(template) {
+    const context = state.activeMeasurementContext || {};
+    if (!context.caseId || !context.jobId || !context.modelId) {
+      setError("Open a case model before applying landmark templates.");
+      return;
+    }
+    const items = Array.isArray(template.landmarks) ? template.landmarks : [];
+    if (!items.length) {
+      setError("Template has no landmarks.");
+      return;
+    }
+    const timestamp = new Date().toISOString();
+    const records = items.map(item => ({
+      caseId: context.caseId,
+      jobId: context.jobId,
+      modelId: context.modelId,
+      name: item.landmarkName || "Landmark",
+      category: item.landmarkCategory || "custom",
+      position3D: { x: 0, y: 0, z: 0 },
+      color: item.color || "#2563eb",
+      description: item.description || "",
+      source: "imported",
+      visible: true,
+      status: "unplaced",
+      detectionMode: "template_only",
+      detectionSource: "landmark_template",
+      confidence: null,
+      approvedByUser: false,
+      correctedByUser: false,
+      analysisPresetId: state.currentAnalysisPreset?.presetId || "",
+      analysisPresetName: state.currentAnalysisPreset?.name || "",
+      templateId: template.templateId,
+      templateName: template.name || template.templateId,
+      required: Boolean(item.required),
+      createdAt: timestamp,
+      updatedAt: timestamp
+    }));
+    try {
+      state.currentLandmarkTemplateId = template.templateId;
+      setInputValue("aiLandmarkTemplateSelect", template.templateId);
+      if (isDemoMode()) {
+        const demoRecords = records.map((item, index) => ({
+          ...item,
+          landmarkId: `demo-landmark-${Date.now().toString(36)}-${index}`
+        }));
+        state.caseLandmarks = [...demoRecords, ...state.caseLandmarks];
+        renderLandmarks();
+        if (window._3d?.loadLandmarks) window._3d.loadLandmarks(state.caseLandmarks);
+        if (window._3d?.setPendingLandmark) window._3d.setPendingLandmark(demoRecords[0]);
+        setStatusText("Demo mode: template applied for this session only.");
+        return;
+      }
+      for (const record of records) await api().saveCaseLandmark(record);
+      await loadCaseLandmarks(state.activeMeasurementContext, true);
+      await loadCases();
+      const firstPending = state.caseLandmarks.find(item => item.templateId === template.templateId && item.status === "unplaced");
+      if (window._3d?.setPendingLandmark) window._3d.setPendingLandmark(firstPending || null);
+      setStatusText(`Landmark template applied: ${template.name || template.templateId}.`);
+    } catch (err) {
+      setError(apiErrorMessage(err, "Landmark template apply failed."));
+    }
+  }
+
+  async function handleLandmarkTemplateAction(event) {
+    const button = event.target.closest("[data-landmark-template-action]");
+    if (!button) return;
+    const row = button.closest("[data-landmark-template-id]");
+    const templateId = row?.dataset?.landmarkTemplateId || "";
+    const template = state.landmarkTemplates.find(item => item.templateId === templateId);
+    if (!template) return;
+    const action = button.dataset.landmarkTemplateAction;
+    if (action === "apply") await applyLandmarkTemplate(template);
+    if (action === "duplicate") {
+      const copy = { ...templateEditorPayload(template), templateId: "", name: `${template.name || "Template"} Copy`, builtIn: false };
+      await saveLandmarkTemplateRecord(copy);
+    }
+    if (action === "edit") {
+      const edited = readTemplateFromPrompt("Edit landmark template JSON", template);
+      if (edited) await saveLandmarkTemplateRecord({ ...edited, templateId: template.templateId, builtIn: false });
+    }
+    if (action === "delete" && !template.builtIn) {
+      if (isDemoMode()) {
+        state.landmarkTemplates = state.landmarkTemplates.filter(item => item.templateId !== templateId);
+        renderLandmarkTemplates();
+        return;
+      }
+      await api().deleteLandmarkTemplate(templateId);
+      await loadLandmarkTemplates();
+    }
+  }
+
+  function proposedLandmarkPosition(index, total) {
+    const spread = Math.max(1, total - 1);
+    return {
+      x: Number((((index / spread) - 0.5) * 0.18).toFixed(3)),
+      y: Number((0.12 - (index % 4) * 0.035).toFixed(3)),
+      z: Number((0.08 + (index % 3) * 0.025).toFixed(3))
+    };
+  }
+
+  function aiConfidenceFor(index, total) {
+    const base = 92 - index * 4 + Math.min(6, total);
+    return Math.max(58, Math.min(96, base));
+  }
+
+  async function runAiLandmarkDetection() {
+    // TODO: replace mock proposals with facial, craniofacial, maxillofacial, and custom landmark models.
+    const context = state.activeMeasurementContext || {};
+    const mode = byId("landmarkDetectionMode")?.value || state.landmarkDetectionMode || "ai_assisted";
+    const templateId = byId("aiLandmarkTemplateSelect")?.value || state.currentLandmarkTemplateId || "";
+    const template = state.landmarkTemplates.find(item => item.templateId === templateId);
+    state.landmarkDetectionMode = mode;
+    if (!context.caseId || !context.jobId || !context.modelId) {
+      setError("Open a case model before running AI landmark detection.");
+      return;
+    }
+    if (!template) {
+      setError("Select a landmark template before running AI landmark detection.");
+      return;
+    }
+    if (mode === "manual") {
+      setStatusText("Manual mode: use the Landmarks panel to place points.");
+      return;
+    }
+    if (mode === "template_only") {
+      await applyLandmarkTemplate(template);
+      setStatusText("Template-only mode: expected landmarks created without AI positions.");
+      return;
+    }
+    const items = Array.isArray(template.landmarks) ? template.landmarks : [];
+    if (!items.length) {
+      setError("Selected template has no landmarks.");
+      return;
+    }
+    const timestamp = new Date().toISOString();
+    const proposals = items.map((item, index) => {
+      const existing = state.caseLandmarks.find(landmark => (
+        landmark.templateId === template.templateId
+        && (landmark.name || "").toLowerCase() === String(item.landmarkName || "").toLowerCase()
+        && landmark.jobId === context.jobId
+        && landmark.modelId === context.modelId
+      ));
+      return {
+        landmarkId: existing?.landmarkId || "",
+        caseId: context.caseId,
+        jobId: context.jobId,
+        modelId: context.modelId,
+        name: item.landmarkName || "Landmark",
+        category: item.landmarkCategory || "custom",
+        position3D: existing?.correctedByUser ? existing.position3D : proposedLandmarkPosition(index, items.length),
+        color: item.color || "#f59e0b",
+        description: item.description || "",
+        source: "ai_generated",
+        detectionSource: "PMAS AI Landmark Detection Mock",
+        detectionMode: "ai_assisted",
+        visible: true,
+        status: existing?.correctedByUser ? "corrected" : "proposed",
+        confidence: aiConfidenceFor(index, items.length),
+        approvedByUser: Boolean(existing?.approvedByUser),
+        correctedByUser: Boolean(existing?.correctedByUser),
+        analysisPresetId: state.currentAnalysisPreset?.presetId || existing?.analysisPresetId || "",
+        analysisPresetName: state.currentAnalysisPreset?.name || existing?.analysisPresetName || "",
+        templateId: template.templateId,
+        templateName: template.name || template.templateId,
+        required: Boolean(item.required),
+        createdAt: existing?.createdAt || timestamp,
+        updatedAt: timestamp
+      };
+    });
+    try {
+      state.currentLandmarkTemplateId = template.templateId;
+      if (isDemoMode()) {
+        const demoProposals = proposals.map((item, index) => ({
+          ...item,
+          landmarkId: item.landmarkId || `demo-ai-landmark-${Date.now().toString(36)}-${index}`
+        }));
+        const proposalIds = new Set(demoProposals.map(item => item.landmarkId));
+        state.caseLandmarks = [
+          ...demoProposals,
+          ...state.caseLandmarks.filter(item => !proposalIds.has(item.landmarkId) && item.templateId !== template.templateId)
+        ];
+        renderLandmarks();
+        renderAiLandmarkDetection();
+        if (window._3d?.loadLandmarks) window._3d.loadLandmarks(state.caseLandmarks);
+        setStatusText("Demo mode: AI landmark proposals generated for this session.");
+        return;
+      }
+      for (const proposal of proposals) await api().saveCaseLandmark(proposal);
+      await loadCaseLandmarks(state.activeMeasurementContext, true);
+      await loadCases();
+      setStatusText(`AI landmark proposals generated: ${proposals.length}.`);
+    } catch (err) {
+      setError(apiErrorMessage(err, "AI landmark detection failed."));
+    }
+  }
+
+  async function handleAiLandmarkAction(event) {
+    const button = event.target.closest("[data-ai-landmark-action]");
+    if (!button) return;
+    const row = button.closest("[data-ai-landmark-id]");
+    const landmarkId = row?.dataset?.aiLandmarkId || "";
+    const landmark = state.caseLandmarks.find(item => item.landmarkId === landmarkId);
+    if (!landmark) return;
+    const action = button.dataset.aiLandmarkAction;
+    if (action === "approve") {
+      await updateLandmark(landmark, {
+        status: "approved",
+        approvedByUser: true,
+        correctedByUser: false,
+        visible: true
+      });
+    }
+    if (action === "reject") {
+      await updateLandmark(landmark, {
+        status: "rejected",
+        approvedByUser: false,
+        visible: false
+      });
+    }
+    if (action === "correct") {
+      const raw = window.prompt("Correct landmark position x,y,z", landmarkCoordsText({ ...landmark, status: "placed" }));
+      if (raw === null) return;
+      const parts = raw.split(",").map(value => Number(value.trim()));
+      if (parts.length < 3 || parts.some(value => Number.isNaN(value))) {
+        setError("Use coordinates in x,y,z format.");
+        return;
+      }
+      await updateLandmark(landmark, {
+        position3D: { x: parts[0], y: parts[1], z: parts[2] },
+        status: "corrected",
+        approvedByUser: true,
+        correctedByUser: true,
+        visible: true
+      });
+    }
+  }
+
   function landmarkCoordsText(landmark) {
+    if (landmark?.status === "unplaced") return "unplaced";
+    if (landmark?.status === "rejected") return "rejected";
     const p = landmark?.position3D || {};
     return [p.x, p.y, p.z].map(value => Number(value || 0).toFixed(3)).join(", ");
   }
@@ -1020,21 +2405,27 @@
     if (!list) return;
     if (!state.caseLandmarks.length) {
       list.innerHTML = '<div class="hint">No landmarks yet.</div>';
+      renderAiLandmarkDetection();
+      renderMeasurementTemplates();
+      renderClinicalAnalysisPresets();
       return;
     }
     list.innerHTML = state.caseLandmarks.map(item => `
       <div class="reconstruction-history-row" data-landmark-id="${escapeHtml(item.landmarkId)}">
         <div class="reconstruction-history-main">
-          <strong><span style="color:${escapeHtml(item.color || "#2563eb")}">●</span> ${escapeHtml(item.name || "Landmark")}</strong>
+          <strong><span style="color:${escapeHtml(aiLandmarkColor(item))}">●</span> ${escapeHtml(item.name || "Landmark")}</strong>
           <div class="reconstruction-history-id">${escapeHtml(item.landmarkId)}</div>
           <div class="reconstruction-history-id">${escapeHtml(item.description || "")}</div>
+          ${item.templateName ? `<div class="reconstruction-history-id">template: ${escapeHtml(item.templateName)}${item.required ? " · required" : ""}</div>` : ""}
+          ${item.detectionMode === "ai_assisted" ? `<div class="reconstruction-history-id">AI confidence: ${confidenceText(item.confidence)} · ${escapeHtml(item.detectionSource || "AI")}</div>` : ""}
         </div>
         <div class="reconstruction-history-cell">${escapeHtml(item.category || "custom")}</div>
         <div class="reconstruction-history-cell">${escapeHtml(landmarkCoordsText(item))}</div>
-        <div class="reconstruction-history-cell">${escapeHtml(item.source || "manual")}</div>
-        <div class="reconstruction-history-cell">${item.visible === false ? "hidden" : "visible"}</div>
+        <div class="reconstruction-history-cell">${escapeHtml(item.status || "placed")}</div>
+        <div class="reconstruction-history-cell">${escapeHtml(item.source || "manual")} · ${item.visible === false ? "hidden" : "visible"}</div>
         <div class="reconstruction-history-actions">
           <button class="btn btn-sm" data-landmark-action="select">select</button>
+          <button class="btn btn-sm" data-landmark-action="place">${item.status === "placed" ? "move" : "place"}</button>
           <button class="btn btn-sm" data-landmark-action="rename">rename</button>
           <button class="btn btn-sm" data-landmark-action="description">description</button>
           <button class="btn btn-sm" data-landmark-action="toggle">${item.visible === false ? "show" : "hide"}</button>
@@ -1042,18 +2433,27 @@
         </div>
       </div>
     `).join("");
+    renderAiLandmarkDetection();
+    renderMeasurementTemplates();
+    renderClinicalAnalysisPresets();
   }
 
   async function loadCaseLandmarks(context = state.activeMeasurementContext, syncViewer = true) {
     if (!api()?.listCaseLandmarks || !context?.caseId || !context?.jobId || !context?.modelId) {
       state.caseLandmarks = [];
       renderLandmarks();
+      renderAiLandmarkDetection();
+      renderMeasurementTemplates();
+      renderClinicalAnalysisPresets();
       if (syncViewer && window._3d?.loadLandmarks) window._3d.loadLandmarks([]);
       return;
     }
     try {
       state.caseLandmarks = isDemoMode() ? [] : await api().listCaseLandmarks(context);
       renderLandmarks();
+      renderAiLandmarkDetection();
+      renderMeasurementTemplates();
+      renderClinicalAnalysisPresets();
       if (syncViewer && window._3d?.loadLandmarks) window._3d.loadLandmarks(state.caseLandmarks);
     } catch (err) {
       setError(apiErrorMessage(err, "Landmarks unavailable."));
@@ -1076,7 +2476,8 @@
       color: byId("landmarkColor")?.value || "#2563eb",
       description: byId("landmarkDescription")?.value || "",
       source: byId("landmarkSource")?.value || "manual",
-      visible: true
+      visible: true,
+      status: "placed"
     };
   }
 
@@ -1102,6 +2503,7 @@
       };
       state.caseLandmarks = [demoLandmark, ...state.caseLandmarks];
       renderLandmarks();
+      renderAiLandmarkDetection();
       if (window._3d?.loadLandmarks) window._3d.loadLandmarks(state.caseLandmarks);
       setStatusText("Demo mode: landmark displayed for this session only.");
       return demoLandmark;
@@ -1136,11 +2538,14 @@
       if (isDemoMode()) {
         state.caseLandmarks = state.caseLandmarks.map(item => item.landmarkId === next.landmarkId ? next : item);
         renderLandmarks();
+        renderAiLandmarkDetection();
         if (window._3d?.loadLandmarks) window._3d.loadLandmarks(state.caseLandmarks);
+        await recalculateAllMeasurementsForModel(state.activeMeasurementContext?.modelId);
         return;
       }
       await api().saveCaseLandmark(next);
       await loadCaseLandmarks(state.activeMeasurementContext, true);
+      await recalculateAllMeasurementsForModel(state.activeMeasurementContext?.modelId);
     } catch (err) {
       setError(apiErrorMessage(err, "Landmark update failed."));
     }
@@ -1157,6 +2562,25 @@
     if (action === "select") {
       applyLandmarkForm(landmark);
       if (window._3d?.selectLandmark) window._3d.selectLandmark(landmarkId);
+      if (landmark.status === "unplaced" && window._3d?.setPendingLandmark) window._3d.setPendingLandmark(landmark);
+    }
+    if (action === "place") {
+      const current = landmarkCoordsText({ ...landmark, status: "placed" });
+      const raw = window.prompt("Landmark position x,y,z", current);
+      if (raw !== null) {
+        const parts = raw.split(",").map(value => Number(value.trim()));
+        if (parts.length < 3 || parts.some(value => Number.isNaN(value))) {
+          setError("Use coordinates in x,y,z format.");
+        } else {
+          await updateLandmark(landmark, {
+            position3D: { x: parts[0], y: parts[1], z: parts[2] },
+            status: landmark.detectionMode === "ai_assisted" ? "corrected" : "placed",
+            visible: true,
+            approvedByUser: landmark.detectionMode === "ai_assisted" ? true : landmark.approvedByUser,
+            correctedByUser: landmark.detectionMode === "ai_assisted" ? true : landmark.correctedByUser
+          });
+        }
+      }
     }
     if (action === "rename") {
       const name = window.prompt("Landmark name", landmark.name || "");
@@ -2366,6 +3790,8 @@
     if (viewer.setCaseMeasurementContext) viewer.setCaseMeasurementContext(state.activeMeasurementContext);
     await loadCaseMeasurements(state.activeMeasurementContext, true);
     await loadCaseLandmarks(state.activeMeasurementContext, true);
+    renderClinicalAnalysisPresets();
+    renderLandmarkTemplates();
     renderSurgicalPlanningModelOptions();
     const surgicalModelSelect = byId("surgicalPlanModel");
     if (surgicalModelSelect && readyCaseModels().some(item => item.jobId === jobId)) {
@@ -2589,7 +4015,12 @@
     const jobs = report?.reconstructionJobs || report?.jobs || [];
     const models = report?.resultModels || report?.models || [];
     const measurements = report?.measurements || [];
+    const measurementTemplateReport = report?.measurementTemplateReport || {};
+    const autoMeasurementReport = report?.autoMeasurementReport || {};
+    const clinicalAnalysisPresetReport = report?.clinicalAnalysisPresetReport || {};
     const landmarks = report?.landmarks || [];
+    const landmarkTemplateReport = report?.landmarkTemplateReport || {};
+    const aiLandmarkReport = report?.aiLandmarkReport || {};
     const comparisons = report?.comparisons || [];
     const plans = report?.surgicalPlanningNotes || [];
     const warnings = report?.warnings || [];
@@ -2602,6 +4033,9 @@
       `Created: ${formatDateTime(report?.createdAt)}`,
       `Updated: ${formatDateTime(report?.updatedAt)}`,
       `Generated: ${formatDateTime(report?.generatedAt)}`,
+      `Selected analysis presets: ${Number(clinicalAnalysisPresetReport.selectedAnalysisPresets?.length || report?.selectedAnalysisPresets?.length || 0)}`,
+      ...(clinicalAnalysisPresetReport.selectedAnalysisPresets || report?.selectedAnalysisPresets || []).map(item => `- ${item.name || item.presetId}: landmarks ${item.generatedLandmarksCount || 0}, measurements ${item.generatedMeasurementsCount || 0}`),
+      `Analysis preset warnings: ${(clinicalAnalysisPresetReport.warnings || []).join("; ") || "none"}`,
       "",
       `Reconstruction jobs: ${jobs.length}`,
       ...jobs.map(job => `- ${job.jobId}: ${job.status || "—"}, readiness ${job.readinessLevel || "—"} ${Number.isFinite(Number(job.readinessScore)) ? Math.round(Number(job.readinessScore)) + "/100" : "—"}, warnings ${job.warningsCount || 0}`),
@@ -2610,10 +4044,24 @@
       ...models.map(model => `- ${model.jobId || model}: ${model.resultGlbUrl || model.modelId || model}`),
       "",
       `Measurements: ${measurements.length}`,
-      ...measurements.map(item => `- ${item.label || item.type || item.measurementId}: ${item.type || "—"} ${measurementValueText(item)}`),
+      `Measurement templates used: ${Number(measurementTemplateReport.templatesUsed?.length || 0)}`,
+      `Generated measurements: ${Number(measurementTemplateReport.generatedMeasurementsCount || report?.generatedMeasurementsCount || 0)}`,
+      `Measurement template missing landmarks: ${(measurementTemplateReport.missingLandmarks || []).join(", ") || "none"}`,
+      `Calculated measurements: ${Number(autoMeasurementReport.calculatedMeasurementsCount || 0)}`,
+      `Formulas used: ${(autoMeasurementReport.formulasUsed || []).join(", ") || "none"}`,
+      `Auto measurement warnings: ${(autoMeasurementReport.warnings || []).join("; ") || "none"}`,
+      ...measurements.map(item => `- ${item.label || item.type || item.measurementId}: ${item.type || "—"} ${measurementValueText(item)} [${item.status || "ready"}]${item.formula ? ` formula=${item.formula}` : ""}`),
       "",
       `Landmarks: ${landmarks.length}`,
-      ...landmarks.map(item => `- ${item.name || item.landmarkId}: ${item.category || "custom"} @ ${landmarkCoordsText(item)} (${item.source || "manual"})`),
+      `Landmark templates used: ${Number(landmarkTemplateReport.templatesUsed?.length || 0)}`,
+      `Placed landmarks: ${Number(landmarkTemplateReport.placedLandmarksCount || report?.placedLandmarksCount || 0)}`,
+      `Missing landmarks: ${Number(landmarkTemplateReport.missingLandmarksCount || report?.missingLandmarksCount || 0)}`,
+      `AI proposed landmarks: ${Number(aiLandmarkReport.proposedCount || 0)}`,
+      `AI approved landmarks: ${Number(aiLandmarkReport.approvedCount || report?.aiApprovedLandmarksCount || 0)}`,
+      `AI corrected landmarks: ${Number(aiLandmarkReport.correctedCount || report?.aiCorrectedLandmarksCount || 0)}`,
+      `AI rejected landmarks: ${Number(aiLandmarkReport.rejectedCount || report?.aiRejectedLandmarksCount || 0)}`,
+      `AI average confidence: ${Number(aiLandmarkReport.averageConfidence || report?.aiAverageConfidence || 0)}%`,
+      ...landmarks.map(item => `- ${item.name || item.landmarkId}: ${item.category || "custom"} @ ${landmarkCoordsText(item)} (${item.status || "placed"}, ${item.source || "manual"})`),
       "",
       `Before/After comparisons: ${comparisons.length}`,
       ...comparisons.map(item => `- ${item.comparisonId}: before ${item.beforeJobId}, after ${item.afterJobId}, mode ${item.comparisonMode || "—"}`),
@@ -2640,6 +4088,66 @@
       return null;
     }
     if (isDemoMode() && caseId === DEMO_CASE_ID) {
+      const positionedStatuses = new Set(["placed", "proposed", "approved", "corrected"]);
+      const landmarkTemplateReport = {
+        templatesUsed: [],
+        placedLandmarksCount: state.caseLandmarks.filter(item => positionedStatuses.has(item.status)).length,
+        missingLandmarksCount: state.caseLandmarks.filter(item => item.status === "unplaced").length
+      };
+      const aiItems = aiLandmarkItems();
+      const aiAverageConfidence = aiItems.length
+        ? Math.round(aiItems.reduce((sum, item) => sum + (Number(item.confidence) || 0), 0) / aiItems.length)
+        : 0;
+      const generatedMeasurements = state.caseMeasurements.filter(item => item.source === "template" || item.templateId);
+      const measurementTemplateReport = {
+        templatesUsed: Array.from(new Map(generatedMeasurements.map(item => [item.templateId || "measurement-template", {
+          templateId: item.templateId || "measurement-template",
+          templateName: item.templateName || item.templateId || "measurement-template",
+          generatedMeasurementsCount: generatedMeasurements.filter(measurement => (measurement.templateId || "measurement-template") === (item.templateId || "measurement-template")).length,
+          missingLandmarks: item.missingLandmarks || []
+        }])).values()),
+        generatedMeasurementsCount: generatedMeasurements.length,
+        missingLandmarks: Array.from(new Set(generatedMeasurements.flatMap(item => item.missingLandmarks || []))),
+        measurementValues: generatedMeasurements
+      };
+      const autoMeasurementReport = {
+        calculatedMeasurements: generatedMeasurements,
+        calculatedMeasurementsCount: generatedMeasurements.length,
+        formulasUsed: Array.from(new Set(generatedMeasurements.map(item => item.formula).filter(Boolean))),
+        missingLandmarks: Array.from(new Set(generatedMeasurements.flatMap(item => item.missingLandmarks || []))),
+        warnings: Array.from(new Set(generatedMeasurements.flatMap(item => item.warnings || [])))
+      };
+      const presetIds = Array.from(new Set([
+        ...state.caseLandmarks.map(item => item.analysisPresetId).filter(Boolean),
+        ...state.caseMeasurements.map(item => item.analysisPresetId).filter(Boolean)
+      ]));
+      const clinicalAnalysisPresetReport = {
+        selectedAnalysisPresets: presetIds.map(presetId => {
+          const preset = (state.clinicalAnalysisPresets.length ? state.clinicalAnalysisPresets : DEFAULT_CLINICAL_ANALYSIS_PRESETS)
+            .find(item => item.presetId === presetId);
+          return {
+            presetId,
+            name: preset?.name || presetId,
+            generatedLandmarksCount: state.caseLandmarks.filter(item => item.analysisPresetId === presetId).length,
+            generatedMeasurementsCount: state.caseMeasurements.filter(item => item.analysisPresetId === presetId).length,
+            warnings: []
+          };
+        }),
+        generatedLandmarksCount: state.caseLandmarks.filter(item => item.analysisPresetId).length,
+        generatedMeasurementsCount: state.caseMeasurements.filter(item => item.analysisPresetId).length,
+        warnings: Array.from(new Set([
+          ...(state.analysisPresetReportDraft?.warnings || []),
+          ...state.caseMeasurements.flatMap(item => item.warnings || [])
+        ]))
+      };
+      const aiLandmarkReport = {
+        aiProposedLandmarks: aiItems,
+        proposedCount: aiItems.filter(item => item.status === "proposed").length,
+        approvedCount: aiItems.filter(item => item.status === "approved").length,
+        correctedCount: aiItems.filter(item => item.status === "corrected").length,
+        rejectedCount: aiItems.filter(item => item.status === "rejected").length,
+        averageConfidence: aiAverageConfidence
+      };
       return {
         ...DEMO_CASES[0],
         generatedAt: new Date().toISOString(),
@@ -2657,13 +4165,31 @@
         readinessScores: [{ jobId: DEMO_JOB_ID, readinessScore: 72, readinessLevel: "medium" }],
         warnings: [{ jobId: DEMO_JOB_ID, warningsCount: 1, readinessLevel: "medium" }],
         measurements: state.caseMeasurements,
+        measurementTemplateReport,
+        measurementTemplatesUsed: measurementTemplateReport.templatesUsed,
+        generatedMeasurementsCount: measurementTemplateReport.generatedMeasurementsCount,
+        autoMeasurementReport,
+        calculatedMeasurements: autoMeasurementReport.calculatedMeasurements,
+        clinicalAnalysisPresetReport,
+        selectedAnalysisPresets: clinicalAnalysisPresetReport.selectedAnalysisPresets,
         landmarks: state.caseLandmarks,
+        landmarkTemplateReport,
+        placedLandmarksCount: landmarkTemplateReport.placedLandmarksCount,
+        missingLandmarksCount: landmarkTemplateReport.missingLandmarksCount,
+        aiLandmarkReport,
+        aiProposedLandmarks: aiLandmarkReport.aiProposedLandmarks,
+        aiApprovedLandmarksCount: aiLandmarkReport.approvedCount,
+        aiCorrectedLandmarksCount: aiLandmarkReport.correctedCount,
+        aiRejectedLandmarksCount: aiLandmarkReport.rejectedCount,
+        aiAverageConfidence: aiLandmarkReport.averageConfidence,
         comparisons: [],
         surgicalPlanningNotes: []
       };
     }
     const report = await api().getPatientCaseReport(caseId);
     state.currentCaseReport = report;
+    state.clinicalReportDraft = buildClinicalReportSnapshot(report);
+    renderClinicalReportBuilder();
     await loadCases();
     return report;
   }
@@ -2877,6 +4403,9 @@
       loadComparisons();
       loadComparisonModels();
       loadCaseMeasurements();
+      renderClinicalAnalysisPresets();
+      renderClinicalReportBuilder();
+      renderLandmarkTemplates();
       loadSurgicalPlanningNotes();
       applySurgicalPlanningForm(null);
     });
@@ -2887,11 +4416,43 @@
     byId("btnOpenComparisonBefore")?.addEventListener("click", () => openComparisonModel("before"));
     byId("btnOpenComparisonAfter")?.addEventListener("click", () => openComparisonModel("after"));
     byId("btnDownloadComparisonReport")?.addEventListener("click", downloadComparisonReport);
+    byId("clinicalAnalysisPresetsList")?.addEventListener("click", handleClinicalAnalysisPresetAction);
+    byId("clinicalReportTemplateSelect")?.addEventListener("change", () => {
+      state.clinicalReportDraft = null;
+      renderClinicalReportBuilder();
+    });
+    byId("clinicalReportSectionsChecklist")?.addEventListener("change", () => {
+      state.clinicalReportDraft = buildClinicalReportSnapshot(state.currentCaseReport || {});
+      renderClinicalReportPreview(state.clinicalReportDraft);
+    });
+    byId("clinicalReportDoctorNotes")?.addEventListener("input", () => {
+      state.clinicalReportDraft = buildClinicalReportSnapshot(state.currentCaseReport || {});
+      renderClinicalReportPreview(state.clinicalReportDraft);
+    });
+    byId("btnSaveClinicalReportDraft")?.addEventListener("click", () => saveClinicalReportDraft());
+    byId("btnPreviewClinicalReport")?.addEventListener("click", previewClinicalReport);
+    byId("btnDownloadClinicalReportJson")?.addEventListener("click", downloadClinicalReportJson);
+    byId("btnExportClinicalReportHtml")?.addEventListener("click", exportClinicalReportHtml);
+    byId("btnExportClinicalReportPdf")?.addEventListener("click", exportClinicalReportPdf);
+    byId("btnExportClinicalReportDocx")?.addEventListener("click", exportClinicalReportDocx);
+    byId("btnCreateLandmarkTemplate")?.addEventListener("click", createLandmarkTemplate);
+    byId("landmarkTemplatesList")?.addEventListener("click", handleLandmarkTemplateAction);
+    byId("landmarkDetectionMode")?.addEventListener("change", event => {
+      state.landmarkDetectionMode = event.target.value || "ai_assisted";
+      renderAiLandmarkDetection();
+    });
+    byId("aiLandmarkTemplateSelect")?.addEventListener("change", event => {
+      state.currentLandmarkTemplateId = event.target.value || "";
+      renderAiLandmarkDetection();
+    });
+    byId("btnRunAiLandmarkDetection")?.addEventListener("click", runAiLandmarkDetection);
+    byId("aiLandmarkDetectionList")?.addEventListener("click", handleAiLandmarkAction);
     byId("btnCreateLandmark")?.addEventListener("click", createLandmarkFromForm);
     byId("landmarksList")?.addEventListener("click", handleLandmarkAction);
     byId("btnSaveSurgicalPlanningNotes")?.addEventListener("click", saveSurgicalPlanningNotes);
     byId("surgicalPlanModel")?.addEventListener("change", renderSurgicalPlanningNotes);
     byId("surgicalPlanningNotesList")?.addEventListener("click", handleSurgicalPlanningClick);
+    byId("measurementTemplatesList")?.addEventListener("click", handleMeasurementTemplateAction);
     byId("caseMeasurementsList")?.addEventListener("click", handleMeasurementAction);
     byId("btnApproveReconstructionReview")?.addEventListener("click", approveReview);
     byId("btnRerunReconstructionAnalysis")?.addEventListener("click", rerunAnalysisFromReview);
@@ -2954,14 +4515,20 @@
 
     state.accessMode = readAccessMode();
     state.settings = readSettings();
+    state.measurementTemplates = DEFAULT_MEASUREMENT_TEMPLATES.map(template => ({ ...template }));
+    state.clinicalAnalysisPresets = DEFAULT_CLINICAL_ANALYSIS_PRESETS.map(preset => ({ ...preset }));
+    state.clinicalReportTemplates = DEFAULT_REPORT_TEMPLATES.map(template => ({ ...template, sections: [...template.sections] }));
     renderAccessModeUi();
+    renderClinicalAnalysisPresets();
+    renderClinicalReportBuilder();
+    renderMeasurementTemplates();
     window.PMASReconstructionMeasurementBridge = {
       onMeasurementChanged: handleMeasurementBridge
     };
     resetJobUi();
     state.restoreCandidate = readSavedSession();
     loadCases().then(async () => {
-      await Promise.all([loadComparisonModels(), loadComparisons(), loadHistory(), loadSurgicalPlanningNotes(), loadCaseLandmarks()]);
+      await Promise.all([loadComparisonModels(), loadComparisons(), loadHistory(), loadSurgicalPlanningNotes(), loadCaseLandmarks(), loadLandmarkTemplates()]);
       renderSessionRecoveryPrompt(state.restoreCandidate);
     });
   }

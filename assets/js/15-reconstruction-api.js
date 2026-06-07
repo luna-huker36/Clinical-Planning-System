@@ -5,6 +5,7 @@
   const MOCK_COMPARISONS_KEY = "pmas.reconstruction.comparisons.v1";
   const MOCK_MEASUREMENTS_KEY = "pmas.reconstruction.measurements.v1";
   const MOCK_LANDMARKS_KEY = "pmas.reconstruction.landmarks.v1";
+  const MOCK_LANDMARK_TEMPLATES_KEY = "pmas.reconstruction.landmark-templates.v1";
   const MOCK_SURGICAL_PLANS_KEY = "pmas.reconstruction.surgical-plans.v1";
   const REPORT_EXPORT_FORMATS = ["json"];
   const DEFAULT_RECONSTRUCTION_SETTINGS = Object.freeze({
@@ -35,6 +36,8 @@
     measurement: measurementId => `/api/reconstruction/measurements/${encodeURIComponent(measurementId)}`,
     landmarks: "/api/reconstruction/landmarks",
     landmark: landmarkId => `/api/reconstruction/landmarks/${encodeURIComponent(landmarkId)}`,
+    landmarkTemplates: "/api/reconstruction/landmark-templates",
+    landmarkTemplate: templateId => `/api/reconstruction/landmark-templates/${encodeURIComponent(templateId)}`,
     surgicalPlans: "/api/reconstruction/surgical-plans",
     jobs: "/api/reconstruction/jobs",
     job: jobId => `/api/reconstruction/jobs/${encodeURIComponent(jobId)}`,
@@ -54,6 +57,73 @@
     jobFailed: "JOB_FAILED",
     canceledByUser: "CANCELED_BY_USER"
   };
+
+  const DEFAULT_LANDMARK_TEMPLATES = Object.freeze([
+    {
+      templateId: "template-facial-basic",
+      name: "Facial Basic",
+      category: "facial",
+      description: "Core facial reference landmarks for basic 3D face assessment.",
+      builtIn: true,
+      landmarks: [
+        { landmarkName: "Nasion", landmarkCategory: "facial", description: "Midline frontonasal point.", required: true, color: "#2563eb" },
+        { landmarkName: "Pronasale", landmarkCategory: "nasal", description: "Most anterior point of the nose tip.", required: true, color: "#0ea5e9" },
+        { landmarkName: "Pogonion", landmarkCategory: "maxillofacial", description: "Most anterior point on the chin.", required: true, color: "#16a34a" },
+        { landmarkName: "Left Zygion", landmarkCategory: "facial", description: "Left lateral zygomatic landmark.", required: false, color: "#9333ea" },
+        { landmarkName: "Right Zygion", landmarkCategory: "facial", description: "Right lateral zygomatic landmark.", required: false, color: "#9333ea" }
+      ]
+    },
+    {
+      templateId: "template-nasal-analysis",
+      name: "Nasal Analysis",
+      category: "nasal",
+      description: "Nasal landmarks for profile and symmetry planning.",
+      builtIn: true,
+      landmarks: [
+        { landmarkName: "Nasion", landmarkCategory: "nasal", description: "Root of nose reference.", required: true, color: "#2563eb" },
+        { landmarkName: "Rhinion", landmarkCategory: "nasal", description: "Bony-cartilaginous dorsum transition.", required: true, color: "#0ea5e9" },
+        { landmarkName: "Pronasale", landmarkCategory: "nasal", description: "Nose tip.", required: true, color: "#f97316" },
+        { landmarkName: "Subnasale", landmarkCategory: "nasal", description: "Columella-lip junction.", required: true, color: "#16a34a" }
+      ]
+    },
+    {
+      templateId: "template-orthognathic-analysis",
+      name: "Orthognathic Analysis",
+      category: "orthodontic",
+      description: "Landmarks for jaw relation and orthognathic planning.",
+      builtIn: true,
+      landmarks: [
+        { landmarkName: "Subnasale", landmarkCategory: "maxillofacial", description: "Maxillary soft tissue reference.", required: true, color: "#2563eb" },
+        { landmarkName: "Pogonion", landmarkCategory: "maxillofacial", description: "Chin prominence.", required: true, color: "#16a34a" },
+        { landmarkName: "Menton", landmarkCategory: "maxillofacial", description: "Inferior chin point.", required: true, color: "#f97316" },
+        { landmarkName: "Left Gonion", landmarkCategory: "maxillofacial", description: "Left mandibular angle.", required: false, color: "#9333ea" },
+        { landmarkName: "Right Gonion", landmarkCategory: "maxillofacial", description: "Right mandibular angle.", required: false, color: "#9333ea" }
+      ]
+    },
+    {
+      templateId: "template-maxillofacial-analysis",
+      name: "Maxillofacial Analysis",
+      category: "maxillofacial",
+      description: "Broader maxillofacial symmetry and contour landmarks.",
+      builtIn: true,
+      landmarks: [
+        { landmarkName: "Nasion", landmarkCategory: "maxillofacial", description: "Craniofacial midline reference.", required: true, color: "#2563eb" },
+        { landmarkName: "Left Orbitale", landmarkCategory: "maxillofacial", description: "Left infraorbital reference.", required: false, color: "#0ea5e9" },
+        { landmarkName: "Right Orbitale", landmarkCategory: "maxillofacial", description: "Right infraorbital reference.", required: false, color: "#0ea5e9" },
+        { landmarkName: "Menton", landmarkCategory: "maxillofacial", description: "Lower facial height reference.", required: true, color: "#f97316" }
+      ]
+    },
+    {
+      templateId: "template-custom",
+      name: "Custom Template",
+      category: "custom",
+      description: "Editable starter template for custom landmark sets.",
+      builtIn: true,
+      landmarks: [
+        { landmarkName: "Custom Point 1", landmarkCategory: "custom", description: "Custom landmark placeholder.", required: false, color: "#64748b" }
+      ]
+    }
+  ]);
 
   function pipeline() {
     return window.PMASReconstructionPipeline;
@@ -161,6 +231,173 @@
   function makeMockLandmarkId() {
     if (window.crypto?.randomUUID) return `landmark-${window.crypto.randomUUID()}`;
     return `landmark-${Date.now().toString(36)}-${Math.random().toString(16).slice(2)}`;
+  }
+
+  function withTemplateTimestamps(template) {
+    const timestamp = template.createdAt || new Date().toISOString();
+    return {
+      ...template,
+      createdAt: timestamp,
+      updatedAt: template.updatedAt || timestamp
+    };
+  }
+
+  function readMockLandmarkTemplates() {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(MOCK_LANDMARK_TEMPLATES_KEY) || "[]");
+      const customTemplates = Array.isArray(parsed) ? parsed : [];
+      const defaults = DEFAULT_LANDMARK_TEMPLATES.map(withTemplateTimestamps);
+      const customIds = new Set(customTemplates.map(item => item.templateId));
+      return defaults
+        .filter(item => !customIds.has(item.templateId))
+        .concat(customTemplates.map(withTemplateTimestamps));
+    } catch (err) {
+      return DEFAULT_LANDMARK_TEMPLATES.map(withTemplateTimestamps);
+    }
+  }
+
+  function writeMockLandmarkTemplates(items) {
+    try {
+      const customItems = items.filter(item => !item.builtIn);
+      localStorage.setItem(MOCK_LANDMARK_TEMPLATES_KEY, JSON.stringify(customItems.slice(0, 100)));
+    } catch (err) {
+      console.warn("Unable to save landmark templates.", err);
+    }
+  }
+
+  function makeMockLandmarkTemplateId() {
+    if (window.crypto?.randomUUID) return `landmark-template-${window.crypto.randomUUID()}`;
+    return `landmark-template-${Date.now().toString(36)}-${Math.random().toString(16).slice(2)}`;
+  }
+
+  function summarizeLandmarkTemplates(landmarks = []) {
+    const positionedStatuses = new Set(["placed", "proposed", "approved", "corrected"]);
+    const byTemplate = new Map();
+    landmarks.forEach(item => {
+      if (!item.templateId) return;
+      if (!byTemplate.has(item.templateId)) {
+        byTemplate.set(item.templateId, {
+          templateId: item.templateId,
+          templateName: item.templateName || item.templateId,
+          totalLandmarksCount: 0,
+          placedLandmarksCount: 0,
+          missingLandmarksCount: 0
+        });
+      }
+      const summary = byTemplate.get(item.templateId);
+      summary.totalLandmarksCount += 1;
+      if (positionedStatuses.has(item.status)) summary.placedLandmarksCount += 1;
+      if (item.status === "unplaced") summary.missingLandmarksCount += 1;
+    });
+    return {
+      templatesUsed: Array.from(byTemplate.values()),
+      placedLandmarksCount: landmarks.filter(item => positionedStatuses.has(item.status)).length,
+      missingLandmarksCount: landmarks.filter(item => item.status === "unplaced").length
+    };
+  }
+
+  function summarizeAiLandmarks(landmarks = []) {
+    const aiLandmarks = landmarks.filter(item => item.detectionMode === "ai_assisted" || item.source === "ai_generated");
+    const confidenceValues = aiLandmarks
+      .map(item => Number(item.confidence))
+      .filter(value => Number.isFinite(value));
+    const averageConfidence = confidenceValues.length
+      ? confidenceValues.reduce((sum, value) => sum + value, 0) / confidenceValues.length
+      : 0;
+    return {
+      aiProposedLandmarks: aiLandmarks,
+      proposedCount: aiLandmarks.filter(item => item.status === "proposed").length,
+      approvedCount: aiLandmarks.filter(item => item.status === "approved").length,
+      correctedCount: aiLandmarks.filter(item => item.status === "corrected").length,
+      rejectedCount: aiLandmarks.filter(item => item.status === "rejected").length,
+      averageConfidence: Math.round(averageConfidence)
+    };
+  }
+
+  function summarizeMeasurementTemplates(measurements = []) {
+    const generated = measurements.filter(item => item.source === "template" || item.templateId);
+    const byTemplate = new Map();
+    generated.forEach(item => {
+      const templateId = item.templateId || "measurement-template";
+      if (!byTemplate.has(templateId)) {
+        byTemplate.set(templateId, {
+          templateId,
+          templateName: item.templateName || templateId,
+          generatedMeasurementsCount: 0,
+          missingLandmarks: []
+        });
+      }
+      const summary = byTemplate.get(templateId);
+      summary.generatedMeasurementsCount += 1;
+      summary.missingLandmarks = Array.from(new Set([
+        ...summary.missingLandmarks,
+        ...(item.missingLandmarks || [])
+      ]));
+    });
+    return {
+      templatesUsed: Array.from(byTemplate.values()),
+      generatedMeasurementsCount: generated.length,
+      missingLandmarks: Array.from(new Set(generated.flatMap(item => item.missingLandmarks || []))),
+      measurementValues: generated.map(item => ({
+        measurementId: item.measurementId,
+        label: item.label,
+        type: item.type,
+        value: item.value,
+        unit: item.unit,
+        landmarksUsed: item.landmarksUsed || [],
+        formula: item.formula || "",
+        status: item.status || "ready",
+        warnings: item.warnings || [],
+        fromLandmark: item.fromLandmark || "",
+        toLandmark: item.toLandmark || "",
+        optionalThirdLandmark: item.optionalThirdLandmark || "",
+        templateId: item.templateId || "",
+        templateName: item.templateName || ""
+      }))
+    };
+  }
+
+  function summarizeCalculatedMeasurements(measurements = []) {
+    const calculated = measurements.filter(item => item.landmarksUsed?.length || item.source === "template" || item.status === "calculated");
+    return {
+      calculatedMeasurements: calculated,
+      calculatedMeasurementsCount: calculated.length,
+      formulasUsed: Array.from(new Set(calculated.map(item => item.formula).filter(Boolean))),
+      missingLandmarks: Array.from(new Set(calculated.flatMap(item => item.missingLandmarks || []))),
+      warnings: Array.from(new Set(calculated.flatMap(item => item.warnings || [])))
+    };
+  }
+
+  function summarizeClinicalAnalysisPresets(landmarks = [], measurements = []) {
+    const byPreset = new Map();
+    const collect = (item, kind) => {
+      if (!item.analysisPresetId) return;
+      if (!byPreset.has(item.analysisPresetId)) {
+        byPreset.set(item.analysisPresetId, {
+          presetId: item.analysisPresetId,
+          name: item.analysisPresetName || item.analysisPresetId,
+          generatedLandmarksCount: 0,
+          generatedMeasurementsCount: 0,
+          warnings: []
+        });
+      }
+      const summary = byPreset.get(item.analysisPresetId);
+      if (kind === "landmark") summary.generatedLandmarksCount += 1;
+      if (kind === "measurement") summary.generatedMeasurementsCount += 1;
+      summary.warnings = Array.from(new Set([
+        ...summary.warnings,
+        ...(item.warnings || []),
+        ...(item.status === "proposed" ? [`${item.name || item.landmarkId} is proposed`] : [])
+      ]));
+    };
+    landmarks.forEach(item => collect(item, "landmark"));
+    measurements.forEach(item => collect(item, "measurement"));
+    return {
+      selectedAnalysisPresets: Array.from(byPreset.values()),
+      generatedLandmarksCount: landmarks.filter(item => item.analysisPresetId).length,
+      generatedMeasurementsCount: measurements.filter(item => item.analysisPresetId).length,
+      warnings: Array.from(new Set(Array.from(byPreset.values()).flatMap(item => item.warnings)))
+    };
   }
 
   function readMockSurgicalPlans() {
@@ -573,13 +810,28 @@
         points: Array.isArray(input.points) ? input.points : (existing?.points || []),
         value: input.value === null || input.value === "" || !Number.isFinite(Number(input.value)) ? null : Number(input.value),
         unit: String(input.unit ?? existing?.unit ?? "").trim(),
+        landmarksUsed: Array.isArray(input.landmarksUsed) ? input.landmarksUsed.map(String) : (existing?.landmarksUsed || []),
+        source: String(input.source ?? existing?.source ?? "manual").trim() || "manual",
+        templateId: String(input.templateId ?? existing?.templateId ?? "").trim(),
+        templateName: String(input.templateName ?? existing?.templateName ?? "").trim(),
+        missingLandmarks: Array.isArray(input.missingLandmarks) ? input.missingLandmarks.map(String) : (existing?.missingLandmarks || []),
+        status: ["ready", "missing_landmarks", "needs_review", "calculated", "error"].includes(input.status ?? existing?.status) ? (input.status ?? existing?.status) : "ready",
+        warnings: Array.isArray(input.warnings) ? input.warnings.map(String) : (existing?.warnings || []),
+        formula: String(input.formula ?? existing?.formula ?? "").trim(),
+        description: String(input.description ?? existing?.description ?? "").trim(),
+        fromLandmark: String(input.fromLandmark ?? existing?.fromLandmark ?? "").trim(),
+        toLandmark: String(input.toLandmark ?? existing?.toLandmark ?? "").trim(),
+        optionalThirdLandmark: String(input.optionalThirdLandmark ?? existing?.optionalThirdLandmark ?? "").trim(),
+        analysisPresetId: String(input.analysisPresetId ?? existing?.analysisPresetId ?? "").trim(),
+        analysisPresetName: String(input.analysisPresetName ?? existing?.analysisPresetName ?? "").trim(),
+        calculatedAt: String(input.calculatedAt ?? existing?.calculatedAt ?? "").trim(),
         createdAt: existing?.createdAt || timestamp,
         updatedAt: timestamp
       };
       if (!measurement.caseId || !measurement.jobId || !measurement.modelId) {
         throw apiError(ERROR_CODES.jobFailed, "caseId, jobId, and modelId are required for measurement storage.");
       }
-      const allowed = new Set(["distance", "angle", "vector", "point", "annotation"]);
+      const allowed = new Set(["distance", "angle", "vector", "point", "annotation", "ratio", "custom"]);
       if (!allowed.has(measurement.type)) {
         throw apiError(ERROR_CODES.jobFailed, "Unsupported measurement type.");
       }
@@ -654,7 +906,18 @@
         color: String(input.color ?? existing?.color ?? "#2563eb"),
         description: String(input.description ?? existing?.description ?? "").trim(),
         source: ["manual", "imported", "ai_generated"].includes(input.source || existing?.source) ? (input.source || existing?.source) : "manual",
-        visible: input.visible === undefined ? existing?.visible !== false : input.visible !== false,
+        visible: (input.status === "hidden" || input.status === "rejected") ? false : (input.visible === undefined ? existing?.visible !== false : input.visible !== false),
+        status: ["unplaced", "placed", "hidden", "proposed", "approved", "corrected", "rejected"].includes(input.status || existing?.status) ? (input.status || existing?.status) : "placed",
+        templateId: String(input.templateId ?? existing?.templateId ?? "").trim(),
+        templateName: String(input.templateName ?? existing?.templateName ?? "").trim(),
+        required: Boolean(input.required ?? existing?.required),
+        confidence: input.confidence === undefined && existing?.confidence === undefined ? null : Math.max(0, Math.min(100, Number(input.confidence ?? existing?.confidence ?? 0) || 0)),
+        detectionMode: ["manual", "ai_assisted", "template_only"].includes(input.detectionMode || existing?.detectionMode) ? (input.detectionMode || existing?.detectionMode) : "manual",
+        detectionSource: String(input.detectionSource ?? existing?.detectionSource ?? input.source ?? existing?.source ?? "manual").trim() || "manual",
+        approvedByUser: Boolean(input.approvedByUser ?? existing?.approvedByUser),
+        correctedByUser: Boolean(input.correctedByUser ?? existing?.correctedByUser),
+        analysisPresetId: String(input.analysisPresetId ?? existing?.analysisPresetId ?? "").trim(),
+        analysisPresetName: String(input.analysisPresetName ?? existing?.analysisPresetName ?? "").trim(),
         createdAt: existing?.createdAt || timestamp,
         updatedAt: timestamp
       };
@@ -667,6 +930,8 @@
       if (linkedCase) {
         linkedCase.landmarks = linkedCase.landmarks || [];
         if (!linkedCase.landmarks.includes(landmark.landmarkId)) linkedCase.landmarks.push(landmark.landmarkId);
+        linkedCase.landmarkTemplates = linkedCase.landmarkTemplates || [];
+        if (landmark.templateId && !linkedCase.landmarkTemplates.includes(landmark.templateId)) linkedCase.landmarkTemplates.push(landmark.templateId);
         linkedCase.updatedAt = timestamp;
         writeMockCases([linkedCase, ...cases.filter(item => item.caseId !== landmark.caseId)]);
       }
@@ -698,6 +963,56 @@
     return await backendJson(ENDPOINTS.landmark(landmarkId), { method: "DELETE" }, ERROR_CODES.jobFailed);
   }
 
+  async function listLandmarkTemplates() {
+    if (reconstructionMode === "mock") {
+      return readMockLandmarkTemplates()
+        .sort((a, b) => Number(b.builtIn) - Number(a.builtIn) || String(a.name || "").localeCompare(String(b.name || "")));
+    }
+    const payload = await backendJson(ENDPOINTS.landmarkTemplates, { method: "GET" }, ERROR_CODES.networkUnavailable);
+    return payload?.templates || [];
+  }
+
+  async function saveLandmarkTemplate(input = {}) {
+    if (reconstructionMode === "mock") {
+      const timestamp = new Date().toISOString();
+      const existing = readMockLandmarkTemplates().find(item => item.templateId === input.templateId);
+      const template = {
+        templateId: String(input.templateId || existing?.templateId || makeMockLandmarkTemplateId()),
+        name: String(input.name ?? existing?.name ?? "Custom Template").trim() || "Custom Template",
+        category: ["facial", "nasal", "maxillofacial", "orthodontic", "custom"].includes(input.category || existing?.category) ? (input.category || existing?.category) : "custom",
+        description: String(input.description ?? existing?.description ?? "").trim(),
+        landmarks: (Array.isArray(input.landmarks) ? input.landmarks : existing?.landmarks || []).map(item => ({
+          landmarkName: String(item.landmarkName || item.name || "Landmark").trim() || "Landmark",
+          landmarkCategory: ["facial", "nasal", "maxillofacial", "orthodontic", "custom"].includes(item.landmarkCategory || item.category) ? (item.landmarkCategory || item.category) : "custom",
+          description: String(item.description || "").trim(),
+          required: Boolean(item.required),
+          color: String(item.color || "#2563eb")
+        })),
+        createdAt: existing?.createdAt || timestamp,
+        updatedAt: timestamp,
+        builtIn: false
+      };
+      const templates = readMockLandmarkTemplates().filter(item => item.templateId !== template.templateId);
+      writeMockLandmarkTemplates([template, ...templates]);
+      return template;
+    }
+    return await backendJson(ENDPOINTS.landmarkTemplates, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input)
+    }, ERROR_CODES.jobFailed);
+  }
+
+  async function deleteLandmarkTemplate(templateId) {
+    if (reconstructionMode === "mock") {
+      const existing = readMockLandmarkTemplates().find(item => item.templateId === templateId);
+      if (!existing || existing.builtIn) return { deleted: false, template: existing || null };
+      writeMockLandmarkTemplates(readMockLandmarkTemplates().filter(item => item.templateId !== templateId));
+      return { deleted: true, template: existing };
+    }
+    return await backendJson(ENDPOINTS.landmarkTemplate(templateId), { method: "DELETE" }, ERROR_CODES.jobFailed);
+  }
+
   async function getPatientCaseReport(caseId) {
     if (reconstructionMode === "mock") {
       const caseItem = readMockCases().find(item => item.caseId === caseId);
@@ -705,6 +1020,11 @@
       const jobs = readMockHistory().filter(item => item.caseId === caseId);
       const measurements = readMockMeasurements().filter(item => item.caseId === caseId);
       const landmarks = readMockLandmarks().filter(item => item.caseId === caseId);
+      const landmarkTemplateReport = summarizeLandmarkTemplates(landmarks);
+      const aiLandmarkReport = summarizeAiLandmarks(landmarks);
+      const measurementTemplateReport = summarizeMeasurementTemplates(measurements);
+      const autoMeasurementReport = summarizeCalculatedMeasurements(measurements);
+      const clinicalAnalysisPresetReport = summarizeClinicalAnalysisPresets(landmarks, measurements);
       const surgicalPlanningNotes = readMockSurgicalPlans().filter(item => item.caseId === caseId);
       const resultModels = jobs
         .filter(item => item.resultGlbUrl)
@@ -741,8 +1061,25 @@
         comparisons: readMockComparisons().filter(item => item.caseId === caseId),
         measurements,
         measurementsCount: measurements.length,
+        measurementTemplateReport,
+        measurementTemplatesUsed: measurementTemplateReport.templatesUsed,
+        generatedMeasurementsCount: measurementTemplateReport.generatedMeasurementsCount,
+        autoMeasurementReport,
+        calculatedMeasurements: autoMeasurementReport.calculatedMeasurements,
+        clinicalAnalysisPresetReport,
+        selectedAnalysisPresets: clinicalAnalysisPresetReport.selectedAnalysisPresets,
         landmarks,
         landmarksCount: landmarks.length,
+        landmarkTemplateReport,
+        landmarkTemplatesUsed: landmarkTemplateReport.templatesUsed,
+        placedLandmarksCount: landmarkTemplateReport.placedLandmarksCount,
+        missingLandmarksCount: landmarkTemplateReport.missingLandmarksCount,
+        aiLandmarkReport,
+        aiProposedLandmarks: aiLandmarkReport.aiProposedLandmarks,
+        aiApprovedLandmarksCount: aiLandmarkReport.approvedCount,
+        aiCorrectedLandmarksCount: aiLandmarkReport.correctedCount,
+        aiRejectedLandmarksCount: aiLandmarkReport.rejectedCount,
+        aiAverageConfidence: aiLandmarkReport.averageConfidence,
         surgicalPlanningNotes,
         surgicalPlanningNotesCount: surgicalPlanningNotes.length
       };
@@ -931,6 +1268,21 @@
     if (reconstructionMode === "mock") {
       const job = await getBackendReconstructionJob(jobId);
       const modelId = job.resultGlbUrl || jobId;
+      const landmarks = readMockLandmarks().filter(item => (
+        item.caseId === (job.caseId || "")
+        && item.jobId === jobId
+        && item.modelId === modelId
+      ));
+      const landmarkTemplateReport = summarizeLandmarkTemplates(landmarks);
+      const aiLandmarkReport = summarizeAiLandmarks(landmarks);
+      const reportMeasurements = readMockMeasurements().filter(item => (
+        item.caseId === (job.caseId || "")
+        && item.jobId === jobId
+        && item.modelId === modelId
+      ));
+      const measurementTemplateReport = summarizeMeasurementTemplates(reportMeasurements);
+      const autoMeasurementReport = summarizeCalculatedMeasurements(reportMeasurements);
+      const clinicalAnalysisPresetReport = summarizeClinicalAnalysisPresets(landmarks, reportMeasurements);
       const report = {
         jobId,
         caseId: job.caseId || "",
@@ -1020,16 +1372,25 @@
           adjustedModelPath: job.adjustedModelPath ? "adjusted.glb" : "",
           warnings: job.adjustmentWarnings || []
         },
-        measurements: readMockMeasurements().filter(item => (
-          item.caseId === (job.caseId || "")
-          && item.jobId === jobId
-          && item.modelId === modelId
-        )),
-        landmarks: readMockLandmarks().filter(item => (
-          item.caseId === (job.caseId || "")
-          && item.jobId === jobId
-          && item.modelId === modelId
-        )),
+        measurements: reportMeasurements,
+        measurementTemplateReport,
+        measurementTemplatesUsed: measurementTemplateReport.templatesUsed,
+        generatedMeasurementsCount: measurementTemplateReport.generatedMeasurementsCount,
+        autoMeasurementReport,
+        calculatedMeasurements: autoMeasurementReport.calculatedMeasurements,
+        clinicalAnalysisPresetReport,
+        selectedAnalysisPresets: clinicalAnalysisPresetReport.selectedAnalysisPresets,
+        landmarks,
+        landmarkTemplateReport,
+        landmarkTemplatesUsed: landmarkTemplateReport.templatesUsed,
+        placedLandmarksCount: landmarkTemplateReport.placedLandmarksCount,
+        missingLandmarksCount: landmarkTemplateReport.missingLandmarksCount,
+        aiLandmarkReport,
+        aiProposedLandmarks: aiLandmarkReport.aiProposedLandmarks,
+        aiApprovedLandmarksCount: aiLandmarkReport.approvedCount,
+        aiCorrectedLandmarksCount: aiLandmarkReport.correctedCount,
+        aiRejectedLandmarksCount: aiLandmarkReport.rejectedCount,
+        aiAverageConfidence: aiLandmarkReport.averageConfidence,
         finalResult: job.status === "ready" && job.resultGlbUrl
           ? await getBackendReconstructionResult(jobId)
           : null,
@@ -1222,6 +1583,9 @@
     listCaseLandmarks,
     saveCaseLandmark,
     deleteCaseLandmark,
+    listLandmarkTemplates,
+    saveLandmarkTemplate,
+    deleteLandmarkTemplate,
     listSurgicalPlanningNotes,
     saveSurgicalPlanningNote,
     errorCodes: ERROR_CODES,

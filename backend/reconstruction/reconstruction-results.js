@@ -30,6 +30,136 @@ function collectWarnings(job) {
   ].filter(Boolean)));
 }
 
+function summarizeLandmarkTemplates(landmarks = []) {
+  const byTemplate = new Map();
+  const positionedStatuses = new Set(["placed", "proposed", "approved", "corrected"]);
+  for (const landmark of landmarks) {
+    if (!landmark.templateId) continue;
+    if (!byTemplate.has(landmark.templateId)) {
+      byTemplate.set(landmark.templateId, {
+        templateId: landmark.templateId,
+        templateName: landmark.templateName || landmark.templateId,
+        totalLandmarksCount: 0,
+        placedLandmarksCount: 0,
+        missingLandmarksCount: 0
+      });
+    }
+    const summary = byTemplate.get(landmark.templateId);
+    summary.totalLandmarksCount += 1;
+    if (positionedStatuses.has(landmark.status)) summary.placedLandmarksCount += 1;
+    if (landmark.status === "unplaced") summary.missingLandmarksCount += 1;
+  }
+  return {
+    templatesUsed: Array.from(byTemplate.values()),
+    placedLandmarksCount: landmarks.filter(item => positionedStatuses.has(item.status)).length,
+    missingLandmarksCount: landmarks.filter(item => item.status === "unplaced").length
+  };
+}
+
+function summarizeAiLandmarks(landmarks = []) {
+  const aiLandmarks = landmarks.filter(item => item.detectionMode === "ai_assisted" || item.source === "ai_generated");
+  const confidenceValues = aiLandmarks
+    .map(item => Number(item.confidence))
+    .filter(value => Number.isFinite(value));
+  const averageConfidence = confidenceValues.length
+    ? confidenceValues.reduce((sum, value) => sum + value, 0) / confidenceValues.length
+    : 0;
+  return {
+    aiProposedLandmarks: aiLandmarks,
+    proposedCount: aiLandmarks.filter(item => item.status === "proposed").length,
+    approvedCount: aiLandmarks.filter(item => item.status === "approved").length,
+    correctedCount: aiLandmarks.filter(item => item.status === "corrected").length,
+    rejectedCount: aiLandmarks.filter(item => item.status === "rejected").length,
+    averageConfidence: Math.round(averageConfidence)
+  };
+}
+
+function summarizeMeasurementTemplates(measurements = []) {
+  const generated = measurements.filter(item => item.source === "template" || item.templateId);
+  const byTemplate = new Map();
+  for (const measurement of generated) {
+    const templateId = measurement.templateId || "measurement-template";
+    if (!byTemplate.has(templateId)) {
+      byTemplate.set(templateId, {
+        templateId,
+        templateName: measurement.templateName || templateId,
+        generatedMeasurementsCount: 0,
+        missingLandmarks: []
+      });
+    }
+    const summary = byTemplate.get(templateId);
+    summary.generatedMeasurementsCount += 1;
+    summary.missingLandmarks = Array.from(new Set([
+      ...summary.missingLandmarks,
+      ...(measurement.missingLandmarks || [])
+    ]));
+  }
+  return {
+    templatesUsed: Array.from(byTemplate.values()),
+    generatedMeasurementsCount: generated.length,
+    missingLandmarks: Array.from(new Set(generated.flatMap(item => item.missingLandmarks || []))),
+    measurementValues: generated.map(item => ({
+      measurementId: item.measurementId,
+      label: item.label,
+      type: item.type,
+      value: item.value,
+      unit: item.unit,
+      landmarksUsed: item.landmarksUsed || [],
+      formula: item.formula || "",
+      status: item.status || "ready",
+      warnings: item.warnings || [],
+      fromLandmark: item.fromLandmark || "",
+      toLandmark: item.toLandmark || "",
+      optionalThirdLandmark: item.optionalThirdLandmark || "",
+      templateId: item.templateId || "",
+      templateName: item.templateName || ""
+    }))
+  };
+}
+
+function summarizeCalculatedMeasurements(measurements = []) {
+  const calculated = measurements.filter(item => item.landmarksUsed?.length || item.source === "template" || item.status === "calculated");
+  return {
+    calculatedMeasurements: calculated,
+    calculatedMeasurementsCount: calculated.length,
+    formulasUsed: Array.from(new Set(calculated.map(item => item.formula).filter(Boolean))),
+    missingLandmarks: Array.from(new Set(calculated.flatMap(item => item.missingLandmarks || []))),
+    warnings: Array.from(new Set(calculated.flatMap(item => item.warnings || [])))
+  };
+}
+
+function summarizeClinicalAnalysisPresets(landmarks = [], measurements = []) {
+  const byPreset = new Map();
+  const collect = (item, kind) => {
+    if (!item.analysisPresetId) return;
+    if (!byPreset.has(item.analysisPresetId)) {
+      byPreset.set(item.analysisPresetId, {
+        presetId: item.analysisPresetId,
+        name: item.analysisPresetName || item.analysisPresetId,
+        generatedLandmarksCount: 0,
+        generatedMeasurementsCount: 0,
+        warnings: []
+      });
+    }
+    const summary = byPreset.get(item.analysisPresetId);
+    if (kind === "landmark") summary.generatedLandmarksCount += 1;
+    if (kind === "measurement") summary.generatedMeasurementsCount += 1;
+    summary.warnings = Array.from(new Set([
+      ...summary.warnings,
+      ...(item.warnings || []),
+      ...(item.status === "proposed" ? [`${item.name || item.landmarkId} is proposed`] : [])
+    ]));
+  };
+  landmarks.forEach(item => collect(item, "landmark"));
+  measurements.forEach(item => collect(item, "measurement"));
+  return {
+    selectedAnalysisPresets: Array.from(byPreset.values()),
+    generatedLandmarksCount: landmarks.filter(item => item.analysisPresetId).length,
+    generatedMeasurementsCount: measurements.filter(item => item.analysisPresetId).length,
+    warnings: Array.from(new Set(Array.from(byPreset.values()).flatMap(item => item.warnings)))
+  };
+}
+
 function getResultChecks(job) {
   const artifactPath = getArtifactPath(job.jobId);
   const glbExists = Boolean(job.resultGlbUrl) && fsSync.existsSync(artifactPath);
@@ -180,6 +310,11 @@ function buildReconstructionReport(jobId) {
     jobId: job.jobId,
     modelId
   });
+  const landmarkTemplateReport = summarizeLandmarkTemplates(landmarks);
+  const aiLandmarkReport = summarizeAiLandmarks(landmarks);
+  const measurementTemplateReport = summarizeMeasurementTemplates(measurements);
+  const autoMeasurementReport = summarizeCalculatedMeasurements(measurements);
+  const clinicalAnalysisPresetReport = summarizeClinicalAnalysisPresets(landmarks, measurements);
   // TODO: Add PDF/DOCX reconstruction report exporters from this JSON shape without reusing 2D/3D clinical export functions.
   const report = {
     jobId: job.jobId,
@@ -290,7 +425,24 @@ function buildReconstructionReport(jobId) {
       warnings: job.adjustmentWarnings || []
     },
     measurements,
+    measurementTemplateReport,
+    measurementTemplatesUsed: measurementTemplateReport.templatesUsed,
+    generatedMeasurementsCount: measurementTemplateReport.generatedMeasurementsCount,
+    autoMeasurementReport,
+    calculatedMeasurements: autoMeasurementReport.calculatedMeasurements,
+    clinicalAnalysisPresetReport,
+    selectedAnalysisPresets: clinicalAnalysisPresetReport.selectedAnalysisPresets,
     landmarks,
+    landmarkTemplateReport,
+    landmarkTemplatesUsed: landmarkTemplateReport.templatesUsed,
+    placedLandmarksCount: landmarkTemplateReport.placedLandmarksCount,
+    missingLandmarksCount: landmarkTemplateReport.missingLandmarksCount,
+    aiLandmarkReport,
+    aiProposedLandmarks: aiLandmarkReport.aiProposedLandmarks,
+    aiApprovedLandmarksCount: aiLandmarkReport.approvedCount,
+    aiCorrectedLandmarksCount: aiLandmarkReport.correctedCount,
+    aiRejectedLandmarksCount: aiLandmarkReport.rejectedCount,
+    aiAverageConfidence: aiLandmarkReport.averageConfidence,
     finalResult: result,
     warnings: result.warnings
   };
@@ -304,6 +456,11 @@ function buildCaseReport(caseId) {
   const jobs = listReconstructionHistory("all", caseId);
   const measurements = listMeasurements({ caseId });
   const landmarks = listLandmarks({ caseId });
+  const landmarkTemplateReport = summarizeLandmarkTemplates(landmarks);
+  const aiLandmarkReport = summarizeAiLandmarks(landmarks);
+  const measurementTemplateReport = summarizeMeasurementTemplates(measurements);
+  const autoMeasurementReport = summarizeCalculatedMeasurements(measurements);
+  const clinicalAnalysisPresetReport = summarizeClinicalAnalysisPresets(landmarks, measurements);
   const comparisons = listComparisons(caseId);
   const surgicalPlanningNotes = listSurgicalPlans({ caseId });
   const resultModels = jobs
@@ -347,8 +504,25 @@ function buildCaseReport(caseId) {
     comparisons,
     measurements,
     measurementsCount: measurements.length,
+    measurementTemplateReport,
+    measurementTemplatesUsed: measurementTemplateReport.templatesUsed,
+    generatedMeasurementsCount: measurementTemplateReport.generatedMeasurementsCount,
+    autoMeasurementReport,
+    calculatedMeasurements: autoMeasurementReport.calculatedMeasurements,
+    clinicalAnalysisPresetReport,
+    selectedAnalysisPresets: clinicalAnalysisPresetReport.selectedAnalysisPresets,
     landmarks,
     landmarksCount: landmarks.length,
+    landmarkTemplateReport,
+    landmarkTemplatesUsed: landmarkTemplateReport.templatesUsed,
+    placedLandmarksCount: landmarkTemplateReport.placedLandmarksCount,
+    missingLandmarksCount: landmarkTemplateReport.missingLandmarksCount,
+    aiLandmarkReport,
+    aiProposedLandmarks: aiLandmarkReport.aiProposedLandmarks,
+    aiApprovedLandmarksCount: aiLandmarkReport.approvedCount,
+    aiCorrectedLandmarksCount: aiLandmarkReport.correctedCount,
+    aiRejectedLandmarksCount: aiLandmarkReport.rejectedCount,
+    aiAverageConfidence: aiLandmarkReport.averageConfidence,
     surgicalPlanningNotes,
     surgicalPlanningNotesCount: surgicalPlanningNotes.length,
     TODO: [

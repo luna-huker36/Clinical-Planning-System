@@ -24,7 +24,10 @@ const {
   listSurgicalPlans,
   saveLandmark,
   deleteLandmark,
-  listLandmarks
+  listLandmarks,
+  listLandmarkTemplates,
+  saveLandmarkTemplate,
+  deleteLandmarkTemplate
 } = require("./store");
 const { startJob, cancelJob, approveReviewAndContinue, applyManualAdjustmentToJob, skipManualAdjustmentForJob } = require("./processor");
 const { assertValidReconstructionSettings } = require("./settings");
@@ -184,6 +187,22 @@ router.delete("/landmarks/:landmarkId", asyncRoute(async (req, res) => {
   const landmark = deleteLandmark(req.params.landmarkId);
   if (!landmark) throw new ApiError(404, ERROR_CODES.validationFailed, "Landmark not found.");
   res.json({ deleted: true, landmark });
+}));
+
+router.get("/landmark-templates", asyncRoute(async (req, res) => {
+  res.json({ templates: listLandmarkTemplates() });
+}));
+
+router.post("/landmark-templates", asyncRoute(async (req, res) => {
+  const template = saveLandmarkTemplate(req.body || {});
+  if (!template) throw new ApiError(400, ERROR_CODES.validationFailed, "Valid landmark template data is required.");
+  res.json(template);
+}));
+
+router.delete("/landmark-templates/:templateId", asyncRoute(async (req, res) => {
+  const template = deleteLandmarkTemplate(req.params.templateId);
+  if (!template) throw new ApiError(404, ERROR_CODES.validationFailed, "Only custom landmark templates can be deleted.");
+  res.json({ deleted: true, template });
 }));
 
 router.get("/surgical-plans", asyncRoute(async (req, res) => {
