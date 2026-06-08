@@ -1,6 +1,7 @@
 (function () {
   const SESSION_STORAGE_KEY = "pmas.reconstruction.patient-case-session.v1";
   const ACCESS_MODE_STORAGE_KEY = "pmas.reconstruction.access-mode.v1";
+  const BACKUP_META_STORAGE_KEY = "pmas.reconstruction.backup-meta.v1";
   const DEMO_CASE_ID = "demo-case-head-planning";
   const DEMO_JOB_ID = "demo-recon-head-model";
   const DEMO_MODEL_URL = "models/LeePerrySmith.glb";
@@ -18,6 +19,10 @@
       teamMembers: [],
       permissions: {}
     },
+    auditEvents: [],
+    auditActionFilter: "all",
+    auditUserFilter: "all",
+    auditDateFilter: "",
     clinicalAnalysisPresets: [],
     currentAnalysisPreset: null,
     analysisPresetReportDraft: null,
@@ -35,6 +40,11 @@
     activeMeasurementContext: null,
     surgicalPlanningNotes: [],
     surgicalSimulations: [],
+    clinicalInsights: [],
+    qaChecks: [],
+    qaSummary: null,
+    backupPreview: null,
+    backupImportDraft: null,
     caseTimeline: null,
     currentSimulation: null,
     currentSurgicalPlanId: "",
@@ -774,6 +784,571 @@
     `).join("");
   }
 
+  const AUDIT_ACTION_LABELS = {
+    case_created: "case created",
+    case_updated: "case updated",
+    model_uploaded: "model uploaded",
+    reconstruction_started: "reconstruction started",
+    reconstruction_completed: "reconstruction completed",
+    landmark_added: "landmark added",
+    landmark_updated: "landmark updated",
+    measurement_added: "measurement added",
+    measurement_updated: "measurement updated",
+    note_updated: "note updated",
+    report_exported: "report exported",
+    simulation_created: "simulation created",
+    team_member_added: "team member added",
+    team_member_removed: "team member removed",
+    insight_created: "insight created",
+    insight_acknowledged: "insight acknowledged",
+    backup_created: "backup created",
+    backup_imported: "backup imported",
+    backup_restored: "backup restored",
+    qa_run: "QA run",
+    qa_issue_resolved: "QA issue resolved"
+  };
+
+  const INSIGHT_CATEGORY_LABELS = {
+    facial_analysis: "facial analysis",
+    symmetry: "symmetry",
+    measurements: "measurements",
+    reconstruction_quality: "reconstruction quality",
+    landmark_quality: "landmark quality",
+    planning: "planning",
+    custom: "custom"
+  };
+
+  const INSIGHT_SEVERITY_LABELS = {
+    info: "info",
+    warning: "warning",
+    attention: "attention"
+  };
+
+  function renderAuditFilters() {
+    const actionSelect = byId("auditActionFilter");
+    const userSelect = byId("auditUserFilter");
+    const dateInput = byId("auditDateFilter");
+    if (actionSelect) actionSelect.value = state.auditActionFilter || "all";
+    if (dateInput) dateInput.value = state.auditDateFilter || "";
+    if (userSelect) {
+      const users = Array.from(new Map((state.auditEvents || []).map(event => [
+        event.userId || "local-user",
+        event.userName || event.userId || "Local User"
+      ])).entries());
+      userSelect.innerHTML = ['<option value="all">All users</option>']
+        .concat(users.map(([userId, userName]) => `<option value="${escapeHtml(userId)}">${escapeHtml(userName)}</option>`))
+        .join("");
+      userSelect.value = users.some(([userId]) => userId === state.auditUserFilter) ? state.auditUserFilter : "all";
+    }
+  }
+
+  function renderAuditLog() {
+    const summary = byId("auditLogSummary");
+    const list = byId("auditLogList");
+    const events = state.auditEvents || [];
+    if (summary) {
+      summary.textContent = state.currentCaseId
+        ? `${events.length} event(s) · action ${state.auditActionFilter || "all"} · user ${state.auditUserFilter || "all"}`
+        : "Select a case to view activity.";
+    }
+    renderAuditFilters();
+    if (!list) return;
+    if (!events.length) {
+      list.innerHTML = '<div class="hint">No audit events yet.</div>';
+      return;
+    }
+    list.innerHTML = events.map(event => `
+      <div class="reconstruction-history-row" data-audit-event-id="${escapeHtml(event.eventId)}">
+        <div class="reconstruction-history-main">
+          <strong>${escapeHtml(AUDIT_ACTION_LABELS[event.action] || event.action || "case updated")}</strong>
+          <div class="reconstruction-history-id">${escapeHtml(formatDateTime(event.timestamp))}</div>
+          <div class="reconstruction-history-id">${escapeHtml(event.eventId)}</div>
+        </div>
+        <div class="reconstruction-history-cell">${escapeHtml(event.userName || event.userId || "Local User")}</div>
+        <div class="reconstruction-history-cell">${escapeHtml(event.entityType || "case")}</div>
+        <div class="reconstruction-history-cell">${escapeHtml(event.entityId || "—")}</div>
+      </div>
+    `).join("");
+  }
+
+  async function loadAuditLog() {
+    if (isDemoMode()) {
+      state.auditEvents = state.currentCaseId === DEMO_CASE_ID
+        ? [{
+          eventId: "audit-demo-case-created",
+          caseId: DEMO_CASE_ID,
+          userId: "demo-member-owner",
+          userName: "Demo Owner",
+          action: "case_created",
+          entityType: "case",
+          entityId: DEMO_CASE_ID,
+          timestamp: DEMO_CASES[0].createdAt,
+          details: { mode: "demo" }
+        }]
+        : [];
+      renderAuditLog();
+      return;
+    }
+    if (!api()?.listCaseAuditEvents || !state.currentCaseId) {
+      state.auditEvents = [];
+      renderAuditLog();
+      return;
+    }
+    try {
+      state.auditEvents = await api().listCaseAuditEvents(state.currentCaseId, {
+        action: state.auditActionFilter || "all",
+        userId: state.auditUserFilter || "all",
+        date: state.auditDateFilter || ""
+      });
+      renderAuditLog();
+    } catch (err) {
+      state.auditEvents = [];
+      renderAuditLog();
+      setError(apiErrorMessage(err, "Audit log unavailable."));
+    }
+  }
+
+  async function handleAuditFilterChange() {
+    state.auditActionFilter = byId("auditActionFilter")?.value || "all";
+    state.auditUserFilter = byId("auditUserFilter")?.value || "all";
+    state.auditDateFilter = byId("auditDateFilter")?.value || "";
+    await loadAuditLog();
+    scheduleSessionAutoSave();
+  }
+
+  function readBackupMeta() {
+    return safeJsonParse(localStorage.getItem(BACKUP_META_STORAGE_KEY), { count: 0, lastBackup: null });
+  }
+
+  function writeBackupMeta(meta) {
+    try {
+      localStorage.setItem(BACKUP_META_STORAGE_KEY, JSON.stringify(meta));
+    } catch (err) {
+      console.warn("Unable to save backup metadata.", err);
+    }
+  }
+
+  function renderBackupRecovery() {
+    const summary = byId("backupRecoverySummary");
+    const previewBox = byId("backupPreviewBox");
+    const meta = readBackupMeta();
+    if (summary) {
+      const last = meta.lastBackup;
+      summary.textContent = last
+        ? `last backup ${formatDateTime(last.createdAt)} · ${last.casesCount || 0} cases · ${last.modelsCount || 0} models · backups exported ${meta.count || 0}`
+        : `No local backup exported yet · backups exported ${meta.count || 0}`;
+    }
+    if (!previewBox) return;
+    const preview = state.backupPreview;
+    if (!preview) {
+      previewBox.innerHTML = '<div class="hint">Import preview will appear here.</div>';
+      return;
+    }
+    const cases = preview.casePreview || [];
+    previewBox.innerHTML = `
+      <div class="reconstruction-history-row">
+        <div class="reconstruction-history-main">
+          <strong>PMAS Backup ${escapeHtml(preview.version || "—")}</strong>
+          <div class="reconstruction-history-id">${escapeHtml(preview.backupId || "backup")} · ${escapeHtml(formatDateTime(preview.createdAt))}</div>
+          <div class="reconstruction-history-id">checksum ${escapeHtml(String(preview.checksum || "").slice(0, 16))}... · file ${Math.round(Number(preview.fileSize || 0) / 1024)} KB</div>
+        </div>
+        <div class="reconstruction-history-cell">${Number(preview.casesCount || 0)} cases</div>
+        <div class="reconstruction-history-cell">${Number(preview.modelsCount || 0)} models</div>
+        <div class="reconstruction-history-cell">${Number(preview.reportsCount || 0)} reports</div>
+      </div>
+      ${cases.length ? cases.map(item => `
+        <label class="reconstruction-history-row" data-backup-case-id="${escapeHtml(item.caseId)}">
+          <div class="reconstruction-history-main">
+            <strong><input type="checkbox" data-backup-case-check value="${escapeHtml(item.caseId)}" checked /> ${escapeHtml(item.patientName || "Unnamed patient")}</strong>
+            <div class="reconstruction-history-id">${escapeHtml(item.caseId)} · ${escapeHtml(item.patientId || "no patient id")}</div>
+          </div>
+          <div class="reconstruction-history-cell">${Number(item.jobsCount || 0)} jobs</div>
+          <div class="reconstruction-history-cell">${Number(item.modelsCount || 0)} models</div>
+          <div class="reconstruction-history-cell">${Number(item.reportsCount || 0)} reports</div>
+        </label>
+      `).join("") : '<div class="hint">Backup contains no patient cases.</div>'}
+    `;
+  }
+
+  function downloadBackupJson(backup) {
+    const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    const safeId = String(backup?.backupId || "pmas-backup").replace(/[^\w.-]+/g, "_");
+    link.href = url;
+    link.download = `${safeId}.json`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  async function exportFullBackup() {
+    if (!api()?.exportFullBackup) return;
+    try {
+      const backup = await api().exportFullBackup();
+      downloadBackupJson(backup);
+      const meta = readBackupMeta();
+      writeBackupMeta({ count: Number(meta.count || 0) + 1, lastBackup: backup });
+      state.backupPreview = {
+        backupId: backup.backupId,
+        version: backup.version,
+        createdAt: backup.createdAt,
+        casesCount: backup.casesCount,
+        modelsCount: backup.modelsCount,
+        reportsCount: backup.reportsCount,
+        fileSize: backup.fileSize,
+        checksum: backup.checksum,
+        casePreview: (backup.payload?.data?.cases || []).map(item => ({
+          caseId: item.caseId,
+          patientName: item.patientName || "",
+          patientId: item.patientId || "",
+          jobsCount: Number(item.reconstructionJobs?.length || 0),
+          modelsCount: Number(item.models?.length || 0),
+          reportsCount: Number(item.reports?.length || 0)
+        }))
+      };
+      state.backupImportDraft = backup;
+      renderBackupRecovery();
+      await loadAuditLog();
+      setStatusText("Full PMAS backup exported.");
+    } catch (err) {
+      setError(apiErrorMessage(err, "Backup export failed."));
+    }
+  }
+
+  function readBackupImportDraftFromText() {
+    const text = byId("backupImportText")?.value || "";
+    if (!text.trim()) return state.backupImportDraft;
+    return safeJsonParse(text, null);
+  }
+
+  async function previewImportedBackup() {
+    if (!api()?.previewBackup) return;
+    const draft = readBackupImportDraftFromText();
+    if (!draft) {
+      setError("Paste or import a PMAS Backup JSON first.");
+      return;
+    }
+    try {
+      const result = await api().previewBackup(draft);
+      state.backupPreview = result.preview;
+      state.backupImportDraft = draft;
+      renderBackupRecovery();
+      setStatusText("Backup preview validated.");
+    } catch (err) {
+      state.backupPreview = err.preview || null;
+      renderBackupRecovery();
+      setError(apiErrorMessage(err, "Backup preview failed."));
+    }
+  }
+
+  async function restoreImportedBackup() {
+    if (!api()?.restoreBackup) return;
+    const draft = state.backupImportDraft || readBackupImportDraftFromText();
+    if (!draft || !state.backupPreview) {
+      setError("Preview a valid PMAS Backup JSON before restore.");
+      return;
+    }
+    const mode = byId("backupRestoreMode")?.value || "full";
+    const caseIds = Array.from(document.querySelectorAll("[data-backup-case-check]:checked")).map(input => input.value);
+    if (mode === "selected" && !caseIds.length) {
+      setError("Select at least one case to restore.");
+      return;
+    }
+    try {
+      const result = await api().restoreBackup(draft, { mode, caseIds });
+      state.currentCaseId = result.caseIds?.[0] || "";
+      state.currentCaseReport = null;
+      await loadCases();
+      await Promise.all([
+        loadComparisonModels(),
+        loadComparisons(),
+        loadHistory(),
+        loadCaseTeam(),
+        loadAuditLog(),
+        loadClinicalInsights(),
+        loadQaDashboard(),
+        loadSurgicalPlanningNotes(),
+        loadSurgicalSimulations(),
+        loadCaseTimeline(),
+        loadCaseLandmarks(),
+        loadLandmarkTemplates()
+      ]);
+      renderBackupRecovery();
+      renderClinicalReportBuilder();
+      setStatusText(`Backup restored: ${result.restoredCasesCount || 0} case(s).`);
+      scheduleSessionAutoSave();
+    } catch (err) {
+      setError(apiErrorMessage(err, "Backup restore failed."));
+    }
+  }
+
+  async function handleBackupFileImport(event) {
+    const file = event.target?.files?.[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      setInputValue("backupImportText", text);
+      state.backupImportDraft = safeJsonParse(text, null);
+      await previewImportedBackup();
+    } catch (err) {
+      setError("Backup file could not be read.");
+    } finally {
+      event.target.value = "";
+    }
+  }
+
+  function computeQaSummary(checks = state.qaChecks || []) {
+    const active = checks.filter(item => !item.resolved);
+    const warningsCount = active.filter(item => item.status === "warning").length;
+    const failuresCount = active.filter(item => item.status === "failed").length;
+    const passedCount = active.filter(item => item.status === "passed").length;
+    const criticalCount = active.filter(item => item.severity === "critical").length;
+    const qaScore = Math.max(0, Math.min(100, 100 - failuresCount * 18 - warningsCount * 7 - criticalCount * 15));
+    return {
+      qaScore,
+      readinessLevel: qaScore >= 90 ? "excellent" : qaScore >= 75 ? "good" : qaScore >= 50 ? "medium" : "poor",
+      warningsCount,
+      failuresCount,
+      passedCount,
+      checksCount: active.length
+    };
+  }
+
+  function qaBadgeClass(levelOrStatus) {
+    if (levelOrStatus === "excellent" || levelOrStatus === "good" || levelOrStatus === "passed") return "badge-success";
+    if (levelOrStatus === "poor" || levelOrStatus === "failed" || levelOrStatus === "critical") return "badge-danger";
+    return "badge-info";
+  }
+
+  function renderQaDashboard() {
+    const summary = state.qaSummary || computeQaSummary();
+    const list = byId("qaChecksList");
+    const summaryEl = byId("qaDashboardSummary");
+    if (summaryEl) {
+      summaryEl.textContent = state.currentCaseId
+        ? `${summary.checksCount || 0} check(s) · technical/product validation only`
+        : "Select a patient case to run technical QA checks.";
+    }
+    byId("qaScoreValue").textContent = Number.isFinite(Number(summary.qaScore)) ? `${Math.round(Number(summary.qaScore))}/100` : "—";
+    const badge = byId("qaReadinessBadge");
+    if (badge) {
+      badge.className = `badge ${qaBadgeClass(summary.readinessLevel)}`;
+      badge.textContent = summary.readinessLevel || "—";
+    }
+    byId("qaWarningsCount").textContent = String(summary.warningsCount || 0);
+    byId("qaFailuresCount").textContent = String(summary.failuresCount || 0);
+    byId("qaPassedCount").textContent = String(summary.passedCount || 0);
+    if (!list) return;
+    const checks = state.qaChecks || [];
+    if (!checks.length) {
+      list.innerHTML = '<div class="hint">No QA checks yet.</div>';
+      return;
+    }
+    list.innerHTML = checks.map(check => `
+      <div class="reconstruction-history-row ${check.resolved ? "is-muted" : ""}" data-qa-check-id="${escapeHtml(check.checkId)}">
+        <div class="reconstruction-history-main">
+          <strong>${escapeHtml(check.title || "QA check")}</strong>
+          <div class="reconstruction-history-id">${escapeHtml(check.description || "—")}</div>
+          <div class="reconstruction-history-id">${escapeHtml(check.checkId)} · ${escapeHtml(formatDateTime(check.createdAt))}</div>
+        </div>
+        <div class="reconstruction-history-cell"><span class="badge ${escapeHtml(qaBadgeClass(check.status))}">${escapeHtml(check.status || "warning")}</span></div>
+        <div class="reconstruction-history-cell">${escapeHtml(check.category || "system")}</div>
+        <div class="reconstruction-history-cell">${escapeHtml(check.severity || "medium")}</div>
+        <div class="reconstruction-history-actions">
+          <button class="btn btn-sm" data-qa-action="resolve" ${check.resolved || check.status === "passed" ? "disabled" : ""}>resolve</button>
+        </div>
+      </div>
+    `).join("");
+  }
+
+  async function loadQaDashboard() {
+    if (!api()?.listQaChecks || !state.currentCaseId) {
+      state.qaChecks = [];
+      state.qaSummary = null;
+      renderQaDashboard();
+      return;
+    }
+    try {
+      state.qaChecks = await api().listQaChecks(state.currentCaseId, { status: "all" });
+      state.qaSummary = computeQaSummary(state.qaChecks);
+      renderQaDashboard();
+    } catch (err) {
+      state.qaChecks = [];
+      state.qaSummary = null;
+      renderQaDashboard();
+      setError(apiErrorMessage(err, "QA checks unavailable."));
+    }
+  }
+
+  async function runQaValidationFromUi() {
+    if (!api()?.runQaValidation || !state.currentCaseId) {
+      setError("Select a patient case before running QA validation.");
+      return;
+    }
+    try {
+      const result = await api().runQaValidation(state.currentCaseId);
+      state.qaChecks = result.checks || [];
+      state.qaSummary = result.summary || computeQaSummary(state.qaChecks);
+      renderQaDashboard();
+      await loadAuditLog();
+      await loadCaseTimeline();
+      state.currentCaseReport = null;
+      renderClinicalReportBuilder();
+      setStatusText("QA validation completed.");
+    } catch (err) {
+      setError(apiErrorMessage(err, "QA validation failed."));
+    }
+  }
+
+  async function handleQaCheckClick(event) {
+    const button = event.target.closest("[data-qa-action]");
+    if (!button || !api()?.resolveQaCheck) return;
+    const row = button.closest("[data-qa-check-id]");
+    const checkId = row?.dataset?.qaCheckId || "";
+    if (!checkId) return;
+    try {
+      await api().resolveQaCheck(checkId);
+      await loadQaDashboard();
+      await loadAuditLog();
+      await loadCaseTimeline();
+      state.currentCaseReport = null;
+      renderClinicalReportBuilder();
+      setStatusText("QA issue marked as resolved.");
+    } catch (err) {
+      setError(apiErrorMessage(err, "QA issue resolve failed."));
+    }
+  }
+
+  function insightSeverityClass(severity) {
+    if (severity === "warning") return "badge-danger";
+    if (severity === "attention") return "badge-info";
+    return "";
+  }
+
+  function renderClinicalInsights() {
+    const summary = byId("clinicalInsightsSummary");
+    const list = byId("clinicalInsightsList");
+    const insights = state.clinicalInsights || [];
+    const active = insights.filter(item => !item.dismissed);
+    if (summary) {
+      summary.textContent = state.currentCaseId
+        ? `${active.length} active observation(s) · ${insights.filter(item => item.pinned).length} pinned · ${insights.filter(item => item.reviewed).length} reviewed`
+        : "Select a patient case to generate structured observations.";
+    }
+    if (!list) return;
+    if (!insights.length) {
+      list.innerHTML = '<div class="hint">No clinical insights yet.</div>';
+      return;
+    }
+    list.innerHTML = insights.map(insight => `
+      <div class="reconstruction-history-row ${insight.dismissed ? "is-muted" : ""}" data-insight-id="${escapeHtml(insight.insightId)}">
+        <div class="reconstruction-history-main">
+          <strong>${escapeHtml(insight.pinned ? `PIN · ${insight.title}` : insight.title)}</strong>
+          <div class="reconstruction-history-id">${escapeHtml(insight.description || "—")}</div>
+          <div class="reconstruction-history-id">${escapeHtml(insight.insightId)} · ${escapeHtml(formatDateTime(insight.createdAt))}</div>
+        </div>
+        <div class="reconstruction-history-cell">
+          <span class="badge ${escapeHtml(insightSeverityClass(insight.severity))}">${escapeHtml(INSIGHT_SEVERITY_LABELS[insight.severity] || insight.severity || "info")}</span>
+        </div>
+        <div class="reconstruction-history-cell">${escapeHtml(INSIGHT_CATEGORY_LABELS[insight.category] || insight.category || "custom")}</div>
+        <div class="reconstruction-history-cell">${escapeHtml(insight.source || "clinical_insights_engine")}</div>
+        <div class="reconstruction-history-actions">
+          <button class="btn btn-sm" data-insight-action="review" ${insight.reviewed ? "disabled" : ""}>reviewed</button>
+          <button class="btn btn-sm" data-insight-action="pin">${insight.pinned ? "unpin" : "pin"}</button>
+          <button class="btn btn-sm btn-danger" data-insight-action="dismiss" ${insight.dismissed ? "disabled" : ""}>dismiss</button>
+        </div>
+      </div>
+    `).join("");
+  }
+
+  async function loadClinicalInsights(options = {}) {
+    if (isDemoMode()) {
+      state.clinicalInsights = state.currentCaseId === DEMO_CASE_ID ? [{
+        insightId: "demo-insight-readiness",
+        caseId: DEMO_CASE_ID,
+        modelId: DEMO_MODEL_URL,
+        category: "reconstruction_quality",
+        severity: "attention",
+        title: "Readiness score требует внимания.",
+        description: "Demo observation: readiness 72/100 should be reviewed before planning use.",
+        source: "demo:readiness",
+        createdAt: DEMO_HISTORY[0].createdAt,
+        reviewed: false,
+        dismissed: false,
+        pinned: false
+      }] : [];
+      renderClinicalInsights();
+      return;
+    }
+    if (!api()?.listClinicalInsights || !state.currentCaseId) {
+      state.clinicalInsights = [];
+      renderClinicalInsights();
+      return;
+    }
+    try {
+      if (options.generate && api().generateClinicalInsights) {
+        state.clinicalInsights = await api().generateClinicalInsights(state.currentCaseId);
+      } else {
+        state.clinicalInsights = await api().listClinicalInsights(state.currentCaseId, { status: "active" });
+      }
+      renderClinicalInsights();
+    } catch (err) {
+      state.clinicalInsights = [];
+      renderClinicalInsights();
+      setError(apiErrorMessage(err, "Clinical insights unavailable."));
+    }
+  }
+
+  async function generateClinicalInsightsFromUi() {
+    if (!state.currentCaseId) {
+      setError("Select a patient case before generating clinical insights.");
+      return;
+    }
+    if (isDemoMode()) {
+      setStatusText("Demo mode shows sample clinical insights only.");
+      await loadClinicalInsights();
+      return;
+    }
+    await loadClinicalInsights({ generate: true });
+    await loadAuditLog();
+    await loadCaseTimeline();
+    state.currentCaseReport = null;
+    renderClinicalReportBuilder();
+    setStatusText("Clinical insights generated.");
+  }
+
+  async function handleClinicalInsightClick(event) {
+    const button = event.target.closest("[data-insight-action]");
+    if (!button || !api()?.updateClinicalInsight) return;
+    const row = button.closest("[data-insight-id]");
+    const insightId = row?.dataset?.insightId || "";
+    const existing = state.clinicalInsights.find(item => item.insightId === insightId);
+    if (!existing) return;
+    if (isDemoMode()) {
+      setStatusText("Demo mode: clinical insight actions are disabled.");
+      return;
+    }
+    const action = button.dataset.insightAction;
+    const changes = action === "review"
+      ? { reviewed: true }
+      : action === "dismiss"
+        ? { dismissed: true }
+        : { pinned: !existing.pinned };
+    try {
+      await api().updateClinicalInsight(insightId, changes);
+      await loadClinicalInsights();
+      await loadAuditLog();
+      await loadCaseTimeline();
+      state.currentCaseReport = null;
+      renderClinicalReportBuilder();
+      setStatusText("Clinical insight updated.");
+    } catch (err) {
+      setError(apiErrorMessage(err, "Clinical insight update failed."));
+    }
+  }
+
   function renderCaseSummary() {
     const box = byId("reconstructionCaseSummary");
     if (!box) return;
@@ -1083,6 +1658,7 @@
         });
       }
       await loadCaseMeasurements(context, false);
+      await loadClinicalInsights({ generate: true });
       scheduleSessionAutoSave();
     } catch (err) {
       setError(apiErrorMessage(err, "Measurement save failed."));
@@ -1106,6 +1682,7 @@
         await api().updateCaseMeasurementLabel(measurementId, label);
       }
       await loadCaseMeasurements(state.activeMeasurementContext, true);
+      await loadClinicalInsights({ generate: true });
       setStatusText("Case measurements updated.");
       scheduleSessionAutoSave();
     } catch (err) {
@@ -1240,10 +1817,14 @@
   const CLINICAL_REPORT_SECTIONS = Object.freeze([
     { sectionId: "case_info", label: "Patient / Case Info" },
     { sectionId: "case_team", label: "Case Team" },
+    { sectionId: "case_audit", label: "Audit Summary" },
+    { sectionId: "backup_status", label: "Backup Status" },
+    { sectionId: "qa_summary", label: "QA Summary" },
     { sectionId: "reconstruction_summary", label: "Reconstruction Summary" },
     { sectionId: "model_readiness", label: "Model Readiness" },
     { sectionId: "landmarks_summary", label: "Landmarks Summary" },
     { sectionId: "measurements_summary", label: "Measurements Summary" },
+    { sectionId: "clinical_insights", label: "Clinical Insights" },
     { sectionId: "case_timeline", label: "Case Timeline" },
     { sectionId: "before_after_comparison", label: "Before / After Comparison" },
     { sectionId: "surgical_simulation", label: "Surgical Simulation" },
@@ -1500,6 +2081,20 @@
           teamMembers: report.teamMembers || state.caseTeam?.teamMembers || [],
           contributors: report.contributors || (state.caseTeam?.teamMembers || []).filter(member => member.role !== "viewer")
         },
+        case_audit: {
+          auditSummary: report.auditSummary || {},
+          auditEvents: report.auditEvents || state.auditEvents || []
+        },
+        backup_status: report.backupStatus || {
+          backupVersion: "v1",
+          localBackupSupported: true,
+          cloudSyncEnabled: false,
+          includedData: ["Patient Cases", "Reconstruction Jobs", "Models Metadata", "Measurements", "Landmarks", "Reports", "Timeline", "Surgical Notes", "Simulations", "Clinical Insights"]
+        },
+        qa_summary: {
+          qaSummary: report.qaSummary || state.qaSummary || computeQaSummary(state.qaChecks),
+          qaChecks: report.qaChecks || state.qaChecks || []
+        },
         reconstruction_summary: report.reconstructionJobs || report.jobs || [],
         model_readiness: report.readinessScores || [],
         landmarks_summary: {
@@ -1512,6 +2107,7 @@
           measurementTemplateReport: report.measurementTemplateReport || {},
           autoMeasurementReport: report.autoMeasurementReport || {}
         },
+        clinical_insights: report.clinicalInsights || state.clinicalInsights,
         case_timeline: report.timeline || state.caseTimeline || null,
         before_after_comparison: report.comparisons || state.comparisons,
         surgical_simulation: report.surgicalSimulations || state.surgicalSimulations,
@@ -1564,6 +2160,37 @@
           (member.permissions || []).join(", ") || "view_case"
         ]));
       }
+      if (sectionId === "case_audit") {
+        return table(["Time", "User", "Action", "Entity"], (content?.auditEvents || content?.auditSummary?.latestEvents || []).map(event => [
+          formatDateTime(event.timestamp),
+          event.userName || event.userId || "Local User",
+          AUDIT_ACTION_LABELS[event.action] || event.action || "case updated",
+          `${event.entityType || "case"} ${event.entityId || ""}`.trim()
+        ]));
+      }
+      if (sectionId === "backup_status") {
+        return table(["Field", "Value"], [
+          ["Backup version", content?.backupVersion || "v1"],
+          ["Local backup supported", content?.localBackupSupported ? "yes" : "no"],
+          ["Cloud sync", content?.cloudSyncEnabled ? "enabled" : "disabled"],
+          ["Included data", (content?.includedData || []).join(", ") || "—"]
+        ]);
+      }
+      if (sectionId === "qa_summary") {
+        const qa = content?.qaSummary || {};
+        return table(["Field", "Value"], [
+          ["QA score", Number.isFinite(Number(qa.qaScore)) ? `${Math.round(Number(qa.qaScore))}/100` : "—"],
+          ["Readiness level", qa.readinessLevel || "—"],
+          ["Warnings", String(qa.warningsCount || 0)],
+          ["Failures", String(qa.failuresCount || 0)],
+          ["Passed checks", String(qa.passedCount || 0)]
+        ]) + table(["Status", "Severity", "Category", "Check"], (content?.qaChecks || []).map(item => [
+          item.status || "warning",
+          item.severity || "medium",
+          item.category || "system",
+          item.title || "QA check"
+        ]));
+      }
       if (sectionId === "model_readiness") {
         return table(["Job", "Score", "Level"], (content || []).map(item => [
           item.jobId || "—",
@@ -1586,6 +2213,15 @@
           measurementValueText(item),
           item.status || "ready",
           item.formula || "—"
+        ]));
+      }
+      if (sectionId === "clinical_insights") {
+        return table(["Title", "Severity", "Category", "Source", "Description"], (content || []).map(item => [
+          item.title || "Clinical observation",
+          INSIGHT_SEVERITY_LABELS[item.severity] || item.severity || "info",
+          INSIGHT_CATEGORY_LABELS[item.category] || item.category || "custom",
+          item.source || "clinical_insights_engine",
+          item.description || "—"
         ]));
       }
       if (sectionId === "before_after_comparison") {
@@ -2456,6 +3092,7 @@
       }
       for (const proposal of proposals) await api().saveCaseLandmark(proposal);
       await loadCaseLandmarks(state.activeMeasurementContext, true);
+      await loadClinicalInsights({ generate: true });
       await loadCases();
       setStatusText(`AI landmark proposals generated: ${proposals.length}.`);
     } catch (err) {
@@ -2632,6 +3269,7 @@
     }
     const saved = await api().saveCaseLandmark(landmark);
     await loadCaseLandmarks(state.activeMeasurementContext, true);
+    await loadClinicalInsights({ generate: true });
     await loadCases();
     setStatusText("Landmark saved.");
     return saved;
@@ -2664,6 +3302,7 @@
       await api().saveCaseLandmark(next);
       await loadCaseLandmarks(state.activeMeasurementContext, true);
       await recalculateAllMeasurementsForModel(state.activeMeasurementContext?.modelId);
+      await loadClinicalInsights({ generate: true });
     } catch (err) {
       setError(apiErrorMessage(err, "Landmark update failed."));
     }
@@ -2832,6 +3471,7 @@
       state.currentSurgicalPlanId = plan.planId;
       await loadSurgicalPlanningNotes();
       await loadCaseTimeline();
+      await loadAuditLog();
       await loadCases();
       setStatusText("Surgical planning notes saved.");
       scheduleSessionAutoSave();
@@ -3017,6 +3657,8 @@
       await loadCases();
       await loadComparisonModels();
       await loadCaseTimeline();
+      await loadAuditLog();
+      await loadClinicalInsights({ generate: true });
       state.currentCaseReport = null;
       state.clinicalReportDraft = buildClinicalReportSnapshot(state.currentCaseReport || {});
       renderClinicalReportBuilder();
@@ -3079,7 +3721,18 @@
   }
 
   function timelineTypeLabel(type) {
-    return String(type || "note").replace(/_/g, " ");
+    const labels = {
+      reconstruction: "reconstruction",
+      simulation: "simulation",
+      report: "report",
+      measurement_snapshot: "measurement snapshot",
+      note: "note",
+      insight_generated: "insight generated",
+      insight_reviewed: "insight reviewed",
+      qa_check_completed: "QA check completed",
+      qa_issue_detected: "QA issue detected"
+    };
+    return labels[type] || String(type || "note").replace(/_/g, " ");
   }
 
   function timelineComparableEntries() {
@@ -3240,6 +3893,7 @@
     state.surgicalSimulations = [];
     state.caseTimeline = null;
     state.caseTeam = { ownerId: "", teamMembers: [], permissions: {} };
+    state.auditEvents = [];
     applySurgicalPlanningForm(null);
     applySurgicalSimulationDraft({});
     resetJobUi();
@@ -3390,6 +4044,7 @@
       setInputValue("caseTeamMemberEmail", "");
       setInputValue("caseTeamMemberRole", "viewer");
       await loadCaseTeam();
+      await loadAuditLog();
       await loadCases();
       state.currentCaseReport = null;
       setStatusText("Case team member added.");
@@ -3421,6 +4076,7 @@
         setStatusText("Case team member removed.");
       }
       await loadCaseTeam();
+      await loadAuditLog();
       await loadCases();
       state.currentCaseReport = null;
       scheduleSessionAutoSave();
@@ -3445,6 +4101,8 @@
       await loadComparisonModels();
       await loadHistory();
       await loadCaseTeam();
+      await loadAuditLog();
+      await loadClinicalInsights();
       await loadSurgicalPlanningNotes();
       await loadSurgicalSimulations();
       await loadCaseTimeline();
@@ -3472,6 +4130,9 @@
       loadCaseMeasurements(),
       loadCaseLandmarks(),
       loadCaseTeam(),
+      loadAuditLog(),
+      loadClinicalInsights(),
+      loadQaDashboard(),
       loadSurgicalPlanningNotes(),
       loadSurgicalSimulations(),
       loadCaseTimeline()
@@ -3485,6 +4146,8 @@
     state.currentSurgicalPlanId = "";
     state.caseTimeline = null;
     state.caseTeam = { ownerId: "", teamMembers: [], permissions: {} };
+    state.auditEvents = [];
+    state.clinicalInsights = [];
     ["reconstructionCasePatientName", "reconstructionCasePatientId", "reconstructionCaseNotes"].forEach(id => {
       const el = byId(id);
       if (el) el.value = "";
@@ -3520,6 +4183,8 @@
         state.activeMeasurementContext = null;
         state.caseTimeline = null;
         state.caseTeam = { ownerId: "", teamMembers: [], permissions: {} };
+        state.auditEvents = [];
+        state.clinicalInsights = [];
         applySurgicalPlanningForm(null);
         applySurgicalSimulationDraft({});
         resetJobUi();
@@ -3529,6 +4194,9 @@
       await loadComparisonModels();
       await loadComparisons();
       await loadCaseTeam();
+      await loadAuditLog();
+      await loadClinicalInsights();
+      await loadQaDashboard();
       await loadSurgicalPlanningNotes();
       await loadSurgicalSimulations();
       await loadCaseTimeline();
@@ -3619,6 +4287,8 @@
       await loadComparisons();
       applyComparisonDraft(snapshot.comparisonDraft || {});
       await loadCaseTeam();
+      await loadAuditLog();
+      await loadClinicalInsights();
       await loadSurgicalPlanningNotes();
       applySurgicalPlanningForm(snapshot.surgicalDraft?.hasContent ? snapshot.surgicalDraft : null);
       await loadSurgicalSimulations();
@@ -4640,6 +5310,11 @@
     const teamMembers = report?.teamMembers || [];
     const owner = report?.caseOwner || teamMembers.find(member => member.memberId === report?.ownerId) || teamMembers.find(member => member.role === "owner") || null;
     const contributors = report?.contributors || teamMembers.filter(member => member.role !== "viewer");
+    const auditSummary = report?.auditSummary || {};
+    const auditEvents = report?.auditEvents || auditSummary.latestEvents || [];
+    const backupStatus = report?.backupStatus || {};
+    const qaSummary = report?.qaSummary || state.qaSummary || {};
+    const qaChecks = report?.qaChecks || state.qaChecks || [];
     const measurements = report?.measurements || [];
     const measurementTemplateReport = report?.measurementTemplateReport || {};
     const autoMeasurementReport = report?.autoMeasurementReport || {};
@@ -4651,6 +5326,7 @@
     const comparisons = report?.comparisons || [];
     const simulations = report?.surgicalSimulations || [];
     const plans = report?.surgicalPlanningNotes || [];
+    const clinicalInsights = report?.clinicalInsights || state.clinicalInsights || [];
     const warnings = report?.warnings || [];
     const lines = [
       "PMAS Patient Case Report",
@@ -4665,6 +5341,11 @@
       `Team members: ${teamMembers.length}`,
       ...teamMembers.map(member => `- ${member.name || member.memberId}: ${teamRoleLabel(member.role)} · ${(member.permissions || []).join(", ") || "view_case"}`),
       `Contributors: ${contributors.map(member => member.name || member.memberId).join(", ") || "none"}`,
+      `Audit events: ${Number(auditSummary.eventsCount || auditEvents.length || 0)}`,
+      ...auditEvents.slice(0, 20).map(event => `- ${formatDateTime(event.timestamp)} · ${event.userName || event.userId || "Local User"} · ${AUDIT_ACTION_LABELS[event.action] || event.action} · ${event.entityType || "case"} ${event.entityId || ""}`),
+      `Backup status: version ${backupStatus.backupVersion || "v1"} · local backup ${backupStatus.localBackupSupported === false ? "disabled" : "supported"} · cloud sync ${backupStatus.cloudSyncEnabled ? "enabled" : "disabled"}`,
+      `QA summary: score ${Number.isFinite(Number(qaSummary.qaScore)) ? Math.round(Number(qaSummary.qaScore)) + "/100" : "—"} · readiness ${qaSummary.readinessLevel || "—"} · warnings ${qaSummary.warningsCount || 0} · failures ${qaSummary.failuresCount || 0}`,
+      ...qaChecks.slice(0, 30).map(item => `- [${item.status || "warning"}:${item.severity || "medium"}] ${item.category || "system"} · ${item.title || "QA check"} · ${item.description || "—"}`),
       `Selected analysis presets: ${Number(clinicalAnalysisPresetReport.selectedAnalysisPresets?.length || report?.selectedAnalysisPresets?.length || 0)}`,
       ...(clinicalAnalysisPresetReport.selectedAnalysisPresets || report?.selectedAnalysisPresets || []).map(item => `- ${item.name || item.presetId}: landmarks ${item.generatedLandmarksCount || 0}, measurements ${item.generatedMeasurementsCount || 0}`),
       `Analysis preset warnings: ${(clinicalAnalysisPresetReport.warnings || []).join("; ") || "none"}`,
@@ -4683,6 +5364,9 @@
       `Formulas used: ${(autoMeasurementReport.formulasUsed || []).join(", ") || "none"}`,
       `Auto measurement warnings: ${(autoMeasurementReport.warnings || []).join("; ") || "none"}`,
       ...measurements.map(item => `- ${item.label || item.type || item.measurementId}: ${item.type || "—"} ${measurementValueText(item)} [${item.status || "ready"}]${item.formula ? ` formula=${item.formula}` : ""}`),
+      "",
+      `Clinical insights: ${clinicalInsights.length}`,
+      ...clinicalInsights.map(item => `- [${item.severity || "info"}] ${item.title || "Clinical observation"} · ${item.category || "custom"} · ${item.source || "clinical_insights_engine"} · ${item.description || "—"}`),
       "",
       `Case timeline entries: ${timeline?.entries?.length || report?.timelineSummary?.entriesCount || 0}`,
       ...(timeline?.entries || []).map(item => `- ${formatDateTime(item.createdAt)} · ${timelineTypeLabel(item.entryType)} · ${item.modelId || item.reconstructionJobId || "—"} · ${item.description || item.title || "—"}`),
@@ -4795,6 +5479,17 @@
       const timeline = demoCaseTimeline();
       const teamMembers = DEMO_CASES[0].teamMembers.map(member => ({ ...member, permissions: [...(member.permissions || [])] }));
       const caseOwner = teamMembers.find(member => member.memberId === DEMO_CASES[0].ownerId) || teamMembers[0] || null;
+      const auditEvents = state.auditEvents.length ? state.auditEvents : [{
+        eventId: "audit-demo-case-created",
+        caseId: DEMO_CASE_ID,
+        userId: "demo-member-owner",
+        userName: "Demo Owner",
+        action: "case_created",
+        entityType: "case",
+        entityId: DEMO_CASE_ID,
+        timestamp: DEMO_CASES[0].createdAt,
+        details: { mode: "demo" }
+      }];
       return {
         ...DEMO_CASES[0],
         generatedAt: new Date().toISOString(),
@@ -4804,6 +5499,19 @@
         teamMembersCount: teamMembers.length,
         casePermissions: DEMO_CASES[0].permissions,
         contributors: teamMembers.filter(member => member.role !== "viewer"),
+        auditEvents,
+        auditSummary: {
+          eventsCount: auditEvents.length,
+          actions: auditEvents.reduce((acc, event) => {
+            acc[event.action] = (acc[event.action] || 0) + 1;
+            return acc;
+          }, {}),
+          users: auditEvents.reduce((acc, event) => {
+            acc[event.userName || event.userId || "Local User"] = (acc[event.userName || event.userId || "Local User"] || 0) + 1;
+            return acc;
+          }, {}),
+          latestEvents: auditEvents.slice(0, 10)
+        },
         reconstructionJobs: DEMO_HISTORY.map(item => ({ ...item })),
         jobs: DEMO_HISTORY.map(item => ({ ...item })),
         resultModels: [{
@@ -4857,6 +5565,7 @@
     state.clinicalReportDraft = buildClinicalReportSnapshot(report);
     renderClinicalReportBuilder();
     await loadCases();
+    await loadAuditLog();
     return report;
   }
 
@@ -5056,10 +5765,19 @@
     byId("btnDownloadCaseJsonReport")?.addEventListener("click", () => downloadCaseJsonReport());
     byId("btnExportCasePdfReport")?.addEventListener("click", () => exportCasePdfReport());
     byId("btnExportCaseDocxReport")?.addEventListener("click", () => exportCaseDocxReport());
+    byId("btnExportFullBackup")?.addEventListener("click", exportFullBackup);
+    byId("backupImportFile")?.addEventListener("change", handleBackupFileImport);
+    byId("btnPreviewBackup")?.addEventListener("click", previewImportedBackup);
+    byId("btnRestoreBackup")?.addEventListener("click", restoreImportedBackup);
+    byId("btnRunQaValidation")?.addEventListener("click", runQaValidationFromUi);
+    byId("qaChecksList")?.addEventListener("click", handleQaCheckClick);
     byId("btnDashboardCreateCase")?.addEventListener("click", resetCaseFormForCreate);
     byId("caseDashboardList")?.addEventListener("click", handleCaseDashboardClick);
     byId("btnAddCaseTeamMember")?.addEventListener("click", addCaseTeamMember);
     byId("caseTeamList")?.addEventListener("click", handleCaseTeamClick);
+    byId("auditActionFilter")?.addEventListener("change", handleAuditFilterChange);
+    byId("auditUserFilter")?.addEventListener("change", handleAuditFilterChange);
+    byId("auditDateFilter")?.addEventListener("change", handleAuditFilterChange);
     byId("caseDashboardSearch")?.addEventListener("input", handleCaseDashboardFilter);
     byId("caseDashboardStatusFilter")?.addEventListener("change", handleCaseDashboardFilter);
     byId("caseDashboardSort")?.addEventListener("change", handleCaseDashboardFilter);
@@ -5075,6 +5793,7 @@
       renderClinicalReportBuilder();
       renderLandmarkTemplates();
       loadCaseTeam();
+      loadClinicalInsights();
       loadSurgicalPlanningNotes();
       loadSurgicalSimulations();
       applySurgicalPlanningForm(null);
@@ -5127,6 +5846,8 @@
     byId("surgicalSimulationBeforeModel")?.addEventListener("change", renderSurgicalSimulation);
     byId("surgicalSimulationType")?.addEventListener("change", renderSurgicalSimulation);
     byId("surgicalSimulationList")?.addEventListener("click", handleSurgicalSimulationClick);
+    byId("btnGenerateClinicalInsights")?.addEventListener("click", generateClinicalInsightsFromUi);
+    byId("clinicalInsightsList")?.addEventListener("click", handleClinicalInsightClick);
     byId("caseTimelineList")?.addEventListener("click", handleCaseTimelineClick);
     byId("measurementTemplatesList")?.addEventListener("click", handleMeasurementTemplateAction);
     byId("caseMeasurementsList")?.addEventListener("click", handleMeasurementAction);
@@ -5195,6 +5916,8 @@
     state.clinicalAnalysisPresets = DEFAULT_CLINICAL_ANALYSIS_PRESETS.map(preset => ({ ...preset }));
     state.clinicalReportTemplates = DEFAULT_REPORT_TEMPLATES.map(template => ({ ...template, sections: [...template.sections] }));
     renderAccessModeUi();
+    renderBackupRecovery();
+    renderQaDashboard();
     renderClinicalAnalysisPresets();
     renderClinicalReportBuilder();
     renderMeasurementTemplates();
@@ -5204,7 +5927,7 @@
     resetJobUi();
     state.restoreCandidate = readSavedSession();
     loadCases().then(async () => {
-      await Promise.all([loadComparisonModels(), loadComparisons(), loadHistory(), loadCaseTeam(), loadSurgicalPlanningNotes(), loadSurgicalSimulations(), loadCaseTimeline(), loadCaseLandmarks(), loadLandmarkTemplates()]);
+      await Promise.all([loadComparisonModels(), loadComparisons(), loadHistory(), loadCaseTeam(), loadAuditLog(), loadClinicalInsights(), loadQaDashboard(), loadSurgicalPlanningNotes(), loadSurgicalSimulations(), loadCaseTimeline(), loadCaseLandmarks(), loadLandmarkTemplates()]);
       renderSessionRecoveryPrompt(state.restoreCandidate);
     });
   }

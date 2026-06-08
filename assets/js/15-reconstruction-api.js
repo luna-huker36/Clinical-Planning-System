@@ -8,6 +8,9 @@
   const MOCK_LANDMARK_TEMPLATES_KEY = "pmas.reconstruction.landmark-templates.v1";
   const MOCK_SURGICAL_PLANS_KEY = "pmas.reconstruction.surgical-plans.v1";
   const MOCK_SURGICAL_SIMULATIONS_KEY = "pmas.reconstruction.surgical-simulations.v1";
+  const MOCK_AUDIT_EVENTS_KEY = "pmas.reconstruction.audit-events.v1";
+  const MOCK_CLINICAL_INSIGHTS_KEY = "pmas.reconstruction.clinical-insights.v1";
+  const MOCK_QA_CHECKS_KEY = "pmas.reconstruction.qa-checks.v1";
   const REPORT_EXPORT_FORMATS = ["json"];
   const DEFAULT_RECONSTRUCTION_SETTINGS = Object.freeze({
     processingMode: "balanced",
@@ -34,6 +37,16 @@
     caseTimeline: caseId => `/api/reconstruction/cases/${encodeURIComponent(caseId)}/timeline`,
     caseTeam: caseId => `/api/reconstruction/cases/${encodeURIComponent(caseId)}/team`,
     caseTeamMember: (caseId, memberId) => `/api/reconstruction/cases/${encodeURIComponent(caseId)}/team/${encodeURIComponent(memberId)}`,
+    caseAudit: caseId => `/api/reconstruction/cases/${encodeURIComponent(caseId)}/audit`,
+    caseInsights: caseId => `/api/reconstruction/cases/${encodeURIComponent(caseId)}/insights`,
+    generateCaseInsights: caseId => `/api/reconstruction/cases/${encodeURIComponent(caseId)}/insights/generate`,
+    clinicalInsight: insightId => `/api/reconstruction/insights/${encodeURIComponent(insightId)}`,
+    backupExport: "/api/reconstruction/backup/export",
+    backupPreview: "/api/reconstruction/backup/preview",
+    backupRestore: "/api/reconstruction/backup/restore",
+    caseQa: caseId => `/api/reconstruction/cases/${encodeURIComponent(caseId)}/qa`,
+    runCaseQa: caseId => `/api/reconstruction/cases/${encodeURIComponent(caseId)}/qa/run`,
+    resolveQaCheck: checkId => `/api/reconstruction/qa/${encodeURIComponent(checkId)}/resolve`,
     comparisons: "/api/reconstruction/comparisons",
     comparisonReport: comparisonId => `/api/reconstruction/comparisons/${encodeURIComponent(comparisonId)}/report`,
     measurements: "/api/reconstruction/measurements",
@@ -64,6 +77,29 @@
   };
 
   const TEAM_ROLES = ["owner", "surgeon", "assistant", "viewer"];
+  const AUDIT_ACTIONS = [
+    "case_created",
+    "case_updated",
+    "model_uploaded",
+    "reconstruction_started",
+    "reconstruction_completed",
+    "landmark_added",
+    "landmark_updated",
+    "measurement_added",
+    "measurement_updated",
+    "note_updated",
+    "report_exported",
+    "simulation_created",
+    "team_member_added",
+    "team_member_removed",
+    "insight_created",
+    "insight_acknowledged",
+    "backup_created",
+    "backup_imported",
+    "backup_restored",
+    "qa_run",
+    "qa_issue_resolved"
+  ];
   const ROLE_PERMISSIONS = Object.freeze({
     owner: ["view_case", "edit_case", "add_measurements", "edit_measurements", "add_notes", "export_reports", "run_reconstruction", "run_simulation"],
     surgeon: ["view_case", "edit_case", "add_measurements", "edit_measurements", "add_notes", "export_reports", "run_reconstruction", "run_simulation"],
@@ -188,6 +224,348 @@
   function makeMockTeamMemberId() {
     if (window.crypto?.randomUUID) return `member-${window.crypto.randomUUID()}`;
     return `member-${Date.now().toString(36)}-${Math.random().toString(16).slice(2)}`;
+  }
+
+  function readMockAuditEvents() {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(MOCK_AUDIT_EVENTS_KEY) || "[]");
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (err) {
+      return [];
+    }
+  }
+
+  function writeMockAuditEvents(items) {
+    try {
+      localStorage.setItem(MOCK_AUDIT_EVENTS_KEY, JSON.stringify(items.slice(0, 2000)));
+    } catch (err) {
+      console.warn("Unable to save audit events.", err);
+    }
+  }
+
+  function makeMockAuditEventId() {
+    if (window.crypto?.randomUUID) return `audit-${window.crypto.randomUUID()}`;
+    return `audit-${Date.now().toString(36)}-${Math.random().toString(16).slice(2)}`;
+  }
+
+  function recordMockAuditEvent(input = {}) {
+    const caseId = String(input.caseId || "").trim();
+    if (!caseId) return null;
+    const action = AUDIT_ACTIONS.includes(input.action) ? input.action : "case_updated";
+    const event = {
+      eventId: String(input.eventId || makeMockAuditEventId()),
+      caseId,
+      userId: String(input.userId || "local-user"),
+      userName: String(input.userName || "Local User"),
+      action,
+      entityType: String(input.entityType || "case"),
+      entityId: String(input.entityId || caseId),
+      timestamp: input.timestamp || new Date().toISOString(),
+      details: input.details && typeof input.details === "object" ? { ...input.details } : {}
+    };
+    writeMockAuditEvents([event, ...readMockAuditEvents().filter(item => item.eventId !== event.eventId)]);
+    const cases = readMockCases();
+    const caseItem = cases.find(item => item.caseId === caseId);
+    if (caseItem) {
+      caseItem.auditEvents = caseItem.auditEvents || [];
+      if (!caseItem.auditEvents.includes(event.eventId)) caseItem.auditEvents.push(event.eventId);
+      caseItem.updatedAt = event.timestamp;
+      writeMockCases([caseItem, ...cases.filter(item => item.caseId !== caseId)]);
+    }
+    return event;
+  }
+
+  function filterMockAuditEvents(filter = {}) {
+    const caseId = String(filter.caseId || "all");
+    const action = String(filter.action || "all");
+    const userId = String(filter.userId || "all");
+    const date = String(filter.date || "").slice(0, 10);
+    return readMockAuditEvents()
+      .filter(item => caseId === "all" || item.caseId === caseId)
+      .filter(item => action === "all" || item.action === action)
+      .filter(item => userId === "all" || item.userId === userId)
+      .filter(item => !date || String(item.timestamp || "").slice(0, 10) === date)
+      .sort((a, b) => String(b.timestamp || "").localeCompare(String(a.timestamp || "")));
+  }
+
+  function readMockClinicalInsights() {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(MOCK_CLINICAL_INSIGHTS_KEY) || "[]");
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (err) {
+      return [];
+    }
+  }
+
+  function writeMockClinicalInsights(items) {
+    try {
+      localStorage.setItem(MOCK_CLINICAL_INSIGHTS_KEY, JSON.stringify(items.slice(0, 1000)));
+    } catch (err) {
+      console.warn("Unable to save clinical insights.", err);
+    }
+  }
+
+  function readMockQaChecks() {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(MOCK_QA_CHECKS_KEY) || "[]");
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (err) {
+      return [];
+    }
+  }
+
+  function writeMockQaChecks(items) {
+    try {
+      localStorage.setItem(MOCK_QA_CHECKS_KEY, JSON.stringify(items.slice(0, 1500)));
+    } catch (err) {
+      console.warn("Unable to save QA checks.", err);
+    }
+  }
+
+  function qaSummary(checks = []) {
+    const active = checks.filter(item => !item.resolved);
+    const warningsCount = active.filter(item => item.status === "warning").length;
+    const failuresCount = active.filter(item => item.status === "failed").length;
+    const criticalCount = active.filter(item => item.severity === "critical").length;
+    const qaScore = Math.max(0, Math.min(100, 100 - failuresCount * 18 - warningsCount * 7 - criticalCount * 15));
+    return {
+      qaScore,
+      readinessLevel: qaScore >= 90 ? "excellent" : qaScore >= 75 ? "good" : qaScore >= 50 ? "medium" : "poor",
+      warningsCount,
+      failuresCount,
+      passedCount: active.filter(item => item.status === "passed").length,
+      checksCount: active.length
+    };
+  }
+
+  function makeMockQaCheck(input) {
+    return {
+      checkId: input.checkId || (crypto.randomUUID ? `qa-check-${crypto.randomUUID()}` : `qa-check-${Date.now().toString(36)}-${Math.random().toString(16).slice(2)}`),
+      caseId: input.caseId || "",
+      category: input.category || "system",
+      status: input.status || "warning",
+      severity: input.severity || "medium",
+      title: input.title || "QA check",
+      description: input.description || "",
+      createdAt: input.createdAt || new Date().toISOString(),
+      resolved: Boolean(input.resolved),
+      resolvedAt: input.resolvedAt || ""
+    };
+  }
+
+  function generateMockQaChecks(caseId) {
+    const caseItem = readMockCases().find(item => item.caseId === caseId) || {};
+    const jobs = readMockHistory().filter(item => item.caseId === caseId);
+    const measurements = readMockMeasurements().filter(item => item.caseId === caseId);
+    const landmarks = readMockLandmarks().filter(item => item.caseId === caseId);
+    const plans = readMockSurgicalPlans().filter(item => item.caseId === caseId);
+    const simulations = readMockSurgicalSimulations().filter(item => item.caseId === caseId);
+    const checks = [];
+    const add = item => checks.push(makeMockQaCheck({ caseId, ...item }));
+    add({ category: "patient_case", status: caseItem.patientName ? "passed" : "failed", severity: caseItem.patientName ? "low" : "high", title: "Patient data present", description: caseItem.patientName ? "Patient name is present." : "Patient name is missing." });
+    add({ category: "patient_case", status: jobs.length || caseItem.models?.length ? "passed" : "warning", severity: "medium", title: "Model attached", description: jobs.length || caseItem.models?.length ? "Case has model/job metadata." : "No model metadata is attached." });
+    add({ category: "patient_case", status: plans.length || caseItem.notes ? "passed" : "warning", severity: "medium", title: "Clinical notes present", description: plans.length || caseItem.notes ? "Notes are present." : "No notes are present." });
+    add({ category: "reconstruction", status: jobs.some(item => item.status === "ready") ? "passed" : "warning", severity: "medium", title: "Reconstruction completed", description: jobs.some(item => item.status === "ready") ? "Ready job found." : "No ready job found." });
+    add({ category: "reconstruction", status: jobs.some(item => item.resultGlbUrl) ? "passed" : "warning", severity: "high", title: "Result GLB exists", description: jobs.some(item => item.resultGlbUrl) ? "Result GLB metadata exists." : "No result GLB URL is stored." });
+    add({ category: "model_quality", status: jobs.some(item => Number(item.readinessScore) > 0) ? "passed" : "warning", severity: "medium", title: "Readiness score exists", description: jobs.some(item => Number(item.readinessScore) > 0) ? "Readiness score metadata exists." : "Readiness score metadata is missing." });
+    const errors = jobs.filter(item => item.status === "error" || item.errorMessage);
+    add({ category: "reconstruction", status: errors.length ? "failed" : "passed", severity: errors.length ? "critical" : "low", title: "No critical reconstruction errors", description: errors.length ? `${errors.length} job(s) contain errors.` : "No job error status found." });
+    const missing = landmarks.filter(item => item.status === "unplaced" || (item.required && !["placed", "approved", "corrected"].includes(item.status)));
+    add({ category: "landmarks", status: missing.length ? "failed" : landmarks.length ? "passed" : "warning", severity: missing.length ? "high" : "medium", title: "Required landmarks exist", description: missing.length ? `${missing.length} missing landmark issue(s).` : landmarks.length ? "Landmarks are present." : "No landmarks stored." });
+    const approved = landmarks.filter(item => ["approved", "corrected"].includes(item.status)).length;
+    add({ category: "landmarks", status: approved ? "passed" : "warning", severity: "medium", title: "Approved landmarks count", description: `${approved} approved/corrected landmark(s).` });
+    const lowConfidence = landmarks.filter(item => Number(item.confidence) < 60);
+    if (lowConfidence.length) add({ category: "landmarks", status: "warning", severity: "medium", title: "Low confidence landmarks", description: `${lowConfidence.length} low-confidence landmark(s).` });
+    add({ category: "measurements", status: measurements.length ? "passed" : "warning", severity: "medium", title: "Measurements calculated", description: measurements.length ? `${measurements.length} measurement(s) stored.` : "No measurements stored." });
+    const invalid = measurements.filter(item => item.status === "error" || Number.isNaN(Number(item.value)));
+    if (invalid.length) add({ category: "measurements", status: "failed", severity: "high", title: "Invalid measurement values", description: `${invalid.length} invalid measurement(s).` });
+    add({ category: "reports", status: caseItem.reports?.length ? "passed" : "warning", severity: "medium", title: "Report generated", description: caseItem.reports?.length ? `${caseItem.reports.length} report(s).` : "No report attached." });
+    add({ category: "reports", status: "passed", severity: "low", title: "Report export available", description: "JSON/PDF/DOCX export controls are available." });
+    add({ category: "simulations", status: simulations.length ? "passed" : "warning", severity: "low", title: "Simulation data", description: simulations.length ? `${simulations.length} simulation(s).` : "No simulations stored." });
+    add({ category: "backup", status: "passed", severity: "low", title: "Backup system available", description: "Local PMAS Backup JSON is available." });
+    add({ category: "system", status: "passed", severity: "low", title: "System validation completed", description: "Technical QA checks completed. This is not medical validation." });
+    writeMockQaChecks([...checks, ...readMockQaChecks().filter(item => item.caseId !== caseId || item.resolved)]);
+    recordMockAuditEvent({ caseId, action: "qa_run", entityType: "qa_validation", entityId: `qa-${caseId}`, details: qaSummary(checks) });
+    return { caseId, checks, summary: qaSummary(checks) };
+  }
+
+  async function sha256Text(text) {
+    const data = new TextEncoder().encode(text);
+    const hash = await crypto.subtle.digest("SHA-256", data);
+    return Array.from(new Uint8Array(hash)).map(byte => byte.toString(16).padStart(2, "0")).join("");
+  }
+
+  function mockBackupSnapshot() {
+    return {
+      cases: readMockCases(),
+      jobs: readMockHistory(),
+      comparisons: readMockComparisons(),
+      measurements: readMockMeasurements(),
+      landmarks: readMockLandmarks(),
+      landmarkTemplates: readMockLandmarkTemplates(),
+      surgicalPlans: readMockSurgicalPlans(),
+      simulations: readMockSurgicalSimulations(),
+      auditEvents: readMockAuditEvents(),
+      clinicalInsights: readMockClinicalInsights(),
+      qaChecks: readMockQaChecks()
+    };
+  }
+
+  function mockCountModels(snapshot = {}) {
+    return new Set([
+      ...(snapshot.cases || []).flatMap(item => item.models || []),
+      ...(snapshot.jobs || []).map(item => item.resultGlbUrl).filter(Boolean)
+    ]).size;
+  }
+
+  function mockCountReports(snapshot = {}) {
+    return (snapshot.cases || []).reduce((sum, item) => sum + Number(item.reports?.length || 0), 0);
+  }
+
+  async function makeMockBackup() {
+    const snapshot = mockBackupSnapshot();
+    const payload = {
+      backupVersion: "v1",
+      exportedAt: new Date().toISOString(),
+      data: snapshot
+    };
+    const checksum = await sha256Text(JSON.stringify(payload));
+    const backup = {
+      backupId: window.crypto?.randomUUID ? `backup-${window.crypto.randomUUID()}` : `backup-${Date.now().toString(36)}`,
+      version: "v1",
+      createdAt: payload.exportedAt,
+      casesCount: Number(snapshot.cases?.length || 0),
+      modelsCount: mockCountModels(snapshot),
+      reportsCount: mockCountReports(snapshot),
+      fileSize: new Blob([JSON.stringify({ payload, checksum })]).size,
+      checksum,
+      payload
+    };
+    (snapshot.cases || []).forEach(caseItem => recordMockAuditEvent({
+      caseId: caseItem.caseId,
+      action: "backup_created",
+      entityType: "backup",
+      entityId: backup.backupId,
+      details: { casesCount: backup.casesCount, modelsCount: backup.modelsCount, reportsCount: backup.reportsCount }
+    }));
+    return backup;
+  }
+
+  async function validateMockBackup(input = {}) {
+    const backup = input.backupId && input.payload ? input : null;
+    const payload = backup ? backup.payload : input.payload || input;
+    const checksum = backup?.checksum || input.checksum || "";
+    const errors = [];
+    if (!payload?.data) errors.push("Invalid PMAS Backup JSON format.");
+    if (payload?.backupVersion !== "v1") errors.push(`Unsupported backup version: ${payload?.backupVersion || "unknown"}.`);
+    const expected = payload?.data ? await sha256Text(JSON.stringify(payload)) : "";
+    if (checksum && expected && checksum !== expected) errors.push("Backup checksum mismatch.");
+    const snapshot = payload?.data || {};
+    return {
+      ok: errors.length === 0,
+      errors,
+      preview: {
+        backupId: backup?.backupId || "",
+        version: payload?.backupVersion || "",
+        createdAt: backup?.createdAt || payload?.exportedAt || "",
+        casesCount: Number(snapshot.cases?.length || 0),
+        modelsCount: mockCountModels(snapshot),
+        reportsCount: mockCountReports(snapshot),
+        fileSize: new Blob([JSON.stringify(input)]).size,
+        checksum: checksum || expected,
+        casePreview: (snapshot.cases || []).map(item => ({
+          caseId: item.caseId,
+          patientName: item.patientName || "",
+          patientId: item.patientId || "",
+          jobsCount: Number(item.reconstructionJobs?.length || 0),
+          modelsCount: Number(item.models?.length || 0),
+          reportsCount: Number(item.reports?.length || 0)
+        }))
+      },
+      payload
+    };
+  }
+
+  function makeMockInsightId() {
+    if (window.crypto?.randomUUID) return `insight-${window.crypto.randomUUID()}`;
+    return `insight-${Date.now().toString(36)}-${Math.random().toString(16).slice(2)}`;
+  }
+
+  function normalizeMockInsight(input = {}) {
+    const categories = ["facial_analysis", "symmetry", "measurements", "reconstruction_quality", "landmark_quality", "planning", "custom"];
+    const severities = ["info", "warning", "attention"];
+    return {
+      insightId: String(input.insightId || makeMockInsightId()),
+      caseId: String(input.caseId || ""),
+      modelId: String(input.modelId || ""),
+      category: categories.includes(input.category) ? input.category : "custom",
+      severity: severities.includes(input.severity) ? input.severity : "info",
+      title: String(input.title || "Clinical observation"),
+      description: String(input.description || ""),
+      source: String(input.source || "clinical_insights_engine"),
+      createdAt: input.createdAt || new Date().toISOString(),
+      reviewed: Boolean(input.reviewed),
+      dismissed: Boolean(input.dismissed),
+      pinned: Boolean(input.pinned),
+      reviewedAt: input.reviewedAt || "",
+      dismissedAt: input.dismissedAt || ""
+    };
+  }
+
+  function mockInsightSignature(item) {
+    return [item.caseId || "", item.modelId || "", item.category || "", item.title || "", item.source || ""].join("::");
+  }
+
+  function upsertMockClinicalInsights(items = []) {
+    const existing = readMockClinicalInsights();
+    const bySignature = new Map(existing.map(item => [mockInsightSignature(item), item]));
+    const nextItems = items.map(item => {
+      const normalized = normalizeMockInsight(item);
+      const previous = bySignature.get(mockInsightSignature(normalized));
+      return previous ? { ...normalized, ...previous, createdAt: previous.createdAt || normalized.createdAt } : normalized;
+    });
+    const nextIds = new Set(nextItems.map(item => item.insightId));
+    writeMockClinicalInsights([
+      ...nextItems,
+      ...existing.filter(item => !nextIds.has(item.insightId) && item.caseId !== nextItems[0]?.caseId)
+    ]);
+    nextItems
+      .filter(item => !existing.some(existingItem => existingItem.insightId === item.insightId))
+      .forEach(item => recordMockAuditEvent({
+        caseId: item.caseId,
+        action: "insight_created",
+        entityType: "clinical_insight",
+        entityId: item.insightId,
+        details: { category: item.category, severity: item.severity, source: item.source }
+      }));
+    return nextItems;
+  }
+
+  function generateMockClinicalInsights(caseId) {
+    const jobs = readMockHistory().filter(item => item.caseId === caseId);
+    const measurements = readMockMeasurements().filter(item => item.caseId === caseId);
+    const landmarks = readMockLandmarks().filter(item => item.caseId === caseId);
+    const comparisons = readMockComparisons().filter(item => item.caseId === caseId);
+    const simulations = readMockSurgicalSimulations().filter(item => item.caseId === caseId);
+    const drafts = [];
+    const add = draft => drafts.push(normalizeMockInsight({ caseId, ...draft }));
+    jobs.forEach(job => {
+      const score = Number(job.readinessScore);
+      if (Number.isFinite(score) && score > 0 && score < 50) add({ modelId: job.resultGlbUrl || job.jobId || "", category: "reconstruction_quality", severity: "warning", title: "Модель имеет низкий readiness score.", description: `Readiness score ${Math.round(score)}/100. Observation для врачебной проверки качества модели.`, source: `job:${job.jobId}:readiness` });
+      else if (Number.isFinite(score) && score >= 50 && score < 70) add({ modelId: job.resultGlbUrl || job.jobId || "", category: "reconstruction_quality", severity: "attention", title: "Readiness score требует внимания.", description: `Readiness score ${Math.round(score)}/100. Проверьте пригодность модели для выбранной задачи.`, source: `job:${job.jobId}:readiness` });
+      const warningsCount = Number(job.warningsCount || (Array.isArray(job.warnings) ? job.warnings.length : 0));
+      if (warningsCount >= 3) add({ modelId: job.resultGlbUrl || job.jobId || "", category: "reconstruction_quality", severity: "warning", title: "Реконструкция выполнена с большим количеством предупреждений.", description: `${warningsCount} warning(s) связаны с реконструкцией.`, source: `job:${job.jobId}:warnings` });
+    });
+    const missing = landmarks.filter(item => item.status === "unplaced" || (item.required && !["placed", "approved", "corrected"].includes(item.status)));
+    if (missing.length) add({ modelId: missing[0]?.modelId || "", category: "landmark_quality", severity: "attention", title: "Отсутствуют обязательные landmarks.", description: `${missing.length} landmark(s) отсутствуют или не размещены.`, source: "landmarks:missing" });
+    const lowConfidence = landmarks.filter(item => Number.isFinite(Number(item.confidence)) && Number(item.confidence) < 60);
+    if (lowConfidence.length) add({ modelId: lowConfidence[0]?.modelId || "", category: "landmark_quality", severity: "attention", title: "Некоторые landmarks имеют низкую уверенность.", description: `${lowConfidence.length} AI landmark(s) имеют confidence ниже 60%.`, source: "landmarks:low_confidence" });
+    const reviewMeasurements = measurements.filter(item => ["missing_landmarks", "needs_review", "error"].includes(item.status) || (item.warnings || []).length || (item.missingLandmarks || []).length);
+    if (reviewMeasurements.length) add({ modelId: reviewMeasurements[0]?.modelId || "", category: "measurements", severity: "attention", title: "Некоторые измерения требуют ручной проверки.", description: `${reviewMeasurements.length} measurement(s) имеют warnings или review status.`, source: "measurements:review" });
+    if (comparisons.length) add({ modelId: comparisons[0].afterJobId || comparisons[0].beforeJobId || "", category: "symmetry", severity: "info", title: "Есть данные для сравнения двух моделей.", description: `${comparisons.length} comparison object(s) доступны для визуальной проверки.`, source: "comparisons:available" });
+    const simulationWarnings = simulations.flatMap(item => item.warnings || []);
+    if (simulationWarnings.length) add({ modelId: simulations[0]?.simulatedModelId || simulations[0]?.modelId || "", category: "planning", severity: "attention", title: "Simulation results содержат предупреждения.", description: `${simulationWarnings.length} simulation warning(s) доступны.`, source: "simulations:warnings" });
+    return upsertMockClinicalInsights(drafts);
   }
 
   function permissionsForRole(role) {
@@ -831,6 +1209,13 @@
       caseItem.teamMembers = [owner];
       caseItem.permissions = { [owner.memberId]: owner.permissions };
       writeMockCases([caseItem, ...readMockCases()]);
+      recordMockAuditEvent({
+        caseId: caseItem.caseId,
+        action: "case_created",
+        entityType: "case",
+        entityId: caseItem.caseId,
+        details: { patientName: caseItem.patientName, patientId: caseItem.patientId }
+      });
       return caseItem;
     }
 
@@ -855,6 +1240,8 @@
       writeMockLandmarks(readMockLandmarks().filter(item => item.caseId !== normalizedCaseId));
       writeMockSurgicalPlans(readMockSurgicalPlans().filter(item => item.caseId !== normalizedCaseId));
       writeMockSurgicalSimulations(readMockSurgicalSimulations().filter(item => item.caseId !== normalizedCaseId));
+      writeMockAuditEvents(readMockAuditEvents().filter(item => item.caseId !== normalizedCaseId));
+      writeMockClinicalInsights(readMockClinicalInsights().filter(item => item.caseId !== normalizedCaseId));
       return { deleted: true, case: existing };
     }
 
@@ -1013,6 +1400,13 @@
         throw apiError(ERROR_CODES.jobFailed, "Unsupported measurement type.");
       }
       writeMockMeasurements([measurement, ...readMockMeasurements().filter(item => item.measurementId !== measurement.measurementId)]);
+      recordMockAuditEvent({
+        caseId: measurement.caseId,
+        action: existing ? "measurement_updated" : "measurement_added",
+        entityType: "measurement",
+        entityId: measurement.measurementId,
+        details: { type: measurement.type, label: measurement.label, modelId: measurement.modelId }
+      });
       return measurement;
     }
 
@@ -1112,6 +1506,13 @@
         linkedCase.updatedAt = timestamp;
         writeMockCases([linkedCase, ...cases.filter(item => item.caseId !== landmark.caseId)]);
       }
+      recordMockAuditEvent({
+        caseId: landmark.caseId,
+        action: existing ? "landmark_updated" : "landmark_added",
+        entityType: "landmark",
+        entityId: landmark.landmarkId,
+        details: { name: landmark.name, modelId: landmark.modelId, status: landmark.status }
+      });
       return landmark;
     }
 
@@ -1214,6 +1615,20 @@
           role: member.role,
           permissions: member.permissions || []
         }));
+      const auditEvents = filterMockAuditEvents({ caseId });
+      const auditSummary = {
+        eventsCount: auditEvents.length,
+        actions: auditEvents.reduce((acc, event) => {
+          acc[event.action] = (acc[event.action] || 0) + 1;
+          return acc;
+        }, {}),
+        users: auditEvents.reduce((acc, event) => {
+          const label = event.userName || event.userId || "Local User";
+          acc[label] = (acc[label] || 0) + 1;
+          return acc;
+        }, {}),
+        latestEvents: auditEvents.slice(0, 10)
+      };
       const resultModels = jobs
         .filter(item => item.resultGlbUrl)
         .map(item => ({
@@ -1248,6 +1663,8 @@
         teamMembersCount: teamMembers.length,
         casePermissions: caseItem.permissions || {},
         contributors,
+        auditEvents,
+        auditSummary,
         reconstructionJobs: jobs,
         jobs,
         resultModels,
@@ -1295,6 +1712,89 @@
     return await backendJson(ENDPOINTS.caseReport(caseId), { method: "GET" }, ERROR_CODES.jobFailed);
   }
 
+  async function listCaseAuditEvents(caseId, filter = {}) {
+    const normalizedCaseId = String(caseId || "").trim();
+    if (!normalizedCaseId) throw apiError(ERROR_CODES.jobFailed, "caseId is required.");
+    if (reconstructionMode === "mock") {
+      return filterMockAuditEvents({
+        caseId: normalizedCaseId,
+        action: filter.action || "all",
+        userId: filter.userId || "all",
+        date: filter.date || ""
+      });
+    }
+    const params = new URLSearchParams();
+    if (filter.action && filter.action !== "all") params.set("action", filter.action);
+    if (filter.userId && filter.userId !== "all") params.set("userId", filter.userId);
+    if (filter.date) params.set("date", filter.date);
+    const query = params.toString() ? `?${params.toString()}` : "";
+    const payload = await backendJson(`${ENDPOINTS.caseAudit(normalizedCaseId)}${query}`, { method: "GET" }, ERROR_CODES.jobFailed);
+    return payload?.events || [];
+  }
+
+  async function listClinicalInsights(caseId, filter = {}) {
+    const normalizedCaseId = String(caseId || "").trim();
+    if (!normalizedCaseId) throw apiError(ERROR_CODES.jobFailed, "caseId is required.");
+    if (reconstructionMode === "mock") {
+      const modelId = String(filter.modelId || "all");
+      const status = String(filter.status || "active");
+      return readMockClinicalInsights()
+        .filter(item => item.caseId === normalizedCaseId)
+        .filter(item => modelId === "all" || item.modelId === modelId)
+        .filter(item => status === "all" || (status === "active" ? !item.dismissed : item[status] === true))
+        .sort((a, b) => Number(b.pinned) - Number(a.pinned) || String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+    }
+    const params = new URLSearchParams();
+    if (filter.modelId && filter.modelId !== "all") params.set("modelId", filter.modelId);
+    if (filter.status && filter.status !== "active") params.set("status", filter.status);
+    const query = params.toString() ? `?${params.toString()}` : "";
+    const payload = await backendJson(`${ENDPOINTS.caseInsights(normalizedCaseId)}${query}`, { method: "GET" }, ERROR_CODES.jobFailed);
+    return payload?.insights || [];
+  }
+
+  async function generateClinicalInsights(caseId) {
+    const normalizedCaseId = String(caseId || "").trim();
+    if (!normalizedCaseId) throw apiError(ERROR_CODES.jobFailed, "caseId is required.");
+    if (reconstructionMode === "mock") return generateMockClinicalInsights(normalizedCaseId);
+    const payload = await backendJson(ENDPOINTS.generateCaseInsights(normalizedCaseId), { method: "POST" }, ERROR_CODES.jobFailed);
+    return payload?.insights || [];
+  }
+
+  async function updateClinicalInsight(insightId, changes = {}) {
+    const normalizedInsightId = String(insightId || "").trim();
+    if (!normalizedInsightId) throw apiError(ERROR_CODES.jobFailed, "insightId is required.");
+    if (reconstructionMode === "mock") {
+      const timestamp = new Date().toISOString();
+      const items = readMockClinicalInsights();
+      const existing = items.find(item => item.insightId === normalizedInsightId);
+      if (!existing) throw apiError(ERROR_CODES.jobFailed, "Clinical insight not found.");
+      const next = {
+        ...existing,
+        reviewed: changes.reviewed === undefined ? existing.reviewed : Boolean(changes.reviewed),
+        dismissed: changes.dismissed === undefined ? existing.dismissed : Boolean(changes.dismissed),
+        pinned: changes.pinned === undefined ? existing.pinned : Boolean(changes.pinned),
+        reviewedAt: changes.reviewed ? timestamp : existing.reviewedAt || "",
+        dismissedAt: changes.dismissed ? timestamp : existing.dismissedAt || ""
+      };
+      writeMockClinicalInsights([next, ...items.filter(item => item.insightId !== normalizedInsightId)]);
+      if (changes.reviewed || changes.dismissed) {
+        recordMockAuditEvent({
+          caseId: next.caseId,
+          action: "insight_acknowledged",
+          entityType: "clinical_insight",
+          entityId: next.insightId,
+          details: { reviewed: next.reviewed, dismissed: next.dismissed, pinned: next.pinned }
+        });
+      }
+      return next;
+    }
+    return await backendJson(ENDPOINTS.clinicalInsight(normalizedInsightId), {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(changes || {})
+    }, ERROR_CODES.jobFailed);
+  }
+
   async function listCaseTeamMembers(caseId) {
     const normalizedCaseId = String(caseId || "").trim();
     if (!normalizedCaseId) throw apiError(ERROR_CODES.jobFailed, "caseId is required.");
@@ -1325,6 +1825,13 @@
       if (member.role === "owner" || !caseItem.ownerId) caseItem.ownerId = member.memberId;
       caseItem.updatedAt = new Date().toISOString();
       writeMockCases([caseItem, ...cases.filter(item => item.caseId !== normalizedCaseId)]);
+      recordMockAuditEvent({
+        caseId: normalizedCaseId,
+        action: "team_member_added",
+        entityType: "team_member",
+        entityId: member.memberId,
+        details: { name: member.name, role: member.role, email: member.email }
+      });
       return member;
     }
     return await backendJson(ENDPOINTS.caseTeam(normalizedCaseId), {
@@ -1352,6 +1859,13 @@
       if (nextRole === "owner") caseItem.ownerId = member.memberId;
       caseItem.updatedAt = new Date().toISOString();
       writeMockCases([caseItem, ...cases.filter(item => item.caseId !== normalizedCaseId)]);
+      recordMockAuditEvent({
+        caseId: normalizedCaseId,
+        action: "case_updated",
+        entityType: "team_member",
+        entityId: member.memberId,
+        details: { name: member.name, previousRole: existing.role, role: member.role, email: member.email }
+      });
       return member;
     }
     return await backendJson(ENDPOINTS.caseTeamMember(normalizedCaseId, normalizedMemberId), {
@@ -1375,6 +1889,13 @@
       if (caseItem.permissions) delete caseItem.permissions[normalizedMemberId];
       caseItem.updatedAt = new Date().toISOString();
       writeMockCases([caseItem, ...cases.filter(item => item.caseId !== normalizedCaseId)]);
+      recordMockAuditEvent({
+        caseId: normalizedCaseId,
+        action: "team_member_removed",
+        entityType: "team_member",
+        entityId: normalizedMemberId,
+        details: { name: existing.name, role: existing.role, email: existing.email }
+      });
       return { deleted: true, member: existing };
     }
     return await backendJson(ENDPOINTS.caseTeamMember(normalizedCaseId, normalizedMemberId), { method: "DELETE" }, ERROR_CODES.jobFailed);
@@ -1446,6 +1967,13 @@
         updatedCase.updatedAt = timestamp;
         writeMockCases([updatedCase, ...cases.filter(item => item.caseId !== caseId)]);
       }
+      recordMockAuditEvent({
+        caseId,
+        action: "note_updated",
+        entityType: "surgical_plan",
+        entityId: plan.planId,
+        details: { title: plan.title, procedureType: plan.procedureType, modelId: plan.modelId }
+      });
       return plan;
     }
 
@@ -1535,6 +2063,13 @@
         updatedCase.updatedAt = timestamp;
         writeMockCases([updatedCase, ...cases.filter(item => item.caseId !== caseId)]);
       }
+      recordMockAuditEvent({
+        caseId,
+        action: "simulation_created",
+        entityType: "simulation",
+        entityId: simulation.simulationId,
+        details: { simulationType: simulation.simulationType, modelId: simulation.modelId }
+      });
       return simulation;
     }
 
@@ -1562,6 +2097,13 @@
       if (uploadResult?.previewReport) job.preprocessingReport = uploadResult.previewReport;
       job.settings = settingsValidation.settings;
       upsertMockHistoryFromJob(job);
+      recordMockAuditEvent({
+        caseId,
+        action: "model_uploaded",
+        entityType: "reconstruction_job",
+        entityId: job.jobId,
+        details: { filesCount: uploadResult?.files?.length || 0, status: job.status }
+      });
       return job;
     }
 
@@ -1578,6 +2120,15 @@
       if (!pipeline()) throw apiError(ERROR_CODES.jobFailed, "Mock reconstruction pipeline не загружен.");
       const job = await pipeline().startReconstructionJob(jobId);
       upsertMockHistoryFromJob(job);
+      if (job.caseId) {
+        recordMockAuditEvent({
+          caseId: job.caseId,
+          action: job.status === "ready" ? "reconstruction_completed" : "reconstruction_started",
+          entityType: "reconstruction_job",
+          entityId: job.jobId,
+          details: { status: job.status }
+        });
+      }
       if (job.status === "error") throw apiError(ERROR_CODES.jobFailed, job.errorMessage || "Job failed.");
       return job;
     }
@@ -1591,6 +2142,15 @@
       if (!pipeline()) throw apiError(ERROR_CODES.jobFailed, "Mock reconstruction pipeline не загружен.");
       const job = await pipeline().approveReviewAndContinue(jobId, selectedFrameNames);
       upsertMockHistoryFromJob(job);
+      if (job.caseId) {
+        recordMockAuditEvent({
+          caseId: job.caseId,
+          action: job.status === "ready" ? "reconstruction_completed" : "reconstruction_started",
+          entityType: "reconstruction_job",
+          entityId: job.jobId,
+          details: { status: job.status, reviewedByUser: Boolean(job.reviewedByUser) }
+        });
+      }
       if (job.status === "error") throw apiError(ERROR_CODES.jobFailed, job.errorMessage || "Job failed.");
       return job;
     }
@@ -1801,6 +2361,15 @@
         warnings: job.warnings || []
       };
       addMockReportToCase(job.caseId, `${jobId}:report`);
+      if (job.caseId) {
+        recordMockAuditEvent({
+          caseId: job.caseId,
+          action: "report_exported",
+          entityType: "report",
+          entityId: `${jobId}:report`,
+          details: { jobId }
+        });
+      }
       return report;
     }
 
@@ -1941,6 +2510,105 @@
     return await backendJson(ENDPOINTS.job(jobId), { method: "DELETE" }, ERROR_CODES.jobFailed);
   }
 
+  async function exportFullBackup() {
+    if (reconstructionMode === "mock") return await makeMockBackup();
+    return await backendJson(ENDPOINTS.backupExport, { method: "GET" }, ERROR_CODES.jobFailed);
+  }
+
+  async function previewBackup(input = {}) {
+    if (reconstructionMode === "mock") {
+      const validation = await validateMockBackup(input);
+      if (!validation.ok) {
+        const err = apiError(ERROR_CODES.jobFailed, validation.errors.join(" "));
+        err.preview = validation.preview;
+        throw err;
+      }
+      return { ok: true, errors: [], preview: validation.preview };
+    }
+    return await backendJson(ENDPOINTS.backupPreview, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input)
+    }, ERROR_CODES.jobFailed);
+  }
+
+  async function restoreBackup(input = {}, options = {}) {
+    if (reconstructionMode === "mock") {
+      const validation = await validateMockBackup(input);
+      if (!validation.ok) throw apiError(ERROR_CODES.jobFailed, validation.errors.join(" "));
+      const snapshot = validation.payload.data || {};
+      const mode = options.mode === "selected" ? "selected" : "full";
+      const selected = new Set((options.caseIds || []).map(String).filter(Boolean));
+      const caseIds = mode === "selected"
+        ? new Set((snapshot.cases || []).map(item => item.caseId).filter(caseId => selected.has(caseId)))
+        : new Set((snapshot.cases || []).map(item => item.caseId).filter(Boolean));
+      const merge = (current, incoming, idKey, caseKey = "caseId") => [
+        ...incoming.filter(item => caseIds.has(item[caseKey] || item.caseId)),
+        ...current.filter(item => !caseIds.has(item[caseKey] || item.caseId) && mode !== "full")
+      ].filter((item, index, arr) => arr.findIndex(other => other[idKey] === item[idKey]) === index);
+      writeMockCases(mode === "full" ? (snapshot.cases || []) : merge(readMockCases(), snapshot.cases || [], "caseId"));
+      writeMockHistory(mode === "full" ? (snapshot.jobs || []) : merge(readMockHistory(), snapshot.jobs || [], "jobId"));
+      writeMockComparisons(mode === "full" ? (snapshot.comparisons || []) : merge(readMockComparisons(), snapshot.comparisons || [], "comparisonId"));
+      writeMockMeasurements(mode === "full" ? (snapshot.measurements || []) : merge(readMockMeasurements(), snapshot.measurements || [], "measurementId"));
+      writeMockLandmarks(mode === "full" ? (snapshot.landmarks || []) : merge(readMockLandmarks(), snapshot.landmarks || [], "landmarkId"));
+      writeMockLandmarkTemplates(snapshot.landmarkTemplates || readMockLandmarkTemplates());
+      writeMockSurgicalPlans(mode === "full" ? (snapshot.surgicalPlans || []) : merge(readMockSurgicalPlans(), snapshot.surgicalPlans || [], "planId"));
+      writeMockSurgicalSimulations(mode === "full" ? (snapshot.simulations || []) : merge(readMockSurgicalSimulations(), snapshot.simulations || [], "simulationId"));
+      writeMockClinicalInsights(mode === "full" ? (snapshot.clinicalInsights || []) : merge(readMockClinicalInsights(), snapshot.clinicalInsights || [], "insightId"));
+      writeMockQaChecks(mode === "full" ? (snapshot.qaChecks || []) : merge(readMockQaChecks(), snapshot.qaChecks || [], "checkId"));
+      writeMockAuditEvents(mode === "full" ? (snapshot.auditEvents || []) : merge(readMockAuditEvents(), snapshot.auditEvents || [], "eventId"));
+      caseIds.forEach(caseId => {
+        recordMockAuditEvent({ caseId, action: "backup_restored", entityType: "backup", entityId: validation.preview.backupId || "imported-backup", details: { mode, restoredCasesCount: caseIds.size } });
+        recordMockAuditEvent({ caseId, action: "backup_imported", entityType: "backup", entityId: validation.preview.backupId || "imported-backup", details: { mode, restoredCasesCount: caseIds.size } });
+      });
+      return { restored: true, preview: validation.preview, restoredCasesCount: caseIds.size, caseIds: Array.from(caseIds) };
+    }
+    return await backendJson(ENDPOINTS.backupRestore, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ backup: input, mode: options.mode || "full", caseIds: options.caseIds || [] })
+    }, ERROR_CODES.jobFailed);
+  }
+
+  async function listQaChecks(caseId, filter = {}) {
+    const normalizedCaseId = String(caseId || "").trim();
+    if (!normalizedCaseId) throw apiError(ERROR_CODES.jobFailed, "caseId is required.");
+    if (reconstructionMode === "mock") {
+      const status = String(filter.status || "all");
+      return readMockQaChecks()
+        .filter(item => item.caseId === normalizedCaseId)
+        .filter(item => status === "all" || item.status === status)
+        .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+    }
+    const params = new URLSearchParams();
+    if (filter.status && filter.status !== "all") params.set("status", filter.status);
+    const query = params.toString() ? `?${params.toString()}` : "";
+    const payload = await backendJson(`${ENDPOINTS.caseQa(normalizedCaseId)}${query}`, { method: "GET" }, ERROR_CODES.jobFailed);
+    return payload?.checks || [];
+  }
+
+  async function runQaValidation(caseId) {
+    const normalizedCaseId = String(caseId || "").trim();
+    if (!normalizedCaseId) throw apiError(ERROR_CODES.jobFailed, "caseId is required.");
+    if (reconstructionMode === "mock") return generateMockQaChecks(normalizedCaseId);
+    return await backendJson(ENDPOINTS.runCaseQa(normalizedCaseId), { method: "POST" }, ERROR_CODES.jobFailed);
+  }
+
+  async function resolveQaCheck(checkId) {
+    const normalizedCheckId = String(checkId || "").trim();
+    if (!normalizedCheckId) throw apiError(ERROR_CODES.jobFailed, "checkId is required.");
+    if (reconstructionMode === "mock") {
+      const items = readMockQaChecks();
+      const existing = items.find(item => item.checkId === normalizedCheckId);
+      if (!existing) throw apiError(ERROR_CODES.jobFailed, "QA check not found.");
+      const next = { ...existing, resolved: true, resolvedAt: new Date().toISOString(), status: existing.status === "failed" ? "warning" : existing.status };
+      writeMockQaChecks([next, ...items.filter(item => item.checkId !== normalizedCheckId)]);
+      recordMockAuditEvent({ caseId: next.caseId, action: "qa_issue_resolved", entityType: "qa_check", entityId: next.checkId, details: { category: next.category, title: next.title } });
+      return next;
+    }
+    return await backendJson(ENDPOINTS.resolveQaCheck(normalizedCheckId), { method: "PATCH" }, ERROR_CODES.jobFailed);
+  }
+
   function setMode(mode) {
     if (mode !== "mock" && mode !== "backend") {
       throw apiError(ERROR_CODES.jobFailed, `Unsupported reconstruction mode: ${mode}`);
@@ -1973,6 +2641,13 @@
     createPatientCase,
     deletePatientCase,
     getPatientCaseReport,
+    listCaseAuditEvents,
+    listClinicalInsights,
+    generateClinicalInsights,
+    updateClinicalInsight,
+    listQaChecks,
+    runQaValidation,
+    resolveQaCheck,
     listCaseTeamMembers,
     saveCaseTeamMember,
     updateCaseTeamMemberRole,
@@ -2009,6 +2684,9 @@
     deleteBackendReconstructionJob,
     applyManualModelAdjustment,
     skipManualModelAdjustment,
-    cancelBackendReconstructionJob
+    cancelBackendReconstructionJob,
+    exportFullBackup,
+    previewBackup,
+    restoreBackup
   };
 })();

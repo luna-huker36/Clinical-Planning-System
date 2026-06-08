@@ -28,13 +28,24 @@ const {
   saveCaseTeamMember,
   updateCaseTeamMemberRole,
   removeCaseTeamMember,
+  recordAuditEvent,
+  listAuditEvents,
+  listClinicalInsights,
+  generateClinicalInsightsForCase,
+  updateClinicalInsight,
+  listQaChecks,
+  runQaValidationForCase,
+  resolveQaCheck,
   saveLandmark,
   deleteLandmark,
   listLandmarks,
   listLandmarkTemplates,
   saveLandmarkTemplate,
-  deleteLandmarkTemplate
+  deleteLandmarkTemplate,
+  getBackupSnapshot,
+  restoreBackupSnapshot
 } = require("./store");
+const { buildBackup, validateBackup, migrateBackupPayload } = require("./backup-recovery");
 const { startJob, cancelJob, approveReviewAndContinue, applyManualAdjustmentToJob, skipManualAdjustmentForJob } = require("./processor");
 const { assertValidReconstructionSettings } = require("./settings");
 const {
@@ -168,6 +179,103 @@ router.delete("/cases/:caseId/team/:memberId", asyncRoute(async (req, res) => {
   const member = removeCaseTeamMember(req.params.caseId, req.params.memberId);
   if (!member) throw new ApiError(404, ERROR_CODES.validationFailed, "Team member not found or owner cannot be removed.");
   res.json({ deleted: true, member });
+}));
+
+router.get("/cases/:caseId/audit", asyncRoute(async (req, res) => {
+  if (!getCase(req.params.caseId)) throw new ApiError(404, ERROR_CODES.validationFailed, "Case not found.");
+  res.json({
+    events: listAuditEvents({
+      caseId: req.params.caseId,
+      action: req.query?.action || "all",
+      userId: req.query?.userId || "all",
+      date: req.query?.date || ""
+    })
+  });
+}));
+
+router.get("/backup/export", asyncRoute(async (req, res) => {
+  const backup = buildBackup(getBackupSnapshot());
+  for (const caseItem of backup.payload.data.cases || []) {
+    recordAuditEvent({
+      caseId: caseItem.caseId,
+      action: "backup_created",
+      entityType: "backup",
+      entityId: backup.backupId,
+      details: { casesCount: backup.casesCount, modelsCount: backup.modelsCount, reportsCount: backup.reportsCount }
+    });
+  }
+  res.json(backup);
+}));
+
+router.post("/backup/preview", asyncRoute(async (req, res) => {
+  const validation = validateBackup(req.body || {});
+  res.status(validation.ok ? 200 : 400).json({
+    ok: validation.ok,
+    errors: validation.errors,
+    preview: validation.preview
+  });
+}));
+
+router.post("/backup/restore", asyncRoute(async (req, res) => {
+  const validation = validateBackup(req.body?.backup || req.body || {});
+  if (!validation.ok) {
+    throw new ApiError(400, ERROR_CODES.validationFailed, validation.errors.join(" "));
+  }
+  const migrated = migrateBackupPayload(validation.payload);
+  const result = restoreBackupSnapshot(migrated.data || {}, {
+    mode: req.body?.mode || "full",
+    caseIds: req.body?.caseIds || [],
+    backupId: validation.preview?.backupId || "imported-backup"
+  });
+  for (const caseId of result.caseIds) {
+    recordAuditEvent({
+      caseId,
+      action: "backup_imported",
+      entityType: "backup",
+      entityId: validation.preview?.backupId || "imported-backup",
+      details: { mode: req.body?.mode || "full", restoredCasesCount: result.restoredCasesCount }
+    });
+  }
+  res.json({ restored: true, preview: validation.preview, ...result });
+}));
+
+router.get("/cases/:caseId/insights", asyncRoute(async (req, res) => {
+  if (!getCase(req.params.caseId)) throw new ApiError(404, ERROR_CODES.validationFailed, "Case not found.");
+  res.json({
+    insights: listClinicalInsights({
+      caseId: req.params.caseId,
+      modelId: req.query?.modelId || "all",
+      status: req.query?.status || "active"
+    })
+  });
+}));
+
+router.post("/cases/:caseId/insights/generate", asyncRoute(async (req, res) => {
+  if (!getCase(req.params.caseId)) throw new ApiError(404, ERROR_CODES.validationFailed, "Case not found.");
+  res.json({ insights: generateClinicalInsightsForCase(req.params.caseId) });
+}));
+
+router.patch("/insights/:insightId", asyncRoute(async (req, res) => {
+  const insight = updateClinicalInsight(req.params.insightId, req.body || {});
+  if (!insight) throw new ApiError(404, ERROR_CODES.validationFailed, "Clinical insight not found.");
+  res.json(insight);
+}));
+
+router.get("/cases/:caseId/qa", asyncRoute(async (req, res) => {
+  if (!getCase(req.params.caseId)) throw new ApiError(404, ERROR_CODES.validationFailed, "Case not found.");
+  res.json({ checks: listQaChecks({ caseId: req.params.caseId, status: req.query?.status || "all" }) });
+}));
+
+router.post("/cases/:caseId/qa/run", asyncRoute(async (req, res) => {
+  const result = runQaValidationForCase(req.params.caseId);
+  if (!result) throw new ApiError(404, ERROR_CODES.validationFailed, "Case not found.");
+  res.json(result);
+}));
+
+router.patch("/qa/:checkId/resolve", asyncRoute(async (req, res) => {
+  const check = resolveQaCheck(req.params.checkId);
+  if (!check) throw new ApiError(404, ERROR_CODES.validationFailed, "QA check not found.");
+  res.json(check);
 }));
 
 router.get("/measurements", asyncRoute(async (req, res) => {
@@ -334,6 +442,13 @@ router.post("/jobs", asyncRoute(async (req, res) => {
 
   const settings = assertValidReconstructionSettings(req.body?.settings || {});
   const job = createJob(uploadResult, settings, caseId);
+  recordAuditEvent({
+    caseId,
+    action: "model_uploaded",
+    entityType: "reconstruction_job",
+    entityId: job.jobId,
+    details: { uploadId, filesCount: job.files?.length || 0, status: job.status }
+  });
   res.json(job);
 }));
 
@@ -387,11 +502,29 @@ router.delete("/jobs/:jobId", asyncRoute(async (req, res) => {
 
 router.post("/jobs/:jobId/start", asyncRoute(async (req, res) => {
   const job = startJob(req.params.jobId);
+  if (job?.caseId) {
+    recordAuditEvent({
+      caseId: job.caseId,
+      action: "reconstruction_started",
+      entityType: "reconstruction_job",
+      entityId: job.jobId,
+      details: { status: job.status }
+    });
+  }
   res.json(job);
 }));
 
 router.post("/jobs/:jobId/review/approve", asyncRoute(async (req, res) => {
   const job = approveReviewAndContinue(req.params.jobId, req.body || {});
+  if (job?.caseId) {
+    recordAuditEvent({
+      caseId: job.caseId,
+      action: job.status === STATUSES.ready ? "reconstruction_completed" : "reconstruction_started",
+      entityType: "reconstruction_job",
+      entityId: job.jobId,
+      details: { status: job.status, reviewedByUser: Boolean(job.reviewedByUser) }
+    });
+  }
   res.json(job);
 }));
 
@@ -406,6 +539,15 @@ router.get("/jobs/:jobId/result", asyncRoute(async (req, res) => {
   if (!job) throw new ApiError(404, ERROR_CODES.jobNotFound, "Reconstruction job не найден.");
   if (job.status !== STATUSES.ready) {
     throw new ApiError(409, ERROR_CODES.resultNotReady, "Reconstruction result ещё не готов.");
+  }
+  if (job.caseId) {
+    recordAuditEvent({
+      caseId: job.caseId,
+      action: "reconstruction_completed",
+      entityType: "reconstruction_job",
+      entityId: job.jobId,
+      details: { resultGlbUrl: job.resultGlbUrl || "" }
+    });
   }
   res.json(getReconstructionResult(req.params.jobId));
 }));

@@ -2,9 +2,11 @@ const fs = require("fs/promises");
 const fsSync = require("fs");
 const path = require("path");
 const { STATUSES } = require("./constants");
-const { getCase, getMutableJob, listMutableJobs, saveJob, addModelToCase, addReportToCase, listComparisons, listMeasurements, listSurgicalPlans, listLandmarks, listSimulations } = require("./store");
+const { getCase, getMutableJob, listMutableJobs, saveJob, addModelToCase, addReportToCase, listComparisons, listMeasurements, listSurgicalPlans, listLandmarks, listSimulations, listAuditEvents, listClinicalInsights, generateClinicalInsightsForCase, runQaValidationForCase, listQaChecks } = require("./store");
 const { checkModelReadiness } = require("./model-readiness-check");
 const { normalizeReconstructionSettings } = require("./settings");
+const { summarizeAuditEvents } = require("./audit-log");
+const { BACKUP_VERSION } = require("./backup-recovery");
 
 function getArtifactPath(jobId) {
   const job = getMutableJob(jobId);
@@ -472,6 +474,10 @@ function buildCaseReport(caseId) {
   const comparisons = listComparisons(caseId);
   const surgicalPlanningNotes = listSurgicalPlans({ caseId });
   const surgicalSimulations = listSimulations({ caseId });
+  const clinicalInsights = generateClinicalInsightsForCase(caseId);
+  const qaResult = runQaValidationForCase(caseId, { recordAudit: false });
+  const qaChecks = qaResult?.checks || listQaChecks({ caseId, status: "all" });
+  const qaSummary = qaResult?.summary || { qaScore: 0, readinessLevel: "poor", warningsCount: 0, failuresCount: 0, passedCount: 0, checksCount: qaChecks.length };
   const teamMembers = caseItem.teamMembers || [];
   const caseOwner = teamMembers.find(member => member.memberId === caseItem.ownerId) || teamMembers.find(member => member.role === "owner") || null;
   const contributors = teamMembers
@@ -482,6 +488,8 @@ function buildCaseReport(caseId) {
       role: member.role || "viewer",
       permissions: member.permissions || []
     }));
+  const auditEvents = listAuditEvents({ caseId });
+  const auditSummary = summarizeAuditEvents(auditEvents);
   const timeline = buildCaseTimeline(caseId, {
     caseItem,
     jobs,
@@ -526,6 +534,8 @@ function buildCaseReport(caseId) {
     teamMembersCount: teamMembers.length,
     casePermissions: caseItem.permissions || {},
     contributors,
+    auditEvents,
+    auditSummary,
     reconstructionJobs: jobs,
     jobs,
     resultModels,
@@ -560,6 +570,24 @@ function buildCaseReport(caseId) {
     surgicalSimulations,
     surgicalSimulationsCount: surgicalSimulations.length,
     simulationWarnings: Array.from(new Set(surgicalSimulations.flatMap(item => item.warnings || []))),
+    clinicalInsights,
+    clinicalInsightsCount: clinicalInsights.filter(item => !item.dismissed).length,
+    insightsSummary: {
+      activeCount: clinicalInsights.filter(item => !item.dismissed).length,
+      reviewedCount: clinicalInsights.filter(item => item.reviewed).length,
+      dismissedCount: clinicalInsights.filter(item => item.dismissed).length,
+      pinnedCount: clinicalInsights.filter(item => item.pinned).length,
+      warningCount: clinicalInsights.filter(item => item.severity === "warning").length,
+      attentionCount: clinicalInsights.filter(item => item.severity === "attention").length
+    },
+    backupStatus: {
+      backupVersion: BACKUP_VERSION,
+      localBackupSupported: true,
+      cloudSyncEnabled: false,
+      includedData: ["Patient Cases", "Reconstruction Jobs", "Models Metadata", "Measurements", "Landmarks", "Reports", "Timeline", "Surgical Notes", "Simulations", "Clinical Insights"]
+    },
+    qaChecks,
+    qaSummary,
     timeline,
     timelineSummary: {
       timelineId: timeline.timelineId,
@@ -568,7 +596,8 @@ function buildCaseReport(caseId) {
       simulationEntriesCount: timeline.entries.filter(item => item.entryType === "simulation").length,
       reportEntriesCount: timeline.entries.filter(item => item.entryType === "report").length,
       measurementSnapshotEntriesCount: timeline.entries.filter(item => item.entryType === "measurement_snapshot").length,
-      noteEntriesCount: timeline.entries.filter(item => item.entryType === "note").length
+      noteEntriesCount: timeline.entries.filter(item => item.entryType === "note").length,
+      insightEntriesCount: timeline.entries.filter(item => item.entryType === "insight_generated" || item.entryType === "insight_reviewed").length
     },
     TODO: [
       "multiple scans",
@@ -593,6 +622,8 @@ function buildCaseTimeline(caseId, preloaded = {}) {
   const measurements = preloaded.measurements || listMeasurements({ caseId });
   const surgicalPlanningNotes = preloaded.surgicalPlanningNotes || listSurgicalPlans({ caseId });
   const surgicalSimulations = preloaded.surgicalSimulations || listSimulations({ caseId });
+  const clinicalInsights = preloaded.clinicalInsights || listClinicalInsights({ caseId, status: "all" });
+  const qaChecks = preloaded.qaChecks || listQaChecks({ caseId, status: "all" });
   const entries = [];
 
   jobs.forEach(job => {
@@ -664,6 +695,32 @@ function buildCaseTimeline(caseId, preloaded = {}) {
       title: plan.title || plan.procedureType || "Surgical note",
       description: plan.notes || plan.diagnosis || plan.goals || "Clinical planning note",
       createdAt: plan.updatedAt || plan.createdAt || caseItem.updatedAt
+    });
+  });
+
+  clinicalInsights.forEach(insight => {
+    entries.push({
+      entryId: `timeline-entry-insight-${insight.insightId}`,
+      caseId,
+      modelId: insight.modelId || "",
+      reconstructionJobId: "",
+      entryType: insight.reviewed ? "insight_reviewed" : "insight_generated",
+      title: insight.title || "Clinical insight",
+      description: `${insight.category || "custom"} · ${insight.severity || "info"} · ${insight.source || "clinical_insights_engine"}`,
+      createdAt: insight.reviewedAt || insight.createdAt || caseItem.updatedAt
+    });
+  });
+
+  qaChecks.forEach(check => {
+    entries.push({
+      entryId: `timeline-entry-qa-${check.checkId}`,
+      caseId,
+      modelId: "",
+      reconstructionJobId: "",
+      entryType: check.status === "passed" || check.resolved ? "qa_check_completed" : "qa_issue_detected",
+      title: check.title || "QA check",
+      description: `${check.category || "system"} · ${check.status || "warning"} · ${check.severity || "medium"}`,
+      createdAt: check.resolvedAt || check.createdAt || caseItem.updatedAt
     });
   });
 

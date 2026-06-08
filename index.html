@@ -622,6 +622,61 @@
           </div>
         </div>
 
+        <div class="card reconstruction-card" id="reconstructionBackupRecovery">
+          <div class="card-title">Backup & Recovery</div>
+          <div class="reconstruction-settings-summary" id="backupRecoverySummary">No local backup exported yet.</div>
+          <div class="reconstruction-result-actions">
+            <button class="btn btn-primary" id="btnExportFullBackup">Export Full Backup</button>
+            <label class="btn" for="backupImportFile">Import Backup</label>
+            <input id="backupImportFile" type="file" accept="application/json,.json" style="display:none" />
+          </div>
+          <textarea id="backupImportText" class="reconstruction-setting-control reconstruction-textarea" placeholder="Paste PMAS Backup JSON here"></textarea>
+          <div class="reconstruction-result-actions">
+            <button class="btn" id="btnPreviewBackup">Preview Backup</button>
+            <select id="backupRestoreMode" class="reconstruction-setting-control">
+              <option value="full">restore full backup</option>
+              <option value="selected">restore selected cases</option>
+            </select>
+            <button class="btn btn-primary" id="btnRestoreBackup">Restore</button>
+          </div>
+          <div id="backupPreviewBox" class="reconstruction-history-list">
+            <div class="hint">Import preview will appear here.</div>
+          </div>
+        </div>
+
+        <div class="card reconstruction-card" id="reconstructionQaDashboard">
+          <div class="card-title">QA Dashboard</div>
+          <div class="reconstruction-settings-summary" id="qaDashboardSummary">Select a patient case to run technical QA checks.</div>
+          <div class="reconstruction-quality-grid">
+            <div>
+              <span class="label-sm">QA score</span>
+              <div class="reconstruction-quality-value" id="qaScoreValue">—</div>
+            </div>
+            <div>
+              <span class="label-sm">Readiness</span>
+              <div class="reconstruction-quality-value"><span class="badge" id="qaReadinessBadge">—</span></div>
+            </div>
+            <div>
+              <span class="label-sm">Warnings</span>
+              <div class="reconstruction-quality-value" id="qaWarningsCount">0</div>
+            </div>
+            <div>
+              <span class="label-sm">Failed</span>
+              <div class="reconstruction-quality-value" id="qaFailuresCount">0</div>
+            </div>
+            <div>
+              <span class="label-sm">Passed</span>
+              <div class="reconstruction-quality-value" id="qaPassedCount">0</div>
+            </div>
+          </div>
+          <div class="reconstruction-result-actions">
+            <button class="btn btn-primary" id="btnRunQaValidation">Run QA Validation</button>
+          </div>
+          <div id="qaChecksList" class="reconstruction-history-list">
+            <div class="hint">No QA checks yet.</div>
+          </div>
+        </div>
+
         <div class="card reconstruction-card" id="reconstructionCaseTeam">
           <div class="card-title">Case Team</div>
           <div class="reconstruction-settings-summary" id="caseTeamSummary">Select a case to manage team access.</div>
@@ -648,6 +703,44 @@
           </div>
           <div id="caseTeamList" class="reconstruction-history-list">
             <div class="hint">No team members yet.</div>
+          </div>
+        </div>
+
+        <div class="card reconstruction-card" id="reconstructionAuditLog">
+          <div class="card-title">Case Activity / Audit Log</div>
+          <div class="reconstruction-settings-summary" id="auditLogSummary">Select a case to view activity.</div>
+          <div class="reconstruction-history-filters">
+            <select id="auditActionFilter" class="reconstruction-setting-control">
+              <option value="all">All actions</option>
+              <option value="case_created">case created</option>
+              <option value="case_updated">case updated</option>
+              <option value="model_uploaded">model uploaded</option>
+              <option value="reconstruction_started">reconstruction started</option>
+              <option value="reconstruction_completed">reconstruction completed</option>
+              <option value="landmark_added">landmark added</option>
+              <option value="landmark_updated">landmark updated</option>
+              <option value="measurement_added">measurement added</option>
+              <option value="measurement_updated">measurement updated</option>
+              <option value="note_updated">note updated</option>
+              <option value="report_exported">report exported</option>
+              <option value="simulation_created">simulation created</option>
+              <option value="team_member_added">team member added</option>
+              <option value="team_member_removed">team member removed</option>
+              <option value="insight_created">insight created</option>
+              <option value="insight_acknowledged">insight acknowledged</option>
+              <option value="backup_created">backup created</option>
+              <option value="backup_imported">backup imported</option>
+              <option value="backup_restored">backup restored</option>
+              <option value="qa_run">QA run</option>
+              <option value="qa_issue_resolved">QA issue resolved</option>
+            </select>
+            <select id="auditUserFilter" class="reconstruction-setting-control">
+              <option value="all">All users</option>
+            </select>
+            <input id="auditDateFilter" class="reconstruction-setting-control" type="date" />
+          </div>
+          <div id="auditLogList" class="reconstruction-history-list">
+            <div class="hint">No audit events yet.</div>
           </div>
         </div>
 
@@ -1235,6 +1328,22 @@
           </div>
         </div>
 
+        <div class="card reconstruction-card" id="reconstructionClinicalInsights">
+          <div class="card-title">Clinical Insights</div>
+          <div class="reconstruction-settings-summary" id="clinicalInsightsSummary">Select a patient case to generate structured observations.</div>
+          <div class="reconstruction-quality-block">
+            <div class="reconstruction-quality-list hint">
+              Observations only. PMAS does not diagnose, prescribe treatment, or replace clinical judgment.
+            </div>
+          </div>
+          <div class="reconstruction-result-actions">
+            <button class="btn btn-primary" id="btnGenerateClinicalInsights">Generate Insights</button>
+          </div>
+          <div id="clinicalInsightsList" class="reconstruction-history-list">
+            <div class="hint">No clinical insights yet.</div>
+          </div>
+        </div>
+
         <div class="card reconstruction-card" id="reconstructionSurgicalPlanningNotes">
           <div class="card-title">Surgical Planning Notes</div>
           <div class="reconstruction-settings-summary" id="surgicalPlanningSummary">Select a case to save clinical planning notes.</div>
@@ -1603,8 +1712,8 @@
 <script src="./assets/js/11-persistence-init.js"></script>
 <script src="./assets/js/14-reconstruction-preprocessing.js?v=1"></script>
 <script src="./assets/js/13-reconstruction-pipeline.js?v=2"></script>
-<script src="./assets/js/15-reconstruction-api.js?v=6"></script>
-<script src="./assets/js/12-reconstruction.js?v=11"></script>
+<script src="./assets/js/15-reconstruction-api.js?v=7"></script>
+<script src="./assets/js/12-reconstruction.js?v=12"></script>
 
 
 <script type="module" src="./assets/js/app.js?v=61"></script>

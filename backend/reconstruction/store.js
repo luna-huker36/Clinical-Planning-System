@@ -1,6 +1,13 @@
 const crypto = require("crypto");
 const { STATUSES } = require("./constants");
 const { normalizeReconstructionSettings } = require("./settings");
+const {
+  normalizeAuditEvent,
+  cloneAuditEvent,
+  auditEventMatchesFilter
+} = require("./audit-log");
+const { generateClinicalInsights, normalizeInsight } = require("./clinical-insights-engine");
+const { generateQaChecks, normalizeCheck, calculateQaSummary } = require("./qa-validation-engine");
 
 const uploads = new Map();
 const jobs = new Map();
@@ -11,6 +18,9 @@ const surgicalPlans = new Map();
 const landmarks = new Map();
 const landmarkTemplates = new Map();
 const simulations = new Map();
+const auditEvents = new Map();
+const clinicalInsights = new Map();
+const qaChecks = new Map();
 const MEASUREMENT_TYPES = new Set(["distance", "angle", "vector", "point", "annotation", "ratio", "custom"]);
 const MEASUREMENT_STATUSES = new Set(["ready", "missing_landmarks", "needs_review", "calculated", "error"]);
 const LANDMARK_CATEGORIES = new Set(["facial", "nasal", "maxillofacial", "orthodontic", "custom"]);
@@ -191,9 +201,12 @@ function cloneCase(caseItem) {
     landmarks: Array.from(caseItem.landmarks || []),
     landmarkTemplates: Array.from(caseItem.landmarkTemplates || []),
     simulations: Array.from(caseItem.simulations || []),
+    clinicalInsights: Array.from(caseItem.clinicalInsights || []),
+    qaChecks: Array.from(caseItem.qaChecks || []),
     ownerId: caseItem.ownerId || "",
     teamMembers: Array.isArray(caseItem.teamMembers) ? caseItem.teamMembers.map(cloneTeamMember) : [],
-    permissions: cloneCasePermissions(caseItem.permissions || {})
+    permissions: cloneCasePermissions(caseItem.permissions || {}),
+    auditEvents: Array.from(caseItem.auditEvents || [])
   };
 }
 
@@ -394,6 +407,14 @@ function cloneSimulation(simulation) {
   };
 }
 
+function cloneClinicalInsight(insight) {
+  return normalizeInsight(insight || {});
+}
+
+function cloneQaCheck(check) {
+  return normalizeCheck(check || {});
+}
+
 function createUpload(files, fileType) {
   const upload = {
     uploadId: makeId("upload"),
@@ -427,9 +448,12 @@ function createCase(data = {}) {
     landmarks: [],
     landmarkTemplates: [],
     simulations: [],
+    clinicalInsights: [],
+    qaChecks: [],
     ownerId: "",
     teamMembers: [],
-    permissions: {}
+    permissions: {},
+    auditEvents: []
   };
   const owner = normalizeTeamMemberInput({
     name: data.ownerName || "Case Owner",
@@ -450,6 +474,13 @@ function createCase(data = {}) {
   // TODO: AI surgical planning
   // TODO: backend auth and server-side team membership persistence
   cases.set(caseItem.caseId, caseItem);
+  recordAuditEvent({
+    caseId: caseItem.caseId,
+    action: "case_created",
+    entityType: "case",
+    entityId: caseItem.caseId,
+    details: { patientName: caseItem.patientName, patientId: caseItem.patientId }
+  });
   return cloneCase(caseItem);
 }
 
@@ -477,6 +508,8 @@ function deleteCase(caseId) {
   for (const planId of caseItem.surgicalPlans || []) surgicalPlans.delete(planId);
   for (const landmarkId of caseItem.landmarks || []) landmarks.delete(landmarkId);
   for (const simulationId of caseItem.simulations || []) simulations.delete(simulationId);
+  for (const insightId of caseItem.clinicalInsights || []) clinicalInsights.delete(insightId);
+  for (const checkId of caseItem.qaChecks || []) qaChecks.delete(checkId);
   return cloneCase(caseItem);
 }
 
@@ -498,13 +531,29 @@ function addReportToCase(caseId, reportId) {
   const caseItem = getMutableCase(caseId);
   if (!caseItem) return null;
   if (reportId && !caseItem.reports.includes(reportId)) caseItem.reports.push(reportId);
+  if (reportId) recordAuditEvent({
+    caseId,
+    action: "report_exported",
+    entityType: "report",
+    entityId: reportId,
+    details: { reportId }
+  });
   return touchCase(caseItem);
 }
 
 function addModelToCase(caseId, modelId) {
   const caseItem = getMutableCase(caseId);
   if (!caseItem) return null;
-  if (modelId && !caseItem.models.includes(modelId)) caseItem.models.push(modelId);
+  if (modelId && !caseItem.models.includes(modelId)) {
+    caseItem.models.push(modelId);
+    recordAuditEvent({
+      caseId,
+      action: "model_uploaded",
+      entityType: "model",
+      entityId: modelId,
+      details: { modelId }
+    });
+  }
   return touchCase(caseItem);
 }
 
@@ -562,6 +611,22 @@ function addSimulationToCase(caseId, simulationId) {
   return touchCase(caseItem);
 }
 
+function addClinicalInsightToCase(caseId, insightId) {
+  const caseItem = getMutableCase(caseId);
+  if (!caseItem) return null;
+  caseItem.clinicalInsights = caseItem.clinicalInsights || [];
+  if (insightId && !caseItem.clinicalInsights.includes(insightId)) caseItem.clinicalInsights.push(insightId);
+  return touchCase(caseItem);
+}
+
+function addQaCheckToCase(caseId, checkId) {
+  const caseItem = getMutableCase(caseId);
+  if (!caseItem) return null;
+  caseItem.qaChecks = caseItem.qaChecks || [];
+  if (checkId && !caseItem.qaChecks.includes(checkId)) caseItem.qaChecks.push(checkId);
+  return touchCase(caseItem);
+}
+
 function normalizeTeamMemberInput(data = {}, existing = null) {
   const role = TEAM_ROLES.has(String(data.role || existing?.role || "viewer"))
     ? String(data.role || existing?.role || "viewer")
@@ -612,6 +677,13 @@ function saveCaseTeamMember(caseId, data = {}) {
   caseItem.permissions[member.memberId] = member.permissions;
   if (member.role === "owner" || !caseItem.ownerId) caseItem.ownerId = member.memberId;
   touchCase(caseItem);
+  recordAuditEvent({
+    caseId,
+    action: "team_member_added",
+    entityType: "team_member",
+    entityId: member.memberId,
+    details: { name: member.name, role: member.role, email: member.email }
+  });
   return cloneTeamMember(member);
 }
 
@@ -636,6 +708,13 @@ function updateCaseTeamMemberRole(caseId, memberId, role) {
     caseItem.ownerId = owner?.memberId || "";
   }
   touchCase(caseItem);
+  recordAuditEvent({
+    caseId,
+    action: "case_updated",
+    entityType: "team_member",
+    entityId: memberId,
+    details: { name: updated.name, previousRole: existing.role, role: updated.role, email: updated.email }
+  });
   return cloneTeamMember(updated);
 }
 
@@ -647,6 +726,13 @@ function removeCaseTeamMember(caseId, memberId) {
   caseItem.teamMembers = (caseItem.teamMembers || []).filter(item => item.memberId !== memberId);
   if (caseItem.permissions) delete caseItem.permissions[memberId];
   touchCase(caseItem);
+  recordAuditEvent({
+    caseId,
+    action: "team_member_removed",
+    entityType: "team_member",
+    entityId: memberId,
+    details: { name: existing.name, role: existing.role, email: existing.email }
+  });
   return cloneTeamMember(existing);
 }
 
@@ -655,6 +741,165 @@ function removeLandmarkFromCase(caseId, landmarkId) {
   if (!caseItem) return null;
   caseItem.landmarks = (caseItem.landmarks || []).filter(id => id !== landmarkId);
   return touchCase(caseItem);
+}
+
+function recordAuditEvent(input = {}) {
+  const event = normalizeAuditEvent(input, { makeId, nowIso });
+  if (!event) return null;
+  const caseItem = getMutableCase(event.caseId);
+  if (!caseItem) return null;
+  auditEvents.set(event.eventId, event);
+  caseItem.auditEvents = caseItem.auditEvents || [];
+  if (!caseItem.auditEvents.includes(event.eventId)) caseItem.auditEvents.push(event.eventId);
+  cases.set(caseItem.caseId, caseItem);
+  return cloneAuditEvent(event);
+}
+
+function listAuditEvents(filter = {}) {
+  return Array.from(auditEvents.values())
+    .filter(item => auditEventMatchesFilter(item, filter))
+    .map(cloneAuditEvent)
+    .sort((a, b) => String(b.timestamp || "").localeCompare(String(a.timestamp || "")));
+}
+
+function listClinicalInsights(filter = {}) {
+  const caseId = String(filter.caseId || "all");
+  const modelId = String(filter.modelId || "all");
+  const status = String(filter.status || "active");
+  return Array.from(clinicalInsights.values())
+    .filter(item => caseId === "all" || item.caseId === caseId)
+    .filter(item => modelId === "all" || item.modelId === modelId)
+    .filter(item => status === "all" || (status === "active" ? !item.dismissed : item[status] === true))
+    .map(cloneClinicalInsight)
+    .sort((a, b) => Number(b.pinned) - Number(a.pinned) || String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+}
+
+function saveClinicalInsight(input = {}) {
+  const insight = normalizeInsight(input, { makeId, nowIso });
+  if (!insight.caseId || !getMutableCase(insight.caseId)) return null;
+  const existing = clinicalInsights.get(insight.insightId);
+  const next = {
+    ...insight,
+    reviewed: Boolean(input.reviewed ?? existing?.reviewed),
+    dismissed: Boolean(input.dismissed ?? existing?.dismissed),
+    pinned: Boolean(input.pinned ?? existing?.pinned),
+    reviewedAt: input.reviewedAt ?? existing?.reviewedAt ?? "",
+    dismissedAt: input.dismissedAt ?? existing?.dismissedAt ?? ""
+  };
+  clinicalInsights.set(next.insightId, next);
+  addClinicalInsightToCase(next.caseId, next.insightId);
+  if (!existing) {
+    recordAuditEvent({
+      caseId: next.caseId,
+      action: "insight_created",
+      entityType: "clinical_insight",
+      entityId: next.insightId,
+      details: { category: next.category, severity: next.severity, source: next.source }
+    });
+  }
+  return cloneClinicalInsight(next);
+}
+
+function generateClinicalInsightsForCase(caseId) {
+  const caseItem = getMutableCase(caseId);
+  if (!caseItem) return [];
+  const generated = generateClinicalInsights({
+    caseId,
+    jobs: listJobs().filter(job => job.caseId === caseId),
+    measurements: listMeasurements({ caseId }),
+    landmarks: listLandmarks({ caseId }),
+    comparisons: listComparisons(caseId),
+    simulations: listSimulations({ caseId }),
+    existingInsights: listClinicalInsights({ caseId, status: "all" })
+  }, { makeId, nowIso, caseId });
+  return generated.map(saveClinicalInsight).filter(Boolean);
+}
+
+function updateClinicalInsight(insightId, changes = {}) {
+  const existing = clinicalInsights.get(insightId);
+  if (!existing) return null;
+  const timestamp = nowIso();
+  const next = {
+    ...existing,
+    reviewed: changes.reviewed === undefined ? existing.reviewed : Boolean(changes.reviewed),
+    dismissed: changes.dismissed === undefined ? existing.dismissed : Boolean(changes.dismissed),
+    pinned: changes.pinned === undefined ? existing.pinned : Boolean(changes.pinned),
+    reviewedAt: changes.reviewed ? timestamp : existing.reviewedAt || "",
+    dismissedAt: changes.dismissed ? timestamp : existing.dismissedAt || ""
+  };
+  clinicalInsights.set(insightId, next);
+  if (changes.reviewed || changes.dismissed) {
+    recordAuditEvent({
+      caseId: next.caseId,
+      action: "insight_acknowledged",
+      entityType: "clinical_insight",
+      entityId: next.insightId,
+      details: { reviewed: next.reviewed, dismissed: next.dismissed, pinned: next.pinned }
+    });
+  }
+  return cloneClinicalInsight(next);
+}
+
+function listQaChecks(filter = {}) {
+  const caseId = String(filter.caseId || "all");
+  const status = String(filter.status || "all");
+  return Array.from(qaChecks.values())
+    .filter(item => caseId === "all" || item.caseId === caseId)
+    .filter(item => status === "all" || item.status === status)
+    .map(cloneQaCheck)
+    .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+}
+
+function saveQaCheck(input = {}) {
+  const check = normalizeCheck(input, { makeId, nowIso });
+  if (!check.caseId || !getMutableCase(check.caseId)) return null;
+  qaChecks.set(check.checkId, check);
+  addQaCheckToCase(check.caseId, check.checkId);
+  return cloneQaCheck(check);
+}
+
+function runQaValidationForCase(caseId, options = {}) {
+  const caseItem = getCase(caseId);
+  if (!caseItem) return null;
+  for (const [checkId, check] of Array.from(qaChecks.entries())) {
+    if (check.caseId === caseId && !check.resolved) qaChecks.delete(checkId);
+  }
+  const checks = generateQaChecks({
+    caseId,
+    caseItem,
+    jobs: listJobs().filter(job => job.caseId === caseId),
+    measurements: listMeasurements({ caseId }),
+    landmarks: listLandmarks({ caseId }),
+    surgicalPlanningNotes: listSurgicalPlans({ caseId }),
+    simulations: listSimulations({ caseId }),
+    backupStatus: { localBackupSupported: true }
+  }, { makeId, nowIso, caseId }).map(saveQaCheck).filter(Boolean);
+  const summary = calculateQaSummary(checks);
+  if (options.recordAudit !== false) {
+    recordAuditEvent({
+      caseId,
+      action: "qa_run",
+      entityType: "qa_validation",
+      entityId: `qa-${caseId}`,
+      details: summary
+    });
+  }
+  return { caseId, checks, summary };
+}
+
+function resolveQaCheck(checkId) {
+  const existing = qaChecks.get(checkId);
+  if (!existing) return null;
+  const next = { ...existing, resolved: true, resolvedAt: nowIso(), status: existing.status === "failed" ? "warning" : existing.status };
+  qaChecks.set(checkId, next);
+  recordAuditEvent({
+    caseId: next.caseId,
+    action: "qa_issue_resolved",
+    entityType: "qa_check",
+    entityId: next.checkId,
+    details: { category: next.category, title: next.title }
+  });
+  return cloneQaCheck(next);
 }
 
 function normalizeLandmarkInput(data = {}, existing = null) {
@@ -714,6 +959,13 @@ function saveLandmark(data = {}) {
   landmarks.set(landmark.landmarkId, landmark);
   addLandmarkToCase(landmark.caseId, landmark.landmarkId);
   if (landmark.templateId) addLandmarkTemplateToCase(landmark.caseId, landmark.templateId);
+  recordAuditEvent({
+    caseId: landmark.caseId,
+    action: existing ? "landmark_updated" : "landmark_added",
+    entityType: "landmark",
+    entityId: landmark.landmarkId,
+    details: { name: landmark.name, modelId: landmark.modelId, status: landmark.status }
+  });
   return cloneLandmark(landmark);
 }
 
@@ -817,6 +1069,13 @@ function saveSurgicalPlan(data = {}) {
   };
   surgicalPlans.set(plan.planId, plan);
   addSurgicalPlanToCase(plan.caseId, plan.planId);
+  recordAuditEvent({
+    caseId: plan.caseId,
+    action: "note_updated",
+    entityType: "surgical_plan",
+    entityId: plan.planId,
+    details: { title: plan.title, procedureType: plan.procedureType, modelId: plan.modelId }
+  });
   return cloneSurgicalPlan(plan);
 }
 
@@ -872,6 +1131,13 @@ function saveSimulation(data = {}) {
   addSimulationToCase(simulation.caseId, simulation.simulationId);
   addModelToCase(simulation.caseId, simulation.originalModelId || simulation.modelId);
   addModelToCase(simulation.caseId, simulation.simulatedModelId);
+  recordAuditEvent({
+    caseId: simulation.caseId,
+    action: "simulation_created",
+    entityType: "simulation",
+    entityId: simulation.simulationId,
+    details: { simulationType: simulation.simulationType, modelId: simulation.modelId }
+  });
   return cloneSimulation(simulation);
 }
 
@@ -941,6 +1207,13 @@ function saveMeasurement(data = {}) {
   };
   measurements.set(measurement.measurementId, measurement);
   addMeasurementToCase(measurement.caseId, measurement.measurementId);
+  recordAuditEvent({
+    caseId: measurement.caseId,
+    action: existing ? "measurement_updated" : "measurement_added",
+    entityType: "measurement",
+    entityId: measurement.measurementId,
+    details: { type: measurement.type, label: measurement.label, modelId: measurement.modelId }
+  });
   return cloneMeasurement(measurement);
 }
 
@@ -1144,6 +1417,123 @@ function deleteJob(jobId) {
   return job;
 }
 
+function backupClone(value) {
+  return JSON.parse(JSON.stringify(value ?? null));
+}
+
+function getBackupSnapshot() {
+  return {
+    cases: listCases(),
+    jobs: listJobs(),
+    comparisons: listComparisons("all"),
+    measurements: listMeasurements({ caseId: "all", jobId: "all", modelId: "all" }),
+    landmarks: listLandmarks({ caseId: "all", jobId: "all", modelId: "all" }),
+    landmarkTemplates: listLandmarkTemplates(),
+    surgicalPlans: listSurgicalPlans({ caseId: "all", jobId: "all", modelId: "all" }),
+    simulations: listSimulations({ caseId: "all", jobId: "all", modelId: "all" }),
+    auditEvents: listAuditEvents({ caseId: "all", action: "all", userId: "all" }),
+    clinicalInsights: listClinicalInsights({ caseId: "all", modelId: "all", status: "all" }),
+    qaChecks: listQaChecks({ caseId: "all", status: "all" })
+  };
+}
+
+function removeCaseDataForRestore(caseId) {
+  const caseItem = cases.get(caseId);
+  if (caseItem) {
+    for (const jobId of caseItem.reconstructionJobs || []) jobs.delete(jobId);
+    for (const comparisonId of caseItem.comparisons || []) comparisons.delete(comparisonId);
+    for (const measurementId of caseItem.measurements || []) measurements.delete(measurementId);
+    for (const planId of caseItem.surgicalPlans || []) surgicalPlans.delete(planId);
+    for (const landmarkId of caseItem.landmarks || []) landmarks.delete(landmarkId);
+    for (const simulationId of caseItem.simulations || []) simulations.delete(simulationId);
+  for (const insightId of caseItem.clinicalInsights || []) clinicalInsights.delete(insightId);
+  for (const checkId of caseItem.qaChecks || []) qaChecks.delete(checkId);
+  }
+  cases.delete(caseId);
+  for (const [eventId, event] of auditEvents.entries()) {
+    if (event.caseId === caseId) auditEvents.delete(eventId);
+  }
+}
+
+function clearProjectDataForRestore() {
+  uploads.clear();
+  jobs.clear();
+  cases.clear();
+  comparisons.clear();
+  measurements.clear();
+  surgicalPlans.clear();
+  landmarks.clear();
+  simulations.clear();
+  auditEvents.clear();
+  clinicalInsights.clear();
+  qaChecks.clear();
+  for (const [templateId, template] of Array.from(landmarkTemplates.entries())) {
+    if (!template.builtIn) landmarkTemplates.delete(templateId);
+  }
+}
+
+function restoreBackupSnapshot(snapshot = {}, options = {}) {
+  const mode = options.mode === "selected" ? "selected" : "full";
+  const selectedCaseIds = new Set((options.caseIds || []).map(String).filter(Boolean));
+  const sourceCases = Array.isArray(snapshot.cases) ? snapshot.cases : [];
+  const caseIds = mode === "selected"
+    ? new Set(sourceCases.map(item => item.caseId).filter(caseId => selectedCaseIds.has(caseId)))
+    : new Set(sourceCases.map(item => item.caseId).filter(Boolean));
+
+  if (mode === "full") clearProjectDataForRestore();
+  else caseIds.forEach(removeCaseDataForRestore);
+
+  sourceCases
+    .filter(item => caseIds.has(item.caseId))
+    .forEach(item => cases.set(item.caseId, backupClone(item)));
+
+  (snapshot.jobs || [])
+    .filter(item => caseIds.has(item.caseId))
+    .forEach(item => jobs.set(item.jobId, backupClone(item)));
+  (snapshot.comparisons || [])
+    .filter(item => caseIds.has(item.caseId))
+    .forEach(item => comparisons.set(item.comparisonId, backupClone(item)));
+  (snapshot.measurements || [])
+    .filter(item => caseIds.has(item.caseId))
+    .forEach(item => measurements.set(item.measurementId, backupClone(item)));
+  (snapshot.landmarks || [])
+    .filter(item => caseIds.has(item.caseId))
+    .forEach(item => landmarks.set(item.landmarkId, backupClone(item)));
+  (snapshot.surgicalPlans || [])
+    .filter(item => caseIds.has(item.caseId))
+    .forEach(item => surgicalPlans.set(item.planId, backupClone(item)));
+  (snapshot.simulations || [])
+    .filter(item => caseIds.has(item.caseId))
+    .forEach(item => simulations.set(item.simulationId, backupClone(item)));
+  (snapshot.clinicalInsights || [])
+    .filter(item => caseIds.has(item.caseId))
+    .forEach(item => clinicalInsights.set(item.insightId, backupClone(item)));
+  (snapshot.qaChecks || [])
+    .filter(item => caseIds.has(item.caseId))
+    .forEach(item => qaChecks.set(item.checkId, backupClone(item)));
+  (snapshot.auditEvents || [])
+    .filter(item => caseIds.has(item.caseId))
+    .forEach(item => auditEvents.set(item.eventId, backupClone(item)));
+  (snapshot.landmarkTemplates || [])
+    .filter(item => item.templateId)
+    .forEach(item => landmarkTemplates.set(item.templateId, backupClone(item)));
+
+  caseIds.forEach(caseId => {
+    recordAuditEvent({
+      caseId,
+      action: "backup_restored",
+      entityType: "backup",
+      entityId: options.backupId || "imported-backup",
+      details: { mode, restoredCasesCount: caseIds.size }
+    });
+  });
+
+  return {
+    restoredCasesCount: caseIds.size,
+    caseIds: Array.from(caseIds)
+  };
+}
+
 module.exports = {
   nowIso,
   createUpload,
@@ -1162,10 +1552,22 @@ module.exports = {
   addLandmarkToCase,
   addLandmarkTemplateToCase,
   addSimulationToCase,
+  addClinicalInsightToCase,
+  addQaCheckToCase,
   listCaseTeamMembers,
   saveCaseTeamMember,
   updateCaseTeamMemberRole,
   removeCaseTeamMember,
+  recordAuditEvent,
+  listAuditEvents,
+  listClinicalInsights,
+  saveClinicalInsight,
+  generateClinicalInsightsForCase,
+  updateClinicalInsight,
+  listQaChecks,
+  saveQaCheck,
+  runQaValidationForCase,
+  resolveQaCheck,
   createComparison,
   getComparison,
   getMutableComparison,
@@ -1193,5 +1595,7 @@ module.exports = {
   listMutableJobs,
   listJobs,
   saveJob,
-  deleteJob
+  deleteJob,
+  getBackupSnapshot,
+  restoreBackupSnapshot
 };
