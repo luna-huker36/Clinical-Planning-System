@@ -32,7 +32,7 @@
 }
 </script>
 
-<link rel="stylesheet" href="./assets/css/style.css?v=48" />
+<link rel="stylesheet" href="./assets/css/style.css?v=49" />
 </head>
 <body>
 
@@ -610,7 +610,7 @@
               <input id="reconstructionCaseNotes" class="reconstruction-setting-control" type="text" placeholder="Case notes" />
             </div>
           </div>
-          <div class="reconstruction-actions">
+          <div class="reconstruction-actions reconstruction-case-actions">
             <button class="btn btn-primary" id="btnCreateReconstructionCase">Create Case</button>
             <button class="btn" id="btnViewCaseReport">View Case Report</button>
             <button class="btn" id="btnDownloadCaseJsonReport">Download JSON Report</button>
@@ -637,6 +637,13 @@
             <button class="btn" id="btnCancelReconstruction" style="display:none">Cancel reconstruction</button>
             <button class="btn" id="btnRetryReconstruction" style="display:none">Retry</button>
             <button class="btn btn-danger" id="btnClearReconstruction">Очистить</button>
+          </div>
+
+          <div class="reconstruction-file-panel">
+            <div class="card-title">📋 Выбранные файлы <span class="badge" id="reconstructionFileCount">0</span></div>
+            <div id="reconstructionFileList" class="reconstruction-file-list">
+              <div class="hint">Файлы ещё не выбраны.</div>
+            </div>
           </div>
         </div>
 
@@ -957,13 +964,6 @@
               <div>• Лучше использовать 20–40 фото или видео 20–40 секунд</div>
               <div>• Фон должен быть спокойным и не сливаться с человеком</div>
             </div>
-          </div>
-        </div>
-
-        <div class="card reconstruction-card">
-          <div class="card-title">📋 Загруженные файлы <span class="badge" id="reconstructionFileCount">0</span></div>
-          <div id="reconstructionFileList" class="reconstruction-file-list">
-            <div class="hint">Файлы ещё не загружены.</div>
           </div>
         </div>
 
@@ -1831,7 +1831,7 @@
 <script src="./assets/js/14-reconstruction-preprocessing.js?v=1"></script>
 <script src="./assets/js/13-reconstruction-pipeline.js?v=2"></script>
 <script src="./assets/js/15-reconstruction-api.js?v=7"></script>
-<script src="./assets/js/12-reconstruction.js?v=12"></script>
+<script src="./assets/js/12-reconstruction.js?v=13"></script>
 
 
 <script type="module" src="./assets/js/app.js?v=61"></script>

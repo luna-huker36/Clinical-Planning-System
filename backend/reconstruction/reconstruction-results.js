@@ -532,6 +532,8 @@ function buildCaseReport(caseId) {
       readinessLevel: job.readinessLevel || "poor"
     }));
   const report = {
+    reportId: `${caseId}:case-report`,
+    reportType: "case_report",
     caseId: caseItem.caseId,
     patientName: caseItem.patientName || "",
     patientId: caseItem.patientId || "",
@@ -620,7 +622,7 @@ function buildCaseReport(caseId) {
       insightEntriesCount: timeline.entries.filter(item => item.entryType === "insight_generated" || item.entryType === "insight_reviewed").length,
       readinessEntriesCount: timeline.entries.filter(item => item.entryType === "readiness_check_completed").length
     },
-    TODO: [
+    roadmapNotes: [
       "multiple scans",
       "before/after comparison",
       "operation planning",

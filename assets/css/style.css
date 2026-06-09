@@ -666,13 +666,25 @@ textarea { resize: vertical; min-height: 60px; }
 
 .reconstruction-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   margin-top: 12px;
 }
 
 .reconstruction-actions .btn {
+  max-width: 100%;
   flex: 1;
   min-height: 40px;
+}
+
+.reconstruction-case-actions .btn {
+  flex: 0 1 auto;
+  min-width: 150px;
+  padding-inline: 18px;
+}
+
+.reconstruction-case-actions .btn-primary {
+  min-width: 160px;
 }
 
 .reconstruction-actions .btn:disabled {
@@ -996,6 +1008,17 @@ textarea { resize: vertical; min-height: 60px; }
   gap: 8px;
   max-height: 280px;
   overflow-y: auto;
+}
+
+.reconstruction-file-panel {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.reconstruction-file-panel .card-title {
+  margin-bottom: 8px;
+  font-size: 15px;
 }
 
 .reconstruction-file-row {

@@ -418,7 +418,7 @@
     if (!list) return;
 
     if (!files.length) {
-      list.innerHTML = '<div class="hint">Файлы ещё не загружены.</div>';
+      list.innerHTML = '<div class="hint">Файлы ещё не выбраны.</div>';
       return;
     }
 
@@ -4553,6 +4553,7 @@
       applySurgicalPlanningForm(null);
       applySurgicalSimulationDraft({});
       setStatusText(`Case selected: ${caseItem.patientName}`);
+      await prepareSelectedFilesForUpload();
       scheduleSessionAutoSave();
     } catch (err) {
       setError(apiErrorMessage(err, "Case creation failed."));
@@ -4585,6 +4586,7 @@
       loadCaseTimeline()
     ]);
     setStatusText(`Case opened: ${currentCase()?.patientName || caseId}`);
+    await prepareSelectedFilesForUpload();
     scheduleSessionAutoSave();
   }
 
@@ -5307,23 +5309,56 @@
     return `${code}${err?.message || fallback}`;
   }
 
-  async function addFiles(fileList) {
-    const incoming = Array.from(fileList || []);
-    if (!incoming.length) return;
+  async function prepareSelectedFilesForUpload() {
     if (!api()) {
       setError("Reconstruction API adapter не загружен.");
       return;
     }
+    if (!state.selectedFiles.length) {
+      renderJob(currentJob());
+      return;
+    }
     if (isDemoMode()) {
       setModeBlocked("Загрузка файлов пациента отключена в Demo mode. Выберите Doctor mode вверху страницы, затем создайте или выберите patient case.");
+      renderFiles();
       return;
     }
     if (!state.currentCaseId) {
       setError("Сначала создайте или выберите patient case, затем загрузите фото/видео для reconstruction.");
       renderCaseSummary();
+      renderFiles();
       return;
     }
 
+    state.busy = false;
+    try {
+      const uploadResult = await api().uploadReconstructionFiles(state.selectedFiles);
+      const job = await api().createBackendReconstructionJob(uploadResult, readSettings(), state.currentCaseId);
+      state.uploadResult = uploadResult;
+      state.currentJobId = job.jobId;
+      state.currentJob = job;
+      state.currentResult = null;
+      state.currentReport = null;
+      state.reviewSelection = new Set();
+      state.reviewJobId = null;
+      state.lastUploadError = "";
+      setError("");
+      renderJob(job);
+      await loadCases();
+      await loadComparisonModels();
+      await loadHistory();
+      if (state.uploadResult?.previewReport) renderQualityReport(state.uploadResult.previewReport);
+    } catch (err) {
+      state.lastUploadError = apiErrorMessage(err, "Upload failed.");
+      setError(state.lastUploadError);
+      renderChecklist(currentJob());
+      renderFiles();
+    }
+  }
+
+  async function addFiles(fileList) {
+    const incoming = Array.from(fileList || []);
+    if (!incoming.length) return;
     const accepted = [];
     for (const file of incoming) {
       const duplicate = state.selectedFiles.some(item =>
@@ -5333,36 +5368,21 @@
     }
 
     const nextFiles = [...state.selectedFiles, ...accepted];
-    state.busy = false;
+    state.selectedFiles = nextFiles;
+    state.uploadResult = null;
+    state.currentJobId = "";
+    state.currentJob = null;
+    state.currentResult = null;
+    state.currentReport = null;
+    renderJob(null);
+    renderFiles();
 
-    if (nextFiles.length) {
-      try {
-        const uploadResult = await api().uploadReconstructionFiles(nextFiles);
-        const job = await api().createBackendReconstructionJob(uploadResult, readSettings(), state.currentCaseId);
-        state.selectedFiles = nextFiles;
-        state.uploadResult = uploadResult;
-        state.currentJobId = job.jobId;
-        state.currentJob = job;
-        state.currentResult = null;
-        state.currentReport = null;
-        state.reviewSelection = new Set();
-        state.reviewJobId = null;
-        state.lastUploadError = "";
-        setError("");
-        renderJob(job);
-        await loadCases();
-        await loadComparisonModels();
-        await loadHistory();
-        if (state.uploadResult?.previewReport) renderQualityReport(state.uploadResult.previewReport);
-      } catch (err) {
-        state.lastUploadError = apiErrorMessage(err, "Upload failed.");
-        setError(state.lastUploadError);
-        renderChecklist(currentJob());
-        renderFiles();
-      }
-    } else {
+    if (!nextFiles.length) {
       resetJobUi();
+      return;
     }
+
+    await prepareSelectedFilesForUpload();
   }
 
   async function startCurrentJob() {
@@ -6262,7 +6282,7 @@
     byId("caseDashboardSearch")?.addEventListener("input", handleCaseDashboardFilter);
     byId("caseDashboardStatusFilter")?.addEventListener("change", handleCaseDashboardFilter);
     byId("caseDashboardSort")?.addEventListener("change", handleCaseDashboardFilter);
-    byId("reconstructionCaseSelect")?.addEventListener("change", event => {
+    byId("reconstructionCaseSelect")?.addEventListener("change", async event => {
       state.currentCaseId = event.target.value || "";
       state.currentSurgicalPlanId = "";
       renderCaseSummary();
@@ -6279,6 +6299,7 @@
       loadSurgicalSimulations();
       applySurgicalPlanningForm(null);
       applySurgicalSimulationDraft({});
+      await prepareSelectedFilesForUpload();
     });
     byId("comparisonBeforeModel")?.addEventListener("change", renderComparisonDetails);
     byId("comparisonAfterModel")?.addEventListener("change", renderComparisonDetails);
