@@ -5315,11 +5315,11 @@
       return;
     }
     if (isDemoMode()) {
-      setModeBlocked("Demo mode is not intended for storing real patient data. Switch to Doctor mode to upload patient files.");
+      setModeBlocked("Загрузка файлов пациента отключена в Demo mode. Выберите Doctor mode вверху страницы, затем создайте или выберите patient case.");
       return;
     }
     if (!state.currentCaseId) {
-      setError("Select or create a patient case before uploading reconstruction files.");
+      setError("Сначала создайте или выберите patient case, затем загрузите фото/видео для reconstruction.");
       renderCaseSummary();
       return;
     }
@@ -5368,7 +5368,7 @@
   async function startCurrentJob() {
     if (!api() || !state.currentJobId || state.busy) return;
     if (isDemoMode()) {
-      setModeBlocked("Demo mode can open test models, but cannot start new patient reconstruction jobs.");
+      setModeBlocked("В Demo mode можно открывать тестовые модели, но нельзя запускать reconstruction для patient files. Выберите Doctor mode.");
       return;
     }
     const checklist = buildChecklist(currentJob());
@@ -6224,6 +6224,11 @@
   function bind() {
     const input = byId("reconstructionFileInput");
     const dropzone = byId("reconstructionDropzone");
+    const openFilePicker = event => {
+      if (!input || event?.target === input) return;
+      event?.preventDefault();
+      input.click();
+    };
     byId("btnStartReconstruction")?.addEventListener("click", startCurrentJob);
     byId("btnRetryReconstruction")?.addEventListener("click", retryCurrentJob);
     byId("btnCancelReconstruction")?.addEventListener("click", cancelCurrentJob);
@@ -6370,7 +6375,15 @@
     byId("tabReconstruction")?.addEventListener("input", scheduleSessionAutoSave);
     byId("tabReconstruction")?.addEventListener("change", scheduleSessionAutoSave);
 
-    input?.addEventListener("change", event => addFiles(event.target.files));
+    input?.addEventListener("change", event => {
+      addFiles(event.target.files);
+      event.target.value = "";
+    });
+    dropzone?.addEventListener("click", openFilePicker);
+    dropzone?.addEventListener("keydown", event => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      openFilePicker(event);
+    });
 
     ["dragenter", "dragover"].forEach(type => {
       dropzone?.addEventListener(type, event => {
