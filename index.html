@@ -32,7 +32,7 @@
 }
 </script>
 
-<link rel="stylesheet" href="./assets/css/style.css?v=49" />
+<link rel="stylesheet" href="./assets/css/style.css?v=50" />
 </head>
 <body>
 
@@ -551,6 +551,38 @@
       <div class="reconstruction-demo-warning" id="reconstructionDemoWarning">
         Чтобы загрузить фото/видео: выберите Doctor mode → создайте patient case → используйте блок “Входные файлы” ниже.
       </div>
+      <div class="reconstruction-workflow-toolbar">
+        <div>
+          <strong>Workflow</strong>
+          <div class="hint">Upload photos/video → Check quality → Generate model → Open result</div>
+        </div>
+        <div class="reconstruction-ux-toggle" role="group" aria-label="Reconstruction view mode">
+          <button class="btn btn-sm active" id="btnReconstructionSimpleMode" type="button">Simple mode</button>
+          <button class="btn btn-sm" id="btnReconstructionDeveloperMode" type="button">Developer mode</button>
+        </div>
+      </div>
+      <div class="reconstruction-stepper" id="reconstructionSimpleStepper">
+        <button class="reconstruction-stepper-item active" type="button" data-simple-step-target="upload">
+          <span>1</span>
+          <strong>Upload</strong>
+          <small>Photos or video</small>
+        </button>
+        <button class="reconstruction-stepper-item" type="button" data-simple-step-target="check">
+          <span>2</span>
+          <strong>Check</strong>
+          <small>Input quality</small>
+        </button>
+        <button class="reconstruction-stepper-item" type="button" data-simple-step-target="generate">
+          <span>3</span>
+          <strong>Generate</strong>
+          <small>3D model</small>
+        </button>
+        <button class="reconstruction-stepper-item" type="button" data-simple-step-target="result">
+          <span>4</span>
+          <strong>Result</strong>
+          <small>Open GLB</small>
+        </button>
+      </div>
       <div class="reconstruction-demo-watermark" id="reconstructionDemoWatermark">DEMO MODE</div>
 
       <div class="reconstruction-session-recovery" id="reconstructionSessionRecovery" style="display:none">
@@ -565,7 +597,7 @@
       </div>
 
       <div class="reconstruction-grid">
-        <div class="card reconstruction-card reconstruction-case-dashboard-card">
+        <div class="card reconstruction-card reconstruction-case-dashboard-card" data-developer-panel="true">
           <div class="card-title">Patient Cases Dashboard</div>
           <div class="reconstruction-history-filters" id="caseDashboardFilters">
             <input id="caseDashboardSearch" class="reconstruction-setting-control" type="search" placeholder="Search patient name or ID" />
@@ -588,7 +620,7 @@
           </div>
         </div>
 
-        <div class="card reconstruction-card">
+        <div class="card reconstruction-card" id="reconstructionCaseManagerCard" data-simple-step="upload">
           <div class="card-title">Patient Case Manager</div>
           <div class="reconstruction-settings-grid">
             <div>
@@ -622,32 +654,34 @@
           </div>
         </div>
 
-        <div class="card reconstruction-card">
-          <div class="card-title">📥 Входные файлы</div>
-          <div class="reconstruction-settings-summary">После создания patient case загрузите сюда фото или видео для 3D Reconstruction.</div>
+        <div class="card reconstruction-card" id="reconstructionUploadCard" data-simple-step="upload">
+          <div class="card-title">Upload photos or video</div>
+          <div class="reconstruction-settings-summary">Upload 20–40 photos or a 20–40 sec video of the head.</div>
           <label class="reconstruction-dropzone" id="reconstructionDropzone" for="reconstructionFileInput" role="button" tabindex="0">
             <input type="file" id="reconstructionFileInput" accept=".jpg,.jpeg,.png,.mp4,.mov,.webm,image/jpeg,image/png,video/mp4,video/quicktime,video/webm" multiple />
             <span class="reconstruction-drop-icon">⬡</span>
-            <span class="reconstruction-drop-title">Нажмите или перетащите фото/видео сюда</span>
+            <span class="reconstruction-drop-title">Upload photos or video</span>
             <span class="reconstruction-drop-hint">JPG, JPEG, PNG, MP4, MOV, WEBM до 250 MB</span>
           </label>
 
           <div class="reconstruction-actions">
-            <button class="btn btn-primary" id="btnStartReconstruction" disabled>Start reconstruction</button>
+            <button class="btn btn-primary" id="btnStartReconstruction" disabled>Generate 3D Model</button>
             <button class="btn" id="btnCancelReconstruction" style="display:none">Cancel reconstruction</button>
             <button class="btn" id="btnRetryReconstruction" style="display:none">Retry</button>
             <button class="btn btn-danger" id="btnClearReconstruction">Очистить</button>
           </div>
 
           <div class="reconstruction-file-panel">
-            <div class="card-title">📋 Выбранные файлы <span class="badge" id="reconstructionFileCount">0</span></div>
-            <div id="reconstructionFileList" class="reconstruction-file-list">
-              <div class="hint">Файлы ещё не выбраны.</div>
-            </div>
+            <details>
+              <summary>Show details · selected files <span class="badge" id="reconstructionFileCount">0</span></summary>
+              <div id="reconstructionFileList" class="reconstruction-file-list">
+                <div class="hint">Файлы ещё не выбраны.</div>
+              </div>
+            </details>
           </div>
         </div>
 
-        <div class="card reconstruction-card" id="reconstructionBackupRecovery">
+        <div class="card reconstruction-card" id="reconstructionBackupRecovery" data-developer-panel="true">
           <div class="card-title">Backup & Recovery</div>
           <div class="reconstruction-settings-summary" id="backupRecoverySummary">No local backup exported yet.</div>
           <div class="reconstruction-result-actions">
@@ -669,7 +703,7 @@
           </div>
         </div>
 
-        <div class="card reconstruction-card" id="reconstructionQaDashboard">
+        <div class="card reconstruction-card" id="reconstructionQaDashboard" data-developer-panel="true">
           <div class="card-title">QA Dashboard</div>
           <div class="reconstruction-settings-summary" id="qaDashboardSummary">Select a patient case to run technical QA checks.</div>
           <div class="reconstruction-quality-grid">
@@ -702,7 +736,7 @@
           </div>
         </div>
 
-        <div class="card reconstruction-card" id="reconstructionProductionReadiness">
+        <div class="card reconstruction-card" id="reconstructionProductionReadiness" data-developer-panel="true">
           <div class="card-title">Production Readiness</div>
           <div class="reconstruction-settings-summary" id="productionReadinessSummary">Select a patient case to check working readiness.</div>
           <div class="reconstruction-quality-grid">
@@ -735,7 +769,7 @@
           </div>
         </div>
 
-        <div class="card reconstruction-card" id="reconstructionReleaseManager">
+        <div class="card reconstruction-card" id="reconstructionReleaseManager" data-developer-panel="true">
           <div class="card-title">Release Manager</div>
           <div class="reconstruction-settings-summary" id="releaseManagerSummary">Create an internal PMAS release snapshot.</div>
           <div class="reconstruction-settings-grid">
@@ -774,7 +808,7 @@
           </div>
         </div>
 
-        <div class="card reconstruction-card" id="reconstructionPluginManager">
+        <div class="card reconstruction-card" id="reconstructionPluginManager" data-developer-panel="true">
           <div class="card-title">Plugin Manager</div>
           <div class="reconstruction-settings-summary" id="pluginManagerSummary">Built-in PMAS modules are registered as platform plugins.</div>
           <div class="reconstruction-settings-grid">
@@ -814,7 +848,7 @@
           </div>
         </div>
 
-        <div class="card reconstruction-card" id="reconstructionCaseTeam">
+        <div class="card reconstruction-card" id="reconstructionCaseTeam" data-developer-panel="true">
           <div class="card-title">Case Team</div>
           <div class="reconstruction-settings-summary" id="caseTeamSummary">Select a case to manage team access.</div>
           <div class="reconstruction-settings-grid">
@@ -843,7 +877,7 @@
           </div>
         </div>
 
-        <div class="card reconstruction-card" id="reconstructionAuditLog">
+        <div class="card reconstruction-card" id="reconstructionAuditLog" data-developer-panel="true">
           <div class="card-title">Case Activity / Audit Log</div>
           <div class="reconstruction-settings-summary" id="auditLogSummary">Select a case to view activity.</div>
           <div class="reconstruction-history-filters">
@@ -886,7 +920,7 @@
           </div>
         </div>
 
-        <div class="card reconstruction-card" id="reconstructionSettingsCard">
+        <div class="card reconstruction-card" id="reconstructionSettingsCard" data-developer-panel="true">
           <div class="card-title">Reconstruction Settings</div>
           <div class="reconstruction-settings-grid">
             <div>
@@ -943,14 +977,14 @@
           </label>
         </div>
 
-        <div class="card reconstruction-card" id="reconstructionAdminDebug" style="display:none">
+        <div class="card reconstruction-card" id="reconstructionAdminDebug" data-developer-panel="true" style="display:none">
           <div class="card-title">Admin Debug / Report Logs</div>
           <div class="reconstruction-settings-summary" id="adminDebugSummary">Admin mode only.</div>
           <pre id="adminDebugLog" class="reconstruction-report-json">{}</pre>
         </div>
 
-        <div class="card reconstruction-card">
-          <div class="card-title">Input Quality Checklist</div>
+        <div class="card reconstruction-card" id="reconstructionQualityCheckCard" data-simple-step="check">
+          <div class="card-title">Input Quality Check</div>
           <div id="reconstructionChecklistSummary" class="reconstruction-checklist-summary">Start disabled: загрузите фото или видео.</div>
           <div id="reconstructionChecklist" class="reconstruction-checklist">
             <div class="hint">Checklist появится после выбора входных файлов.</div>
@@ -967,8 +1001,8 @@
           </div>
         </div>
 
-        <div class="card reconstruction-card">
-          <div class="card-title">🧪 Input Quality Report</div>
+        <div class="card reconstruction-card" id="reconstructionQualityDetailsCard" data-developer-panel="true">
+          <div class="card-title">Advanced details · Input Quality Report</div>
           <div class="reconstruction-quality-grid">
             <div>
               <span class="label-sm">Input type</span>
@@ -1117,8 +1151,8 @@
           </div>
         </div>
 
-        <div class="card reconstruction-card">
-          <div class="card-title">⚙️ Статус обработки</div>
+        <div class="card reconstruction-card" id="reconstructionGenerationCard" data-simple-step="generate">
+          <div class="card-title">3D Model Generation</div>
           <div class="reconstruction-job-grid">
             <div>
               <span class="label-sm">Job ID</span>
@@ -1163,8 +1197,8 @@
           <div id="reconstructionError" class="reconstruction-error" style="display:none"></div>
         </div>
 
-        <div class="card reconstruction-card" id="reconstructionInputReview" style="display:none">
-          <div class="card-title">Input Review</div>
+        <div class="card reconstruction-card" id="reconstructionInputReview" data-simple-step="generate" style="display:none">
+          <div class="card-title">Background & Frame Review</div>
           <div class="reconstruction-settings-summary" id="reconstructionReviewSummary">Review selected frames and segmentation masks before reconstruction.</div>
           <div class="reconstruction-review-stats">
             <div>
@@ -1209,8 +1243,8 @@
           </div>
         </div>
 
-        <div class="card reconstruction-card reconstruction-result" id="reconstructionResult" style="display:none">
-          <div class="card-title">🧊 Результат</div>
+        <div class="card reconstruction-card reconstruction-result" id="reconstructionResult" data-simple-step="result" style="display:none">
+          <div class="card-title">Model Result</div>
           <div class="reconstruction-result-grid">
             <div>
               <span class="label-sm">Job ID</span>
@@ -1253,7 +1287,7 @@
               </div>
             </div>
             <div>
-              <span class="label-sm">Readiness score</span>
+              <span class="label-sm">Model quality</span>
               <div class="reconstruction-result-value" id="reconstructionReadinessScore">—</div>
             </div>
             <div>
@@ -1288,7 +1322,7 @@
           </div>
         </div>
 
-        <div class="card reconstruction-card" id="reconstructionManualAdjustment" style="display:none">
+        <div class="card reconstruction-card" id="reconstructionManualAdjustment" data-simple-step="generate" style="display:none">
           <div class="card-title">Manual Model Adjustment</div>
           <div class="reconstruction-settings-summary" id="reconstructionManualAdjustmentStatus">Manual adjustment required.</div>
           <div class="reconstruction-settings-grid">
@@ -1329,7 +1363,7 @@
           </div>
         </div>
 
-        <div class="card reconstruction-card" id="reconstructionBeforeAfterComparison">
+        <div class="card reconstruction-card" id="reconstructionBeforeAfterComparison" data-developer-panel="true">
           <div class="card-title">Before / After Comparison</div>
           <div class="reconstruction-settings-summary" id="comparisonSummary">Select two ready models from the current case.</div>
           <div class="reconstruction-settings-grid">
@@ -1377,7 +1411,7 @@
           </div>
         </div>
 
-        <div class="card reconstruction-card" id="reconstructionSurgicalSimulation">
+        <div class="card reconstruction-card" id="reconstructionSurgicalSimulation" data-developer-panel="true">
           <div class="card-title">Surgical Simulation</div>
           <div class="reconstruction-settings-summary" id="surgicalSimulationSummary">Select a case and ready model to prepare a surgical simulation.</div>
           <div class="reconstruction-settings-grid">
@@ -1438,7 +1472,7 @@
           </div>
         </div>
 
-        <div class="card reconstruction-card" id="reconstructionCaseTimeline">
+        <div class="card reconstruction-card" id="reconstructionCaseTimeline" data-simple-step="result">
           <div class="card-title">Case Timeline</div>
           <div class="reconstruction-settings-summary" id="caseTimelineSummary">Select a patient case to view the timeline.</div>
           <div id="caseTimelineList" class="reconstruction-history-list">
@@ -1446,7 +1480,7 @@
           </div>
         </div>
 
-        <div class="card reconstruction-card" id="reconstructionClinicalInsights">
+        <div class="card reconstruction-card" id="reconstructionClinicalInsights" data-developer-panel="true">
           <div class="card-title">Clinical Insights</div>
           <div class="reconstruction-settings-summary" id="clinicalInsightsSummary">Select a patient case to generate structured observations.</div>
           <div class="reconstruction-quality-block">
@@ -1462,7 +1496,7 @@
           </div>
         </div>
 
-        <div class="card reconstruction-card" id="reconstructionSurgicalPlanningNotes">
+        <div class="card reconstruction-card" id="reconstructionSurgicalPlanningNotes" data-developer-panel="true">
           <div class="card-title">Surgical Planning Notes</div>
           <div class="reconstruction-settings-summary" id="surgicalPlanningSummary">Select a case to save clinical planning notes.</div>
           <div class="reconstruction-settings-grid">
@@ -1507,7 +1541,7 @@
           </div>
         </div>
 
-        <div class="card reconstruction-card" id="clinicalAnalysisPresetsPanel">
+        <div class="card reconstruction-card" id="clinicalAnalysisPresetsPanel" data-developer-panel="true">
           <div class="card-title">Clinical Analysis Presets</div>
           <div class="reconstruction-settings-summary" id="clinicalAnalysisPresetsSummary">Open a case model to apply a clinical analysis preset.</div>
           <div id="clinicalAnalysisPresetsList" class="reconstruction-history-list">
@@ -1515,7 +1549,7 @@
           </div>
         </div>
 
-        <div class="card reconstruction-card" id="clinicalReportBuilderPanel">
+        <div class="card reconstruction-card" id="clinicalReportBuilderPanel" data-developer-panel="true">
           <div class="card-title">Clinical Report Builder</div>
           <div class="reconstruction-settings-summary" id="clinicalReportBuilderSummary">Select a case and model to build a clinical report draft.</div>
           <div class="reconstruction-settings-grid">
@@ -1540,7 +1574,7 @@
           <div id="clinicalReportPreview" class="reconstruction-report-pre">No clinical report preview yet.</div>
         </div>
 
-        <div class="card reconstruction-card" id="reconstructionLandmarkTemplates">
+        <div class="card reconstruction-card" id="reconstructionLandmarkTemplates" data-developer-panel="true">
           <div class="card-title">Landmark Templates</div>
           <div class="reconstruction-settings-summary" id="landmarkTemplatesSummary">Load a model from a case to apply landmark templates.</div>
           <div class="reconstruction-result-actions">
@@ -1551,7 +1585,7 @@
           </div>
         </div>
 
-        <div class="card reconstruction-card" id="aiLandmarkDetectionPanel">
+        <div class="card reconstruction-card" id="aiLandmarkDetectionPanel" data-developer-panel="true">
           <div class="card-title">AI Landmark Detection</div>
           <div class="reconstruction-settings-summary" id="aiLandmarkDetectionSummary">Select a template and open a case model to run detection.</div>
           <div class="reconstruction-settings-grid">
@@ -1578,7 +1612,7 @@
           </div>
         </div>
 
-        <div class="card reconstruction-card" id="reconstructionLandmarks">
+        <div class="card reconstruction-card" id="reconstructionLandmarks" data-developer-panel="true">
           <div class="card-title">Landmarks</div>
           <div class="reconstruction-settings-summary" id="landmarksSummary">Open a model from a case to manage landmarks.</div>
           <div class="reconstruction-settings-grid">
@@ -1635,7 +1669,7 @@
           </div>
         </div>
 
-        <div class="card reconstruction-card" id="reconstructionMeasurementTemplates">
+        <div class="card reconstruction-card" id="reconstructionMeasurementTemplates" data-developer-panel="true">
           <div class="card-title">Measurement Templates</div>
           <div class="reconstruction-settings-summary" id="measurementTemplatesSummary">Open a case model with landmarks to generate measurements.</div>
           <div id="measurementTemplatesList" class="reconstruction-history-list">
@@ -1643,7 +1677,7 @@
           </div>
         </div>
 
-        <div class="card reconstruction-card" id="reconstructionCaseMeasurements">
+        <div class="card reconstruction-card" id="reconstructionCaseMeasurements" data-developer-panel="true">
           <div class="card-title">Case Measurements</div>
           <div class="reconstruction-settings-summary" id="caseMeasurementsSummary">Open a model from a case to load measurements.</div>
           <div id="caseMeasurementsList" class="reconstruction-history-list">
@@ -1651,8 +1685,8 @@
           </div>
         </div>
 
-        <div class="card reconstruction-card reconstruction-history-card">
-          <div class="card-title">Reconstruction History</div>
+        <div class="card reconstruction-card reconstruction-history-card" data-simple-step="result">
+          <div class="card-title">Recent Models</div>
           <div class="reconstruction-history-filters" id="reconstructionHistoryFilters">
             <button class="btn btn-sm active" data-filter="all">All</button>
             <button class="btn btn-sm" data-filter="ready">Ready</button>
@@ -1831,7 +1865,7 @@
 <script src="./assets/js/14-reconstruction-preprocessing.js?v=1"></script>
 <script src="./assets/js/13-reconstruction-pipeline.js?v=2"></script>
 <script src="./assets/js/15-reconstruction-api.js?v=7"></script>
-<script src="./assets/js/12-reconstruction.js?v=13"></script>
+<script src="./assets/js/12-reconstruction.js?v=14"></script>
 
 
 <script type="module" src="./assets/js/app.js?v=61"></script>

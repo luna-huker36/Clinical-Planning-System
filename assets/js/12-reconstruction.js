@@ -67,7 +67,9 @@
     lastUploadError: "",
     busy: false,
     pollTimer: null,
-    accessMode: "demo"
+    accessMode: "demo",
+    reconstructionUxMode: "simple",
+    activeSimpleStep: "upload"
   };
   state.restoreCandidate = null;
   state.restoringSession = false;
@@ -93,6 +95,28 @@
     canceled: "Canceled",
     error: "Error",
     opened: "Opened"
+  };
+
+  const SIMPLE_STATUS_LABELS = {
+    idle: "Upload photos or video",
+    uploaded: "Ready to check input",
+    validating: "Preparing files",
+    analyzing: "Checking input quality",
+    preparing: "Preparing files",
+    extracting_frames: "Preparing video frames",
+    analyzing_frames: "Selecting best frames",
+    segmenting_head: "Removing background",
+    review_required: "Review frames before generation",
+    queued: "Preparing generation",
+    reconstructing_3d: "Building 3D model",
+    cleaning_mesh: "Cleaning model",
+    aligning_model: "Aligning model",
+    manual_adjustment_required: "Model needs review",
+    exporting: "Finalizing GLB",
+    ready: "Model ready",
+    canceled: "Canceled",
+    error: "Something went wrong",
+    opened: "Opened in PMAS Viewer"
   };
 
   const PIPELINE_ORDER = ["uploaded", "validating", "analyzing", "preparing", "extracting_frames", "analyzing_frames", "segmenting_head", "review_required", "queued", "reconstructing_3d", "cleaning_mesh", "aligning_model", "manual_adjustment_required", "exporting", "ready", "canceled"];
@@ -162,6 +186,57 @@
 
   function currentJob() {
     return state.currentJob || null;
+  }
+
+  function simpleStatusLabel(status) {
+    return SIMPLE_STATUS_LABELS[status] || STATUS_LABELS[status] || status || "Idle";
+  }
+
+  function simpleStepForStatus(status) {
+    if (["ready", "opened"].includes(status)) return "result";
+    if (["review_required", "queued", "reconstructing_3d", "cleaning_mesh", "aligning_model", "manual_adjustment_required", "exporting"].includes(status)) return "generate";
+    if (["validating", "analyzing", "preparing", "extracting_frames", "analyzing_frames", "segmenting_head"].includes(status)) return "check";
+    if (state.currentResult || currentJob()?.resultGlbUrl) return "result";
+    if (state.currentJobId || state.uploadResult) return "check";
+    return "upload";
+  }
+
+  function setSimpleStep(step, options = {}) {
+    const nextStep = ["upload", "check", "generate", "result"].includes(step) ? step : "upload";
+    state.activeSimpleStep = nextStep;
+    applyReconstructionUxMode(options);
+  }
+
+  function setReconstructionUxMode(mode) {
+    state.reconstructionUxMode = mode === "developer" ? "developer" : "simple";
+    applyReconstructionUxMode();
+  }
+
+  function applyReconstructionUxMode(options = {}) {
+    const root = byId("tabReconstruction");
+    if (!root) return;
+    const simple = state.reconstructionUxMode !== "developer";
+    root.classList.toggle("reconstruction-simple", simple);
+    root.classList.toggle("reconstruction-developer", !simple);
+
+    byId("btnReconstructionSimpleMode")?.classList.toggle("active", simple);
+    byId("btnReconstructionDeveloperMode")?.classList.toggle("active", !simple);
+
+    const activeStep = state.activeSimpleStep || simpleStepForStatus(currentJob()?.status || "idle");
+    root.querySelectorAll("[data-simple-step-target]").forEach(button => {
+      button.classList.toggle("active", button.dataset.simpleStepTarget === activeStep);
+    });
+    root.querySelectorAll(".reconstruction-card").forEach(card => {
+      const step = card.dataset.simpleStep || "";
+      card.classList.toggle("is-simple-active", !simple || step === activeStep);
+    });
+
+    if (simple && options.scroll !== false) {
+      const first = root.querySelector(`.reconstruction-card[data-simple-step="${activeStep}"]`);
+      if (first && typeof first.scrollIntoView === "function") {
+        first.scrollIntoView({ block: "nearest", behavior: "smooth" });
+      }
+    }
   }
 
   function safeJsonParse(value, fallback = null) {
@@ -5213,9 +5288,10 @@
     const start = byId("btnStartReconstruction");
     const badge = byId("reconstructionStageBadge");
 
-    if (badge) badge.textContent = STATUS_LABELS[status] || status;
+    const displayStatus = state.reconstructionUxMode === "developer" ? (STATUS_LABELS[status] || status) : simpleStatusLabel(status);
+    if (badge) badge.textContent = displayStatus;
     byId("reconstructionJobId").textContent = job?.jobId || "—";
-    byId("reconstructionJobStatus").textContent = STATUS_LABELS[status] || status;
+    byId("reconstructionJobStatus").textContent = displayStatus;
     byId("reconstructionJobFileType").textContent = job?.fileType || "—";
     setProgress(progress);
     updateSteps(status);
@@ -5257,10 +5333,17 @@
     if (cancel) cancel.style.display = ACTIVE_STATUSES.has(status) && state.busy ? "inline-flex" : "none";
     setSettingsDisabled(!isAdminMode() || (ACTIVE_STATUSES.has(status) && state.busy));
     renderResultCard(job);
+    const nextStep = simpleStepForStatus(status);
+    if (state.activeSimpleStep !== nextStep && state.reconstructionUxMode !== "developer") {
+      state.activeSimpleStep = nextStep;
+    }
+    applyReconstructionUxMode({ scroll: false });
 
     if (status === "error") {
       setError(job?.errorMessage || "Reconstruction pipeline завершился с ошибкой.");
-      setStatusText("Error: обработка остановлена. Можно повторить Retry.");
+      setStatusText(state.reconstructionUxMode === "developer"
+        ? "Error: обработка остановлена. Можно повторить Retry."
+        : "Model generation failed. Try uploading a clearer video or more photos.");
     } else if (status === "canceled") {
       setError(job?.errorMessage || "Canceled by user.", "canceled");
       setStatusText("Canceled by user: обработка остановлена.");
@@ -5272,7 +5355,7 @@
           ? "Input review: проверьте кадры и маски перед reconstruction."
         : status === "uploaded" && (checklist.overall === "failed" || checklist.overall === "warning")
           ? checklist.reason
-          : `${STATUS_LABELS[status] || status}: job ${job.jobId}`;
+          : `${displayStatus}${state.reconstructionUxMode === "developer" ? `: job ${job.jobId}` : ""}`;
       setStatusText(text);
     }
     renderFiles();
@@ -5403,6 +5486,7 @@
     state.currentReport = null;
     state.reviewSelection = new Set();
     state.reviewJobId = null;
+    setSimpleStep("generate", { scroll: false });
     renderJob(currentJob());
     startJobPolling();
     try {
@@ -5483,6 +5567,7 @@
     }
 
     state.busy = true;
+    setSimpleStep("generate", { scroll: false });
     renderJob(currentJob());
     startJobPolling();
     try {
@@ -5533,6 +5618,7 @@
     const input = byId("reconstructionFileInput");
     if (input) input.value = "";
     setError("");
+    setSimpleStep("upload", { scroll: false });
     resetJobUi();
     renderSettings();
   }
@@ -6256,6 +6342,13 @@
     byId("btnRestoreReconstructionSession")?.addEventListener("click", () => restoreSavedSession());
     byId("btnStartCleanReconstructionSession")?.addEventListener("click", startCleanSession);
     byId("reconstructionAccessMode")?.addEventListener("change", event => setAccessMode(event.target.value || "demo"));
+    byId("btnReconstructionSimpleMode")?.addEventListener("click", () => setReconstructionUxMode("simple"));
+    byId("btnReconstructionDeveloperMode")?.addEventListener("click", () => setReconstructionUxMode("developer"));
+    byId("reconstructionSimpleStepper")?.addEventListener("click", event => {
+      const button = event.target?.closest?.("[data-simple-step-target]");
+      if (!button) return;
+      setSimpleStep(button.dataset.simpleStepTarget || "upload");
+    });
     byId("btnCreateReconstructionCase")?.addEventListener("click", createCaseFromForm);
     byId("btnViewCaseReport")?.addEventListener("click", () => viewCaseReport());
     byId("btnDownloadCaseJsonReport")?.addEventListener("click", () => downloadCaseJsonReport());
@@ -6422,6 +6515,7 @@
 
     state.accessMode = readAccessMode();
     state.settings = readSettings();
+    applyReconstructionUxMode({ scroll: false });
     state.measurementTemplates = DEFAULT_MEASUREMENT_TEMPLATES.map(template => ({ ...template }));
     state.clinicalAnalysisPresets = DEFAULT_CLINICAL_ANALYSIS_PRESETS.map(preset => ({ ...preset }));
     state.clinicalReportTemplates = DEFAULT_REPORT_TEMPLATES.map(template => ({ ...template, sections: [...template.sections] }));

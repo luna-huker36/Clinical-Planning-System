@@ -587,6 +587,142 @@ textarea { resize: vertical; min-height: 60px; }
   color: var(--text-secondary);
 }
 
+.reconstruction-workflow-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+}
+
+.reconstruction-ux-toggle {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.reconstruction-stepper {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.reconstruction-stepper-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-areas: "num title" "num meta";
+  align-items: center;
+  gap: 2px 8px;
+  min-height: 58px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text-secondary);
+  text-align: left;
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+.reconstruction-stepper-item span {
+  grid-area: num;
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: var(--surface-hover);
+  color: var(--text-secondary);
+  font-weight: 800;
+}
+
+.reconstruction-stepper-item strong {
+  grid-area: title;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.reconstruction-stepper-item small {
+  grid-area: meta;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.reconstruction-stepper-item.active,
+.reconstruction-stepper-item:hover {
+  border-color: var(--primary);
+  background: var(--primary-light);
+  color: var(--primary);
+}
+
+.reconstruction-stepper-item.active span {
+  background: var(--primary);
+  color: #fff;
+}
+
+#tabReconstruction.reconstruction-simple .reconstruction-grid {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+#tabReconstruction.reconstruction-simple .reconstruction-card {
+  display: none;
+}
+
+#tabReconstruction.reconstruction-simple .reconstruction-card.is-simple-active {
+  display: block;
+}
+
+#tabReconstruction.reconstruction-simple #reconstructionGenerationCard .reconstruction-job-grid,
+#tabReconstruction.reconstruction-simple #reconstructionGenerationCard #reconstructionSettingsSummary,
+#tabReconstruction.reconstruction-simple #reconstructionGenerationCard .reconstruction-status-steps {
+  display: none;
+}
+
+#tabReconstruction.reconstruction-simple #reconstructionResult .reconstruction-result-grid > div:nth-child(1),
+#tabReconstruction.reconstruction-simple #reconstructionResult .reconstruction-result-grid > div:nth-child(3),
+#tabReconstruction.reconstruction-simple #reconstructionResult .reconstruction-result-grid > div:nth-child(4),
+#tabReconstruction.reconstruction-simple #reconstructionResult .reconstruction-result-grid > div:nth-child(5),
+#tabReconstruction.reconstruction-simple #reconstructionResult .reconstruction-result-grid > div:nth-child(6),
+#tabReconstruction.reconstruction-simple #reconstructionResult .reconstruction-result-grid > div:nth-child(7),
+#tabReconstruction.reconstruction-simple #reconstructionResult .reconstruction-result-meta,
+#tabReconstruction.reconstruction-simple #reconstructionResult #reconstructionResultSettings,
+#tabReconstruction.reconstruction-simple #reconstructionResult .reconstruction-quality-block {
+  display: none;
+}
+
+#tabReconstruction.reconstruction-developer .reconstruction-grid {
+  grid-template-columns: minmax(0, 1.15fr) minmax(280px, 0.85fr);
+}
+
+#tabReconstruction.reconstruction-developer .reconstruction-stepper {
+  opacity: .72;
+}
+
+.reconstruction-file-panel details {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-hover);
+  padding: 10px 12px;
+}
+
+.reconstruction-file-panel summary {
+  cursor: pointer;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.reconstruction-file-panel details[open] summary {
+  margin-bottom: 10px;
+}
+
 .reconstruction-grid {
   display: grid;
   grid-template-columns: minmax(0, 1.15fr) minmax(280px, 0.85fr);
@@ -1500,6 +1636,9 @@ textarea { resize: vertical; min-height: 60px; }
   .author-avatar-placeholder { font-size: 24px; }
   .author-info .author-name { font-size: 16px; }
   .reconstruction-grid { grid-template-columns: 1fr; }
+  .reconstruction-workflow-toolbar { flex-direction: column; align-items: stretch; }
+  .reconstruction-ux-toggle { justify-content: flex-start; }
+  .reconstruction-stepper { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .reconstruction-settings-grid { grid-template-columns: 1fr; }
   .reconstruction-case-summary { grid-template-columns: 1fr; }
   .reconstruction-checklist-row { grid-template-columns: 1fr; }
@@ -1544,6 +1683,8 @@ textarea { resize: vertical; min-height: 60px; }
   .reconstruction-page { padding: 18px 12px; }
   .reconstruction-head { flex-direction: column; gap: 12px; }
   .reconstruction-title { font-size: 24px; }
+  .reconstruction-stepper { grid-template-columns: 1fr; }
+  .reconstruction-stepper-item { min-height: 52px; }
   .reconstruction-dropzone { min-height: 180px; padding: 18px; }
   .reconstruction-actions { flex-direction: column; }
   .reconstruction-status-steps { grid-template-columns: 1fr; }
