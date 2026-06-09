@@ -549,7 +549,7 @@
         </select>
       </div>
       <div class="reconstruction-demo-warning" id="reconstructionDemoWarning">
-        Demo mode is not intended for storing real patient data.
+        Чтобы загрузить фото/видео: выберите Doctor mode → создайте patient case → используйте блок “Входные файлы” ниже.
       </div>
       <div class="reconstruction-demo-watermark" id="reconstructionDemoWatermark">DEMO MODE</div>
 
@@ -619,6 +619,24 @@
           </div>
           <div class="reconstruction-case-summary" id="reconstructionCaseSummary">
             <div class="hint">Select or create a case before reconstruction.</div>
+          </div>
+        </div>
+
+        <div class="card reconstruction-card">
+          <div class="card-title">📥 Входные файлы</div>
+          <div class="reconstruction-settings-summary">После создания patient case загрузите сюда фото или видео для 3D Reconstruction.</div>
+          <label class="reconstruction-dropzone" id="reconstructionDropzone" for="reconstructionFileInput" role="button" tabindex="0">
+            <input type="file" id="reconstructionFileInput" accept=".jpg,.jpeg,.png,.mp4,.mov,.webm,image/jpeg,image/png,video/mp4,video/quicktime,video/webm" multiple />
+            <span class="reconstruction-drop-icon">⬡</span>
+            <span class="reconstruction-drop-title">Нажмите или перетащите фото/видео сюда</span>
+            <span class="reconstruction-drop-hint">JPG, JPEG, PNG, MP4, MOV, WEBM до 250 MB</span>
+          </label>
+
+          <div class="reconstruction-actions">
+            <button class="btn btn-primary" id="btnStartReconstruction" disabled>Start reconstruction</button>
+            <button class="btn" id="btnCancelReconstruction" style="display:none">Cancel reconstruction</button>
+            <button class="btn" id="btnRetryReconstruction" style="display:none">Retry</button>
+            <button class="btn btn-danger" id="btnClearReconstruction">Очистить</button>
           </div>
         </div>
 
@@ -858,23 +876,6 @@
           </div>
           <div id="auditLogList" class="reconstruction-history-list">
             <div class="hint">No audit events yet.</div>
-          </div>
-        </div>
-
-        <div class="card reconstruction-card">
-          <div class="card-title">📥 Входные файлы</div>
-          <label class="reconstruction-dropzone" id="reconstructionDropzone" for="reconstructionFileInput" role="button" tabindex="0">
-            <input type="file" id="reconstructionFileInput" accept=".jpg,.jpeg,.png,.mp4,.mov,.webm,image/jpeg,image/png,video/mp4,video/quicktime,video/webm" multiple />
-            <span class="reconstruction-drop-icon">⬡</span>
-            <span class="reconstruction-drop-title">Перетащите фото/видео сюда</span>
-            <span class="reconstruction-drop-hint">или нажмите для выбора файлов: JPG, JPEG, PNG, MP4, MOV, WEBM до 250 MB</span>
-          </label>
-
-          <div class="reconstruction-actions">
-            <button class="btn btn-primary" id="btnStartReconstruction" disabled>Start reconstruction</button>
-            <button class="btn" id="btnCancelReconstruction" style="display:none">Cancel reconstruction</button>
-            <button class="btn" id="btnRetryReconstruction" style="display:none">Retry</button>
-            <button class="btn btn-danger" id="btnClearReconstruction">Очистить</button>
           </div>
         </div>
 
