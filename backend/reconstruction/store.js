@@ -8,6 +8,9 @@ const {
 } = require("./audit-log");
 const { generateClinicalInsights, normalizeInsight } = require("./clinical-insights-engine");
 const { generateQaChecks, normalizeCheck, calculateQaSummary } = require("./qa-validation-engine");
+const { generateProductionReadiness, normalizeReadiness } = require("./production-readiness-check");
+const { normalizeReleaseCandidate, summarizeReleaseSnapshot, validateReleaseCandidate } = require("./release-candidate-manager");
+const { BUILT_IN_PLUGINS, normalizePlugin, validatePlugin, pluginSummary, EXTENSION_POINTS } = require("./plugin-architecture");
 
 const uploads = new Map();
 const jobs = new Map();
@@ -21,6 +24,9 @@ const simulations = new Map();
 const auditEvents = new Map();
 const clinicalInsights = new Map();
 const qaChecks = new Map();
+const productionReadiness = new Map();
+const releaseCandidates = new Map();
+const plugins = new Map();
 const MEASUREMENT_TYPES = new Set(["distance", "angle", "vector", "point", "annotation", "ratio", "custom"]);
 const MEASUREMENT_STATUSES = new Set(["ready", "missing_landmarks", "needs_review", "calculated", "error"]);
 const LANDMARK_CATEGORIES = new Set(["facial", "nasal", "maxillofacial", "orthodontic", "custom"]);
@@ -203,6 +209,7 @@ function cloneCase(caseItem) {
     simulations: Array.from(caseItem.simulations || []),
     clinicalInsights: Array.from(caseItem.clinicalInsights || []),
     qaChecks: Array.from(caseItem.qaChecks || []),
+    productionReadiness: Array.from(caseItem.productionReadiness || []),
     ownerId: caseItem.ownerId || "",
     teamMembers: Array.isArray(caseItem.teamMembers) ? caseItem.teamMembers.map(cloneTeamMember) : [],
     permissions: cloneCasePermissions(caseItem.permissions || {}),
@@ -302,6 +309,11 @@ for (const template of DEFAULT_LANDMARK_TEMPLATES) {
     updatedAt: template.updatedAt || timestamp,
     builtIn: true
   });
+}
+
+for (const plugin of BUILT_IN_PLUGINS) {
+  const normalized = normalizePlugin(plugin, { nowIso });
+  plugins.set(normalized.pluginId, normalized);
 }
 
 function cloneSurgicalPlan(plan) {
@@ -415,6 +427,20 @@ function cloneQaCheck(check) {
   return normalizeCheck(check || {});
 }
 
+function cloneProductionReadiness(readiness) {
+  return normalizeReadiness(readiness || {});
+}
+
+function cloneReleaseCandidate(release) {
+  if (!release) return null;
+  return normalizeReleaseCandidate(release || {});
+}
+
+function clonePlugin(plugin) {
+  if (!plugin) return null;
+  return normalizePlugin(plugin || {});
+}
+
 function createUpload(files, fileType) {
   const upload = {
     uploadId: makeId("upload"),
@@ -450,6 +476,7 @@ function createCase(data = {}) {
     simulations: [],
     clinicalInsights: [],
     qaChecks: [],
+    productionReadiness: [],
     ownerId: "",
     teamMembers: [],
     permissions: {},
@@ -510,6 +537,7 @@ function deleteCase(caseId) {
   for (const simulationId of caseItem.simulations || []) simulations.delete(simulationId);
   for (const insightId of caseItem.clinicalInsights || []) clinicalInsights.delete(insightId);
   for (const checkId of caseItem.qaChecks || []) qaChecks.delete(checkId);
+  for (const readinessId of caseItem.productionReadiness || []) productionReadiness.delete(readinessId);
   return cloneCase(caseItem);
 }
 
@@ -624,6 +652,14 @@ function addQaCheckToCase(caseId, checkId) {
   if (!caseItem) return null;
   caseItem.qaChecks = caseItem.qaChecks || [];
   if (checkId && !caseItem.qaChecks.includes(checkId)) caseItem.qaChecks.push(checkId);
+  return touchCase(caseItem);
+}
+
+function addProductionReadinessToCase(caseId, readinessId) {
+  const caseItem = getMutableCase(caseId);
+  if (!caseItem) return null;
+  caseItem.productionReadiness = caseItem.productionReadiness || [];
+  if (readinessId && !caseItem.productionReadiness.includes(readinessId)) caseItem.productionReadiness.push(readinessId);
   return touchCase(caseItem);
 }
 
@@ -900,6 +936,345 @@ function resolveQaCheck(checkId) {
     details: { category: next.category, title: next.title }
   });
   return cloneQaCheck(next);
+}
+
+function listProductionReadiness(filter = {}) {
+  const caseId = String(filter.caseId || "all");
+  const scope = String(filter.scope || "all");
+  return Array.from(productionReadiness.values())
+    .filter(item => caseId === "all" || item.caseId === caseId)
+    .filter(item => scope === "all" || item.scope === scope)
+    .map(cloneProductionReadiness)
+    .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+}
+
+function saveProductionReadiness(input = {}) {
+  const readiness = normalizeReadiness(input, { makeId, nowIso, caseId: input.caseId });
+  if (!readiness.caseId || !getMutableCase(readiness.caseId)) return null;
+  productionReadiness.set(readiness.readinessId, readiness);
+  addProductionReadinessToCase(readiness.caseId, readiness.readinessId);
+  return cloneProductionReadiness(readiness);
+}
+
+function runProductionReadinessCheck(caseId, options = {}) {
+  const caseItem = getCase(caseId);
+  if (!caseItem) return null;
+  const scopes = (options.scopes || ["case", "model", "report", "system"])
+    .map(String)
+    .filter(scope => ["case", "model", "report", "system"].includes(scope));
+  if (!scopes.length) scopes.push("case", "model", "report", "system");
+  for (const [readinessId, readiness] of Array.from(productionReadiness.entries())) {
+    if (readiness.caseId === caseId && scopes.includes(readiness.scope)) productionReadiness.delete(readinessId);
+  }
+  const mutableCase = getMutableCase(caseId);
+  if (mutableCase) {
+    mutableCase.productionReadiness = (mutableCase.productionReadiness || []).filter(readinessId => productionReadiness.has(readinessId));
+    cases.set(caseId, mutableCase);
+  }
+  const jobsForCase = listJobs().filter(job => job.caseId === caseId);
+  const qaItems = listQaChecks({ caseId, status: "all" });
+  const qaSummary = calculateQaSummary(qaItems);
+  const common = {
+    caseId,
+    caseItem,
+    jobs: jobsForCase,
+    measurements: listMeasurements({ caseId }),
+    landmarks: listLandmarks({ caseId }),
+    reports: caseItem.reports || [],
+    qaSummary,
+    auditEvents: listAuditEvents({ caseId, action: "all", userId: "all" }),
+    backupStatus: { localBackupSupported: true },
+    timelineAvailable: true,
+    auditLogAvailable: true
+  };
+  const results = scopes.map(scope => saveProductionReadiness(generateProductionReadiness({
+    ...common,
+    scope,
+    modelId: options.modelId || jobsForCase[0]?.resultGlbUrl || jobsForCase[0]?.jobId || "",
+    reportId: options.reportId || caseItem.reports?.[0] || ""
+  }, { makeId, nowIso, caseId }))).filter(Boolean);
+  const failedChecks = results.reduce((sum, item) => sum + Number(item.failedChecks || 0), 0);
+  const warnings = results.reduce((sum, item) => sum + Number(item.warnings || 0), 0);
+  const productionScore = results.length
+    ? Math.round(results.reduce((sum, item) => sum + Number(item.productionScore || item.score || 0), 0) / results.length)
+    : 0;
+  const summary = {
+    productionScore,
+    readinessLevel: productionScore >= 90 ? "production_ready" : productionScore >= 75 ? "ready" : productionScore >= 50 ? "limited" : "not_ready",
+    passedChecks: results.reduce((sum, item) => sum + Number(item.passedChecks || 0), 0),
+    failedChecks,
+    warnings,
+    scopes: results.length
+  };
+  if (options.recordAudit !== false) {
+    recordAuditEvent({
+      caseId,
+      action: "readiness_check_run",
+      entityType: "production_readiness",
+      entityId: results[0]?.readinessId || `readiness-${caseId}`,
+      details: summary
+    });
+  }
+  return { caseId, readiness: results, summary };
+}
+
+function releaseCaseIds(release = {}) {
+  return (release.snapshot?.cases || []).map(item => item.caseId).filter(Boolean);
+}
+
+function recordReleaseAction(release, eventType, details = {}) {
+  const caseIds = releaseCaseIds(release);
+  caseIds.forEach(caseId => {
+    recordAuditEvent({
+      caseId,
+      action: "release_action",
+      entityType: "release_candidate",
+      entityId: release.releaseId,
+      details: { eventType, version: release.version, status: release.status, ...details }
+    });
+  });
+}
+
+function buildReleaseSnapshot() {
+  const backup = getBackupSnapshot();
+  const qaItems = listQaChecks({ caseId: "all", status: "all" });
+  const readinessItems = listProductionReadiness({ caseId: "all", scope: "all" });
+  const activeQa = qaItems.filter(item => !item.resolved);
+  const qaFailures = activeQa.filter(item => item.status === "failed").length;
+  const criticalFailures = activeQa.filter(item => item.severity === "critical").length;
+  const qaScore = activeQa.length
+    ? Math.max(0, Math.min(100, 100 - qaFailures * 18 - activeQa.filter(item => item.status === "warning").length * 7 - criticalFailures * 15))
+    : 100;
+  const readinessFailures = readinessItems.reduce((sum, item) => sum + Number(item.failedChecks || 0), 0);
+  const readinessScore = readinessItems.length
+    ? Math.round(readinessItems.reduce((sum, item) => sum + Number(item.productionScore || item.score || 0), 0) / readinessItems.length)
+    : 100;
+  return {
+    createdAt: nowIso(),
+    cases: backup.cases,
+    reports: backup.cases.flatMap(item => (item.reports || []).map(reportId => ({ caseId: item.caseId, reportId }))),
+    templates: {
+      landmarkTemplates: backup.landmarkTemplates
+    },
+    settings: {
+      reconstructionDefaults: {
+        processingMode: "balanced",
+        inputTypePreference: "auto",
+        maxFrames: 40,
+        frameExtractionRate: 1,
+        cleanupStrength: "medium",
+        targetModelQuality: "preview",
+        saveIntermediateFiles: false
+      }
+    },
+    configuration: {
+      localBackupSupported: true,
+      cloudSyncEnabled: false,
+      releaseManagerVersion: "v1",
+      pluginApiVersion: "v1"
+    },
+    plugins: getPlugins({ category: "all", enabled: "all" }),
+    qaData: {
+      checks: qaItems,
+      qaScore,
+      failuresCount: qaFailures,
+      criticalFailures
+    },
+    readiness: {
+      items: readinessItems,
+      readinessScore,
+      failuresCount: readinessFailures
+    },
+    data: backup
+  };
+}
+
+function listReleaseCandidates(filter = {}) {
+  const status = String(filter.status || "all");
+  const caseId = String(filter.caseId || "all");
+  return Array.from(releaseCandidates.values())
+    .filter(item => status === "all" || item.status === status)
+    .filter(item => caseId === "all" || releaseCaseIds(item).includes(caseId))
+    .map(cloneReleaseCandidate)
+    .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+}
+
+function getReleaseCandidate(releaseId) {
+  return cloneReleaseCandidate(releaseCandidates.get(releaseId));
+}
+
+function createReleaseCandidate(input = {}) {
+  const snapshot = buildReleaseSnapshot();
+  const validation = validateReleaseCandidate({
+    qaScore: snapshot.qaData.qaScore,
+    readinessScore: snapshot.readiness.readinessScore,
+    qaFailures: snapshot.qaData.failuresCount,
+    readinessFailures: snapshot.readiness.failuresCount,
+    criticalFailures: snapshot.qaData.criticalFailures,
+    backupAvailable: snapshot.configuration.localBackupSupported
+  });
+  const release = normalizeReleaseCandidate({
+    version: input.version,
+    name: input.name,
+    description: input.description,
+    status: input.status || "draft",
+    readinessScore: snapshot.readiness.readinessScore,
+    qaScore: snapshot.qaData.qaScore,
+    notes: input.notes || "",
+    snapshot,
+    validation,
+    history: [{
+      eventId: makeId("release-event"),
+      eventType: "release_created",
+      createdAt: nowIso(),
+      details: summarizeReleaseSnapshot(snapshot)
+    }]
+  }, { makeId, nowIso });
+  if (release.status === "release_candidate" && !validation.ok) release.status = "testing";
+  releaseCandidates.set(release.releaseId, release);
+  recordReleaseAction(release, "release_created", { validationOk: validation.ok });
+  return cloneReleaseCandidate(release);
+}
+
+function updateReleaseStatus(releaseId, status, notes = "") {
+  const existing = releaseCandidates.get(releaseId);
+  if (!existing) return null;
+  const nextStatus = String(status || existing.status);
+  const validation = validateReleaseCandidate({
+    qaScore: existing.qaScore,
+    readinessScore: existing.readinessScore,
+    qaFailures: existing.snapshot?.qaData?.failuresCount || 0,
+    readinessFailures: existing.snapshot?.readiness?.failuresCount || 0,
+    criticalFailures: existing.snapshot?.qaData?.criticalFailures || 0,
+    backupAvailable: existing.snapshot?.configuration?.localBackupSupported !== false
+  });
+  if (nextStatus === "release_candidate" && !validation.ok) {
+    return cloneReleaseCandidate({ ...existing, validation: { ...validation, blocked: true } });
+  }
+  const eventType = nextStatus === "archived" ? "release_archived" : nextStatus === "release_candidate" || nextStatus === "approved" ? "release_promoted" : "release_updated";
+  const release = normalizeReleaseCandidate({
+    ...existing,
+    status: nextStatus,
+    notes: notes || existing.notes,
+    updatedAt: nowIso(),
+    validation,
+    history: [
+      ...(existing.history || []),
+      { eventId: makeId("release-event"), eventType, createdAt: nowIso(), details: { status: nextStatus } }
+    ]
+  }, { makeId, nowIso });
+  releaseCandidates.set(release.releaseId, release);
+  recordReleaseAction(release, eventType, { validationOk: validation.ok });
+  return cloneReleaseCandidate(release);
+}
+
+function archiveReleaseCandidate(releaseId) {
+  return updateReleaseStatus(releaseId, "archived");
+}
+
+function cloneReleaseCandidateToDraft(releaseId) {
+  const existing = releaseCandidates.get(releaseId);
+  if (!existing) return null;
+  const release = normalizeReleaseCandidate({
+    ...existing,
+    releaseId: makeId("release"),
+    name: `${existing.name || existing.version} clone`,
+    status: "draft",
+    createdAt: nowIso(),
+    updatedAt: nowIso(),
+    history: [{
+      eventId: makeId("release-event"),
+      eventType: "release_created",
+      createdAt: nowIso(),
+      details: { clonedFrom: existing.releaseId }
+    }]
+  }, { makeId, nowIso });
+  releaseCandidates.set(release.releaseId, release);
+  recordReleaseAction(release, "release_created", { clonedFrom: existing.releaseId });
+  return cloneReleaseCandidate(release);
+}
+
+function buildReleaseSummaryReport(releaseId) {
+  const release = getReleaseCandidate(releaseId);
+  if (!release) return null;
+  return {
+    reportType: "release_summary_report",
+    generatedAt: nowIso(),
+    release,
+    snapshotSummary: summarizeReleaseSnapshot(release.snapshot || {}),
+    validation: release.validation || {},
+    timelineEvents: release.history || []
+  };
+}
+
+function recordPluginAudit(plugin, action, details = {}) {
+  listCases().forEach(caseItem => {
+    recordAuditEvent({
+      caseId: caseItem.caseId,
+      action,
+      entityType: "plugin",
+      entityId: plugin.pluginId,
+      details: { name: plugin.name, version: plugin.version, category: plugin.category, ...details }
+    });
+  });
+}
+
+function getPlugins(filter = {}) {
+  const category = String(filter.category || "all");
+  const enabled = String(filter.enabled ?? "all");
+  return Array.from(plugins.values())
+    .filter(item => category === "all" || item.category === category)
+    .filter(item => enabled === "all" || String(Boolean(item.enabled)) === enabled)
+    .map(clonePlugin)
+    .sort((a, b) => Number(b.builtIn) - Number(a.builtIn) || String(a.name).localeCompare(String(b.name)));
+}
+
+function getPluginById(pluginId) {
+  return clonePlugin(plugins.get(pluginId));
+}
+
+function registerPlugin(input = {}) {
+  const validation = validatePlugin(input, getPlugins({ category: "all", enabled: "all" }));
+  if (!validation.ok) return { ok: false, errors: validation.errors, plugin: validation.plugin };
+  const plugin = normalizePlugin({ ...validation.plugin, enabled: input.enabled !== false }, { nowIso });
+  plugins.set(plugin.pluginId, plugin);
+  recordPluginAudit(plugin, "plugin_registered");
+  return { ok: true, errors: [], plugin: clonePlugin(plugin) };
+}
+
+function unregisterPlugin(pluginId) {
+  const existing = plugins.get(pluginId);
+  if (!existing || existing.builtIn) return null;
+  plugins.delete(pluginId);
+  return clonePlugin(existing);
+}
+
+function enablePlugin(pluginId) {
+  const existing = plugins.get(pluginId);
+  if (!existing) return null;
+  const next = normalizePlugin({ ...existing, enabled: true, updatedAt: nowIso() }, { nowIso });
+  plugins.set(next.pluginId, next);
+  recordPluginAudit(next, "plugin_enabled");
+  return clonePlugin(next);
+}
+
+function disablePlugin(pluginId) {
+  const existing = plugins.get(pluginId);
+  if (!existing) return null;
+  const next = normalizePlugin({ ...existing, enabled: false, updatedAt: nowIso() }, { nowIso });
+  plugins.set(next.pluginId, next);
+  recordPluginAudit(next, "plugin_disabled");
+  return clonePlugin(next);
+}
+
+function getPluginRegistrySummary() {
+  return {
+    ...pluginSummary(getPlugins({ category: "all", enabled: "all" })),
+    extensionPoints: EXTENSION_POINTS.map(point => ({
+      extensionPoint: point,
+      plugins: getPlugins({ category: "all", enabled: "true" }).filter(item => item.extensionPoints.includes(point))
+    }))
+  };
 }
 
 function normalizeLandmarkInput(data = {}, existing = null) {
@@ -1433,7 +1808,10 @@ function getBackupSnapshot() {
     simulations: listSimulations({ caseId: "all", jobId: "all", modelId: "all" }),
     auditEvents: listAuditEvents({ caseId: "all", action: "all", userId: "all" }),
     clinicalInsights: listClinicalInsights({ caseId: "all", modelId: "all", status: "all" }),
-    qaChecks: listQaChecks({ caseId: "all", status: "all" })
+    qaChecks: listQaChecks({ caseId: "all", status: "all" }),
+    productionReadiness: listProductionReadiness({ caseId: "all", scope: "all" }),
+    releases: listReleaseCandidates({ caseId: "all", status: "all" }),
+    plugins: getPlugins({ category: "all", enabled: "all" })
   };
 }
 
@@ -1448,6 +1826,7 @@ function removeCaseDataForRestore(caseId) {
     for (const simulationId of caseItem.simulations || []) simulations.delete(simulationId);
   for (const insightId of caseItem.clinicalInsights || []) clinicalInsights.delete(insightId);
   for (const checkId of caseItem.qaChecks || []) qaChecks.delete(checkId);
+  for (const readinessId of caseItem.productionReadiness || []) productionReadiness.delete(readinessId);
   }
   cases.delete(caseId);
   for (const [eventId, event] of auditEvents.entries()) {
@@ -1467,6 +1846,13 @@ function clearProjectDataForRestore() {
   auditEvents.clear();
   clinicalInsights.clear();
   qaChecks.clear();
+  productionReadiness.clear();
+  releaseCandidates.clear();
+  plugins.clear();
+  for (const plugin of BUILT_IN_PLUGINS) {
+    const normalized = normalizePlugin(plugin, { nowIso });
+    plugins.set(normalized.pluginId, normalized);
+  }
   for (const [templateId, template] of Array.from(landmarkTemplates.entries())) {
     if (!template.builtIn) landmarkTemplates.delete(templateId);
   }
@@ -1511,9 +1897,18 @@ function restoreBackupSnapshot(snapshot = {}, options = {}) {
   (snapshot.qaChecks || [])
     .filter(item => caseIds.has(item.caseId))
     .forEach(item => qaChecks.set(item.checkId, backupClone(item)));
+  (snapshot.productionReadiness || [])
+    .filter(item => caseIds.has(item.caseId))
+    .forEach(item => productionReadiness.set(item.readinessId, backupClone(item)));
   (snapshot.auditEvents || [])
     .filter(item => caseIds.has(item.caseId))
     .forEach(item => auditEvents.set(item.eventId, backupClone(item)));
+  (snapshot.releases || [])
+    .filter(item => item.releaseId && releaseCaseIds(item).some(caseId => caseIds.has(caseId)))
+    .forEach(item => releaseCandidates.set(item.releaseId, backupClone(item)));
+  (snapshot.plugins || [])
+    .filter(item => item.pluginId && !item.builtIn)
+    .forEach(item => plugins.set(item.pluginId, normalizePlugin(backupClone(item), { nowIso })));
   (snapshot.landmarkTemplates || [])
     .filter(item => item.templateId)
     .forEach(item => landmarkTemplates.set(item.templateId, backupClone(item)));
@@ -1554,6 +1949,7 @@ module.exports = {
   addSimulationToCase,
   addClinicalInsightToCase,
   addQaCheckToCase,
+  addProductionReadinessToCase,
   listCaseTeamMembers,
   saveCaseTeamMember,
   updateCaseTeamMemberRole,
@@ -1568,6 +1964,23 @@ module.exports = {
   saveQaCheck,
   runQaValidationForCase,
   resolveQaCheck,
+  listProductionReadiness,
+  saveProductionReadiness,
+  runProductionReadinessCheck,
+  listReleaseCandidates,
+  getReleaseCandidate,
+  createReleaseCandidate,
+  updateReleaseStatus,
+  archiveReleaseCandidate,
+  cloneReleaseCandidateToDraft,
+  buildReleaseSummaryReport,
+  registerPlugin,
+  unregisterPlugin,
+  enablePlugin,
+  disablePlugin,
+  getPlugins,
+  getPluginById,
+  getPluginRegistrySummary,
   createComparison,
   getComparison,
   getMutableComparison,

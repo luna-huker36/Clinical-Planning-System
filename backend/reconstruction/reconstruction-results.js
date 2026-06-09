@@ -2,7 +2,7 @@ const fs = require("fs/promises");
 const fsSync = require("fs");
 const path = require("path");
 const { STATUSES } = require("./constants");
-const { getCase, getMutableJob, listMutableJobs, saveJob, addModelToCase, addReportToCase, listComparisons, listMeasurements, listSurgicalPlans, listLandmarks, listSimulations, listAuditEvents, listClinicalInsights, generateClinicalInsightsForCase, runQaValidationForCase, listQaChecks } = require("./store");
+const { getCase, listCases, getMutableJob, listMutableJobs, saveJob, addModelToCase, addReportToCase, listComparisons, listMeasurements, listSurgicalPlans, listLandmarks, listSimulations, listAuditEvents, listClinicalInsights, generateClinicalInsightsForCase, runQaValidationForCase, listQaChecks, listProductionReadiness, runProductionReadinessCheck, listReleaseCandidates, getPluginRegistrySummary, getPlugins, getBackupSnapshot } = require("./store");
 const { checkModelReadiness } = require("./model-readiness-check");
 const { normalizeReconstructionSettings } = require("./settings");
 const { summarizeAuditEvents } = require("./audit-log");
@@ -478,6 +478,17 @@ function buildCaseReport(caseId) {
   const qaResult = runQaValidationForCase(caseId, { recordAudit: false });
   const qaChecks = qaResult?.checks || listQaChecks({ caseId, status: "all" });
   const qaSummary = qaResult?.summary || { qaScore: 0, readinessLevel: "poor", warningsCount: 0, failuresCount: 0, passedCount: 0, checksCount: qaChecks.length };
+  const readinessResult = runProductionReadinessCheck(caseId, { recordAudit: false });
+  const productionReadiness = readinessResult?.readiness || listProductionReadiness({ caseId, scope: "all" });
+  const productionReadinessSummary = readinessResult?.summary || {
+    productionScore: 0,
+    readinessLevel: "not_ready",
+    passedChecks: 0,
+    failedChecks: 0,
+    warnings: 0,
+    scopes: productionReadiness.length
+  };
+  const releaseCandidates = listReleaseCandidates({ caseId, status: "all" });
   const teamMembers = caseItem.teamMembers || [];
   const caseOwner = teamMembers.find(member => member.memberId === caseItem.ownerId) || teamMembers.find(member => member.role === "owner") || null;
   const contributors = teamMembers
@@ -588,6 +599,15 @@ function buildCaseReport(caseId) {
     },
     qaChecks,
     qaSummary,
+    productionReadiness,
+    productionReadinessSummary,
+    releaseCandidates,
+    releaseSummary: {
+      releasesCount: releaseCandidates.length,
+      activeCount: releaseCandidates.filter(item => item.status !== "archived").length,
+      approvedCount: releaseCandidates.filter(item => item.status === "approved").length,
+      releaseCandidateCount: releaseCandidates.filter(item => item.status === "release_candidate").length
+    },
     timeline,
     timelineSummary: {
       timelineId: timeline.timelineId,
@@ -597,7 +617,8 @@ function buildCaseReport(caseId) {
       reportEntriesCount: timeline.entries.filter(item => item.entryType === "report").length,
       measurementSnapshotEntriesCount: timeline.entries.filter(item => item.entryType === "measurement_snapshot").length,
       noteEntriesCount: timeline.entries.filter(item => item.entryType === "note").length,
-      insightEntriesCount: timeline.entries.filter(item => item.entryType === "insight_generated" || item.entryType === "insight_reviewed").length
+      insightEntriesCount: timeline.entries.filter(item => item.entryType === "insight_generated" || item.entryType === "insight_reviewed").length,
+      readinessEntriesCount: timeline.entries.filter(item => item.entryType === "readiness_check_completed").length
     },
     TODO: [
       "multiple scans",
@@ -624,6 +645,8 @@ function buildCaseTimeline(caseId, preloaded = {}) {
   const surgicalSimulations = preloaded.surgicalSimulations || listSimulations({ caseId });
   const clinicalInsights = preloaded.clinicalInsights || listClinicalInsights({ caseId, status: "all" });
   const qaChecks = preloaded.qaChecks || listQaChecks({ caseId, status: "all" });
+  const readinessItems = preloaded.productionReadiness || listProductionReadiness({ caseId, scope: "all" });
+  const releases = preloaded.releaseCandidates || listReleaseCandidates({ caseId, status: "all" });
   const entries = [];
 
   jobs.forEach(job => {
@@ -724,6 +747,35 @@ function buildCaseTimeline(caseId, preloaded = {}) {
     });
   });
 
+  readinessItems.forEach(readiness => {
+    entries.push({
+      entryId: `timeline-entry-readiness-${readiness.readinessId}`,
+      caseId,
+      modelId: readiness.modelId || "",
+      reconstructionJobId: "",
+      entryType: "readiness_check_completed",
+      title: `Production readiness ${readiness.scope || "case"}`,
+      description: `${readiness.scope || "case"} · ${readiness.level || readiness.readinessLevel || "limited"} · score ${Math.round(Number(readiness.score || readiness.productionScore || 0))}/100`,
+      createdAt: readiness.createdAt || caseItem.updatedAt
+    });
+  });
+
+  releases.forEach(release => {
+    (release.history || []).forEach(event => {
+      if (!["release_created", "release_promoted", "release_archived"].includes(event.eventType)) return;
+      entries.push({
+        entryId: `timeline-entry-release-${release.releaseId}-${event.eventId}`,
+        caseId,
+        modelId: "",
+        reconstructionJobId: "",
+        entryType: event.eventType,
+        title: `Release ${release.version || ""} ${release.status || ""}`.trim(),
+        description: `${release.name || release.releaseId} · QA ${Math.round(Number(release.qaScore || 0))}/100 · readiness ${Math.round(Number(release.readinessScore || 0))}/100`,
+        createdAt: event.createdAt || release.updatedAt || release.createdAt || caseItem.updatedAt
+      });
+    });
+  });
+
   entries.sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
   const createdAt = entries.length ? entries[entries.length - 1].createdAt : caseItem.createdAt;
   const updatedAt = entries.length ? entries[0].createdAt : caseItem.updatedAt;
@@ -733,6 +785,59 @@ function buildCaseTimeline(caseId, preloaded = {}) {
     entries,
     createdAt,
     updatedAt
+  };
+}
+
+function buildSystemReport() {
+  const cases = listCases();
+  const snapshot = getBackupSnapshot();
+  const productionReadiness = listProductionReadiness({ caseId: "all", scope: "all" });
+  const auditEvents = listAuditEvents({ caseId: "all", action: "all", userId: "all" });
+  const releases = listReleaseCandidates({ caseId: "all", status: "all" });
+  const installedPlugins = getPlugins({ category: "all", enabled: "all" });
+  const installedPluginsSummary = getPluginRegistrySummary();
+  const failedChecks = productionReadiness.reduce((sum, item) => sum + Number(item.failedChecks || 0), 0);
+  const warnings = productionReadiness.reduce((sum, item) => sum + Number(item.warnings || 0), 0);
+  const productionScore = productionReadiness.length
+    ? Math.round(productionReadiness.reduce((sum, item) => sum + Number(item.productionScore || item.score || 0), 0) / productionReadiness.length)
+    : 0;
+  const productionReadinessSummary = {
+    productionScore,
+    readinessLevel: productionScore >= 90 ? "production_ready" : productionScore >= 75 ? "ready" : productionScore >= 50 ? "limited" : "not_ready",
+    passedChecks: productionReadiness.reduce((sum, item) => sum + Number(item.passedChecks || 0), 0),
+    failedChecks,
+    warnings,
+    scopes: productionReadiness.length
+  };
+  return {
+    reportType: "system_report",
+    generatedAt: new Date().toISOString(),
+    casesCount: cases.length,
+    modelsCount: snapshot.jobs?.length || 0,
+    reportsCount: cases.reduce((sum, item) => sum + Number(item.reports?.length || 0), 0),
+    backupStatus: {
+      backupVersion: BACKUP_VERSION,
+      localBackupSupported: true,
+      cloudSyncEnabled: false
+    },
+    auditStatus: {
+      auditLogAvailable: true,
+      eventsCount: auditEvents.length
+    },
+    timelineStatus: {
+      timelineAvailable: true
+    },
+    productionReadiness,
+    productionReadinessSummary,
+    releaseSummary: {
+      releasesCount: releases.length,
+      activeCount: releases.filter(item => item.status !== "archived").length,
+      approvedCount: releases.filter(item => item.status === "approved").length,
+      releaseCandidateCount: releases.filter(item => item.status === "release_candidate").length
+    },
+    releases,
+    installedPlugins,
+    installedPluginsSummary
   };
 }
 
@@ -777,6 +882,7 @@ module.exports = {
   buildReconstructionReport,
   buildCaseReport,
   buildCaseTimeline,
+  buildSystemReport,
   deleteReconstructionResult,
   getArtifactPath,
   getPublicArtifactUrl

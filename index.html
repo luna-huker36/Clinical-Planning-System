@@ -677,6 +677,118 @@
           </div>
         </div>
 
+        <div class="card reconstruction-card" id="reconstructionProductionReadiness">
+          <div class="card-title">Production Readiness</div>
+          <div class="reconstruction-settings-summary" id="productionReadinessSummary">Select a patient case to check working readiness.</div>
+          <div class="reconstruction-quality-grid">
+            <div>
+              <span class="label-sm">Score</span>
+              <div class="reconstruction-quality-value" id="productionScoreValue">—</div>
+            </div>
+            <div>
+              <span class="label-sm">Level</span>
+              <div class="reconstruction-quality-value"><span class="badge" id="productionReadinessBadge">—</span></div>
+            </div>
+            <div>
+              <span class="label-sm">Passed</span>
+              <div class="reconstruction-quality-value" id="productionPassedCount">0</div>
+            </div>
+            <div>
+              <span class="label-sm">Warnings</span>
+              <div class="reconstruction-quality-value" id="productionWarningsCount">0</div>
+            </div>
+            <div>
+              <span class="label-sm">Failures</span>
+              <div class="reconstruction-quality-value" id="productionFailuresCount">0</div>
+            </div>
+          </div>
+          <div class="reconstruction-result-actions">
+            <button class="btn btn-primary" id="btnRunProductionReadiness">Run Production Check</button>
+          </div>
+          <div id="productionReadinessList" class="reconstruction-history-list">
+            <div class="hint">No production readiness checks yet.</div>
+          </div>
+        </div>
+
+        <div class="card reconstruction-card" id="reconstructionReleaseManager">
+          <div class="card-title">Release Manager</div>
+          <div class="reconstruction-settings-summary" id="releaseManagerSummary">Create an internal PMAS release snapshot.</div>
+          <div class="reconstruction-settings-grid">
+            <div>
+              <label class="label-sm" for="releaseVersion">Version</label>
+              <select id="releaseVersion" class="reconstruction-setting-control">
+                <option value="v0.1">v0.1</option>
+                <option value="v0.5">v0.5</option>
+                <option value="v0.9">v0.9</option>
+                <option value="v1.0">v1.0</option>
+                <option value="v1.1">v1.1</option>
+              </select>
+            </div>
+            <div>
+              <label class="label-sm" for="releaseName">Name</label>
+              <input id="releaseName" class="reconstruction-setting-control" type="text" placeholder="Internal release name" />
+            </div>
+            <div>
+              <label class="label-sm" for="releaseStatus">Status</label>
+              <select id="releaseStatus" class="reconstruction-setting-control">
+                <option value="draft">draft</option>
+                <option value="testing">testing</option>
+                <option value="release_candidate">release_candidate</option>
+              </select>
+            </div>
+          </div>
+          <div class="reconstruction-settings-grid">
+            <textarea id="releaseDescription" class="reconstruction-setting-control reconstruction-textarea" placeholder="Release description"></textarea>
+            <textarea id="releaseNotes" class="reconstruction-setting-control reconstruction-textarea" placeholder="Release notes"></textarea>
+          </div>
+          <div class="reconstruction-result-actions">
+            <button class="btn btn-primary" id="btnCreateRelease">Create Release</button>
+          </div>
+          <div id="releaseManagerList" class="reconstruction-history-list">
+            <div class="hint">No releases yet.</div>
+          </div>
+        </div>
+
+        <div class="card reconstruction-card" id="reconstructionPluginManager">
+          <div class="card-title">Plugin Manager</div>
+          <div class="reconstruction-settings-summary" id="pluginManagerSummary">Built-in PMAS modules are registered as platform plugins.</div>
+          <div class="reconstruction-settings-grid">
+            <div>
+              <label class="label-sm" for="pluginIdInput">Plugin ID</label>
+              <input id="pluginIdInput" class="reconstruction-setting-control" type="text" placeholder="custom-plugin-id" />
+            </div>
+            <div>
+              <label class="label-sm" for="pluginNameInput">Name</label>
+              <input id="pluginNameInput" class="reconstruction-setting-control" type="text" placeholder="Plugin name" />
+            </div>
+            <div>
+              <label class="label-sm" for="pluginCategoryInput">Category</label>
+              <select id="pluginCategoryInput" class="reconstruction-setting-control">
+                <option value="reconstruction">reconstruction</option>
+                <option value="landmarks">landmarks</option>
+                <option value="measurements">measurements</option>
+                <option value="analysis">analysis</option>
+                <option value="reports">reports</option>
+                <option value="simulation">simulation</option>
+                <option value="export">export</option>
+                <option value="custom" selected>custom</option>
+              </select>
+            </div>
+          </div>
+          <div class="reconstruction-settings-grid">
+            <input id="pluginVersionInput" class="reconstruction-setting-control" type="text" value="v1" placeholder="v1" />
+            <input id="pluginAuthorInput" class="reconstruction-setting-control" type="text" placeholder="Author" />
+            <input id="pluginExtensionPointsInput" class="reconstruction-setting-control" type="text" placeholder="extension points, comma separated" />
+          </div>
+          <textarea id="pluginDescriptionInput" class="reconstruction-setting-control reconstruction-textarea" placeholder="Plugin description"></textarea>
+          <div class="reconstruction-result-actions">
+            <button class="btn btn-primary" id="btnRegisterPlugin">Register Plugin</button>
+          </div>
+          <div id="pluginManagerList" class="reconstruction-history-list">
+            <div class="hint">No plugins registered.</div>
+          </div>
+        </div>
+
         <div class="card reconstruction-card" id="reconstructionCaseTeam">
           <div class="card-title">Case Team</div>
           <div class="reconstruction-settings-summary" id="caseTeamSummary">Select a case to manage team access.</div>
@@ -733,6 +845,11 @@
               <option value="backup_restored">backup restored</option>
               <option value="qa_run">QA run</option>
               <option value="qa_issue_resolved">QA issue resolved</option>
+              <option value="readiness_check_run">readiness check run</option>
+              <option value="release_action">release action</option>
+              <option value="plugin_enabled">plugin enabled</option>
+              <option value="plugin_disabled">plugin disabled</option>
+              <option value="plugin_registered">plugin registered</option>
             </select>
             <select id="auditUserFilter" class="reconstruction-setting-control">
               <option value="all">All users</option>

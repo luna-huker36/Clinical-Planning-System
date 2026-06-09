@@ -11,6 +11,9 @@
   const MOCK_AUDIT_EVENTS_KEY = "pmas.reconstruction.audit-events.v1";
   const MOCK_CLINICAL_INSIGHTS_KEY = "pmas.reconstruction.clinical-insights.v1";
   const MOCK_QA_CHECKS_KEY = "pmas.reconstruction.qa-checks.v1";
+  const MOCK_PRODUCTION_READINESS_KEY = "pmas.reconstruction.production-readiness.v1";
+  const MOCK_RELEASES_KEY = "pmas.reconstruction.releases.v1";
+  const MOCK_PLUGINS_KEY = "pmas.reconstruction.plugins.v1";
   const REPORT_EXPORT_FORMATS = ["json"];
   const DEFAULT_RECONSTRUCTION_SETTINGS = Object.freeze({
     processingMode: "balanced",
@@ -34,6 +37,7 @@
     upload: "/api/reconstruction/upload",
     cases: "/api/reconstruction/cases",
     caseReport: caseId => `/api/reconstruction/cases/${encodeURIComponent(caseId)}/report`,
+    systemReport: "/api/reconstruction/system/report",
     caseTimeline: caseId => `/api/reconstruction/cases/${encodeURIComponent(caseId)}/timeline`,
     caseTeam: caseId => `/api/reconstruction/cases/${encodeURIComponent(caseId)}/team`,
     caseTeamMember: (caseId, memberId) => `/api/reconstruction/cases/${encodeURIComponent(caseId)}/team/${encodeURIComponent(memberId)}`,
@@ -47,6 +51,17 @@
     caseQa: caseId => `/api/reconstruction/cases/${encodeURIComponent(caseId)}/qa`,
     runCaseQa: caseId => `/api/reconstruction/cases/${encodeURIComponent(caseId)}/qa/run`,
     resolveQaCheck: checkId => `/api/reconstruction/qa/${encodeURIComponent(checkId)}/resolve`,
+    caseReadiness: caseId => `/api/reconstruction/cases/${encodeURIComponent(caseId)}/readiness`,
+    runCaseReadiness: caseId => `/api/reconstruction/cases/${encodeURIComponent(caseId)}/readiness/run`,
+    releases: "/api/reconstruction/releases",
+    releaseStatus: releaseId => `/api/reconstruction/releases/${encodeURIComponent(releaseId)}/status`,
+    releaseArchive: releaseId => `/api/reconstruction/releases/${encodeURIComponent(releaseId)}/archive`,
+    releaseClone: releaseId => `/api/reconstruction/releases/${encodeURIComponent(releaseId)}/clone`,
+    releaseReport: releaseId => `/api/reconstruction/releases/${encodeURIComponent(releaseId)}/report`,
+    plugins: "/api/reconstruction/plugins",
+    plugin: pluginId => `/api/reconstruction/plugins/${encodeURIComponent(pluginId)}`,
+    pluginEnable: pluginId => `/api/reconstruction/plugins/${encodeURIComponent(pluginId)}/enable`,
+    pluginDisable: pluginId => `/api/reconstruction/plugins/${encodeURIComponent(pluginId)}/disable`,
     comparisons: "/api/reconstruction/comparisons",
     comparisonReport: comparisonId => `/api/reconstruction/comparisons/${encodeURIComponent(comparisonId)}/report`,
     measurements: "/api/reconstruction/measurements",
@@ -98,7 +113,12 @@
     "backup_imported",
     "backup_restored",
     "qa_run",
-    "qa_issue_resolved"
+    "qa_issue_resolved",
+    "readiness_check_run",
+    "release_action",
+    "plugin_enabled",
+    "plugin_disabled",
+    "plugin_registered"
   ];
   const ROLE_PERMISSIONS = Object.freeze({
     owner: ["view_case", "edit_case", "add_measurements", "edit_measurements", "add_notes", "export_reports", "run_reconstruction", "run_simulation"],
@@ -106,6 +126,15 @@
     assistant: ["view_case", "add_measurements", "add_notes"],
     viewer: ["view_case"]
   });
+
+  const BUILT_IN_PLUGINS = Object.freeze([
+    { pluginId: "builtin-landmark-templates", name: "Landmark Templates", version: "v1", category: "landmarks", description: "Built-in PMAS landmark template registry.", author: "PMAS Core", enabled: true, builtIn: true, extensionPoints: ["landmark_detection"], compatibleVersion: "v1", dependencies: [] },
+    { pluginId: "builtin-measurement-templates", name: "Measurement Templates", version: "v1", category: "measurements", description: "Built-in PMAS measurement template engine.", author: "PMAS Core", enabled: true, builtIn: true, extensionPoints: ["measurement_templates"], compatibleVersion: "v1", dependencies: [] },
+    { pluginId: "builtin-clinical-analysis-presets", name: "Clinical Analysis Presets", version: "v1", category: "analysis", description: "Built-in PMAS clinical analysis preset layer.", author: "PMAS Core", enabled: true, builtIn: true, extensionPoints: ["clinical_analysis"], compatibleVersion: "v1", dependencies: [] },
+    { pluginId: "builtin-report-builder", name: "Report Builder", version: "v1", category: "reports", description: "Built-in PMAS clinical and case report builder.", author: "PMAS Core", enabled: true, builtIn: true, extensionPoints: ["report_generation", "export_system"], compatibleVersion: "v1", dependencies: [] }
+  ]);
+
+  const PLUGIN_EXTENSION_POINTS = ["reconstruction_pipeline", "landmark_detection", "measurement_templates", "clinical_analysis", "report_generation", "surgical_simulation", "export_system"];
 
   const DEFAULT_LANDMARK_TEMPLATES = Object.freeze([
     {
@@ -322,6 +351,100 @@
     }
   }
 
+  function readMockProductionReadiness() {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(MOCK_PRODUCTION_READINESS_KEY) || "[]");
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (err) {
+      return [];
+    }
+  }
+
+  function writeMockProductionReadiness(items) {
+    try {
+      localStorage.setItem(MOCK_PRODUCTION_READINESS_KEY, JSON.stringify(items.slice(0, 1000)));
+    } catch (err) {
+      console.warn("Unable to save production readiness checks.", err);
+    }
+  }
+
+  function readMockReleases() {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(MOCK_RELEASES_KEY) || "[]");
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (err) {
+      return [];
+    }
+  }
+
+  function writeMockReleases(items) {
+    try {
+      localStorage.setItem(MOCK_RELEASES_KEY, JSON.stringify(items.slice(0, 200)));
+    } catch (err) {
+      console.warn("Unable to save releases.", err);
+    }
+  }
+
+  function normalizeMockPlugin(input = {}) {
+    return {
+      pluginId: String(input.pluginId || "").trim(),
+      name: String(input.name || input.pluginId || "PMAS Plugin").trim() || "PMAS Plugin",
+      version: String(input.version || "v1").trim() || "v1",
+      category: ["reconstruction", "landmarks", "measurements", "analysis", "reports", "simulation", "export", "custom"].includes(input.category) ? input.category : "custom",
+      description: String(input.description || "").trim(),
+      author: String(input.author || "Unknown").trim() || "Unknown",
+      enabled: input.enabled !== false,
+      createdAt: input.createdAt || new Date().toISOString(),
+      updatedAt: input.updatedAt || input.createdAt || new Date().toISOString(),
+      builtIn: Boolean(input.builtIn),
+      compatibleVersion: String(input.compatibleVersion || "v1").trim() || "v1",
+      dependencies: Array.isArray(input.dependencies) ? input.dependencies.map(String).filter(Boolean) : [],
+      extensionPoints: Array.isArray(input.extensionPoints) ? input.extensionPoints.map(String).filter(item => PLUGIN_EXTENSION_POINTS.includes(item)) : []
+    };
+  }
+
+  function readMockPlugins() {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(MOCK_PLUGINS_KEY) || "[]");
+      const custom = Array.isArray(parsed) ? parsed.map(normalizeMockPlugin).filter(item => item.pluginId && !item.builtIn) : [];
+      const byId = new Map([...BUILT_IN_PLUGINS.map(normalizeMockPlugin), ...custom].map(item => [item.pluginId, item]));
+      return Array.from(byId.values());
+    } catch (err) {
+      return BUILT_IN_PLUGINS.map(normalizeMockPlugin);
+    }
+  }
+
+  function writeMockPlugins(items) {
+    try {
+      localStorage.setItem(MOCK_PLUGINS_KEY, JSON.stringify((items || []).filter(item => !item.builtIn).slice(0, 500)));
+    } catch (err) {
+      console.warn("Unable to save plugins.", err);
+    }
+  }
+
+  function mockPluginSummary(plugins = readMockPlugins()) {
+    return {
+      pluginsCount: plugins.length,
+      enabledCount: plugins.filter(item => item.enabled).length,
+      disabledCount: plugins.filter(item => !item.enabled).length,
+      builtInCount: plugins.filter(item => item.builtIn).length,
+      categories: plugins.reduce((acc, item) => {
+        acc[item.category] = (acc[item.category] || 0) + 1;
+        return acc;
+      }, {}),
+      extensionPoints: PLUGIN_EXTENSION_POINTS.map(point => ({
+        extensionPoint: point,
+        plugins: plugins.filter(item => item.enabled && item.extensionPoints.includes(point))
+      }))
+    };
+  }
+
+  function recordMockPluginAudit(plugin, action) {
+    readMockCases().forEach(caseItem => {
+      recordMockAuditEvent({ caseId: caseItem.caseId, action, entityType: "plugin", entityId: plugin.pluginId, details: { name: plugin.name, version: plugin.version, category: plugin.category } });
+    });
+  }
+
   function qaSummary(checks = []) {
     const active = checks.filter(item => !item.resolved);
     const warningsCount = active.filter(item => item.status === "warning").length;
@@ -389,6 +512,156 @@
     return { caseId, checks, summary: qaSummary(checks) };
   }
 
+  function productionLevelFromScore(score) {
+    if (score >= 90) return "production_ready";
+    if (score >= 75) return "ready";
+    if (score >= 50) return "limited";
+    return "not_ready";
+  }
+
+  function productionSummary(readiness = []) {
+    const passedChecks = readiness.reduce((sum, item) => sum + Number(item.passedChecks || 0), 0);
+    const failedChecks = readiness.reduce((sum, item) => sum + Number(item.failedChecks || 0), 0);
+    const warnings = readiness.reduce((sum, item) => sum + Number(item.warnings || 0), 0);
+    const productionScore = readiness.length
+      ? Math.round(readiness.reduce((sum, item) => sum + Number(item.productionScore || item.score || 0), 0) / readiness.length)
+      : 0;
+    return {
+      productionScore,
+      readinessLevel: productionLevelFromScore(productionScore),
+      passedChecks,
+      failedChecks,
+      warnings,
+      scopes: readiness.length
+    };
+  }
+
+  function makeMockReadiness(scope, checks, input = {}) {
+    const failedChecks = checks.filter(item => item.status === "failed").length;
+    const warnings = checks.filter(item => item.status === "warning").length;
+    const passedChecks = checks.filter(item => item.status === "passed").length;
+    const score = Math.max(0, Math.min(100, 100 - failedChecks * 18 - warnings * 8));
+    return {
+      readinessId: input.readinessId || (crypto.randomUUID ? `readiness-${crypto.randomUUID()}` : `readiness-${Date.now().toString(36)}-${Math.random().toString(16).slice(2)}`),
+      caseId: input.caseId || "",
+      modelId: input.modelId || "",
+      reportId: input.reportId || "",
+      scope,
+      score,
+      level: productionLevelFromScore(score),
+      checks: checks.map((item, index) => ({
+        checkId: item.checkId || `${scope}-${index + 1}`,
+        scope,
+        status: item.status || "warning",
+        title: item.title || "Readiness check",
+        description: item.description || ""
+      })),
+      createdAt: input.createdAt || new Date().toISOString(),
+      productionScore: score,
+      readinessLevel: productionLevelFromScore(score),
+      passedChecks,
+      failedChecks,
+      warnings
+    };
+  }
+
+  function generateMockProductionReadiness(caseId, options = {}) {
+    const caseItem = readMockCases().find(item => item.caseId === caseId) || {};
+    const jobs = readMockHistory().filter(item => item.caseId === caseId);
+    const model = jobs.find(item => item.resultGlbUrl) || jobs[0] || {};
+    const measurements = readMockMeasurements().filter(item => item.caseId === caseId);
+    const landmarks = readMockLandmarks().filter(item => item.caseId === caseId);
+    const qa = qaSummary(readMockQaChecks().filter(item => item.caseId === caseId));
+    const auditEvents = filterMockAuditEvents({ caseId });
+    const timeline = buildMockCaseTimeline(caseId);
+    const missingRequired = landmarks.filter(item => item.required && !["placed", "approved", "corrected"].includes(item.status));
+    const readiness = [
+      makeMockReadiness("case", [
+        { status: caseItem.caseId ? "passed" : "failed", title: "Patient case exists", description: caseItem.caseId ? `Case ${caseItem.caseId} exists.` : "Patient case metadata is missing." },
+        { status: jobs.length ? "passed" : "failed", title: "Reconstruction exists", description: jobs.length ? `${jobs.length} reconstruction job(s) linked.` : "No reconstruction job is linked." },
+        { status: caseItem.reports?.length ? "passed" : "warning", title: "Report exists", description: caseItem.reports?.length ? `${caseItem.reports.length} report(s) attached.` : "No report reference is attached yet." },
+        { status: measurements.length ? "passed" : "warning", title: "Measurements exist", description: measurements.length ? `${measurements.length} measurement(s) stored.` : "No measurement data is stored." },
+        { status: landmarks.some(item => item.required) && !missingRequired.length ? "passed" : missingRequired.length ? "failed" : "warning", title: "Required landmarks exist", description: missingRequired.length ? `${missingRequired.length} required landmark(s) are missing.` : landmarks.some(item => item.required) ? "Required landmarks are present." : "No required landmarks are defined." }
+      ], { caseId }),
+      makeMockReadiness("model", [
+        { status: model.resultGlbUrl ? "passed" : "failed", title: "GLB available", description: model.resultGlbUrl ? "Model GLB metadata is available." : "No GLB model artifact is attached." },
+        { status: Number(model.readinessScore) > 0 ? "passed" : "warning", title: "Readiness score exists", description: Number(model.readinessScore) > 0 ? `Readiness score ${Math.round(Number(model.readinessScore))}/100.` : "Readiness score is missing." },
+        { status: qa.failuresCount ? "failed" : qa.warningsCount ? "warning" : "passed", title: "QA passed", description: qa.failuresCount ? `${qa.failuresCount} QA failure(s) remain.` : qa.warningsCount ? `${qa.warningsCount} QA warning(s) remain.` : "No active QA issues detected." },
+        { status: model.status === "error" || (model.warnings || []).some(item => /critical|fatal|error/i.test(String(item))) ? "failed" : "passed", title: "No critical warnings", description: model.status === "error" ? "Critical model error detected." : "No critical model warning detected." }
+      ], { caseId, modelId: model.resultGlbUrl || model.jobId || "" }),
+      makeMockReadiness("report", [
+        { status: caseItem.reports?.length ? "passed" : "warning", title: "Report generated", description: caseItem.reports?.length ? `${caseItem.reports.length} report reference(s) stored.` : "No report has been generated for this case." },
+        { status: "passed", title: "Export available", description: "JSON/PDF/DOCX report export controls are available in PMAS." },
+        { status: caseItem.caseId && jobs.length && measurements.length && landmarks.length ? "passed" : "warning", title: "Required sections present", description: "Case, reconstruction, measurements, landmarks, QA and insights sections are checked." }
+      ], { caseId, reportId: caseItem.reports?.[0] || "" }),
+      makeMockReadiness("system", [
+        { status: "passed", title: "Backup available", description: "Local PMAS Backup JSON export/restore layer is available." },
+        { status: auditEvents.length ? "passed" : "warning", title: "Audit log available", description: auditEvents.length ? `${auditEvents.length} audit event(s) stored.` : "Audit log module is available; no events found." },
+        { status: timeline ? "passed" : "warning", title: "Timeline available", description: timeline?.entries ? `${timeline.entries.length} timeline event(s) available.` : "Timeline module is available." },
+        { status: "passed", title: "No critical failures", description: "No critical PMAS failures detected by readiness check." }
+      ], { caseId })
+    ];
+    writeMockProductionReadiness([...readiness, ...readMockProductionReadiness().filter(item => item.caseId !== caseId)]);
+    const summary = productionSummary(readiness);
+    if (options.recordAudit !== false) {
+      recordMockAuditEvent({ caseId, action: "readiness_check_run", entityType: "production_readiness", entityId: readiness[0]?.readinessId || `readiness-${caseId}`, details: summary });
+    }
+    return { caseId, readiness, summary };
+  }
+
+  function makeMockReleaseId() {
+    if (crypto.randomUUID) return `release-${crypto.randomUUID()}`;
+    return `release-${Date.now().toString(36)}-${Math.random().toString(16).slice(2)}`;
+  }
+
+  function mockReleaseSnapshot() {
+    const qaChecks = readMockQaChecks();
+    const readiness = readMockProductionReadiness();
+    const activeQa = qaChecks.filter(item => !item.resolved);
+    const qaFailures = activeQa.filter(item => item.status === "failed").length;
+    const criticalFailures = activeQa.filter(item => item.severity === "critical").length;
+    const qaScore = activeQa.length ? Math.max(0, Math.min(100, 100 - qaFailures * 18 - activeQa.filter(item => item.status === "warning").length * 7 - criticalFailures * 15)) : 100;
+    const readinessFailures = readiness.reduce((sum, item) => sum + Number(item.failedChecks || 0), 0);
+    const readinessScore = readiness.length ? Math.round(readiness.reduce((sum, item) => sum + Number(item.productionScore || item.score || 0), 0) / readiness.length) : 100;
+    const cases = readMockCases();
+    return {
+      createdAt: new Date().toISOString(),
+      cases,
+      reports: cases.flatMap(item => (item.reports || []).map(reportId => ({ caseId: item.caseId, reportId }))),
+      templates: { landmarkTemplates: readMockLandmarkTemplates() },
+      settings: { reconstructionDefaults: { ...DEFAULT_RECONSTRUCTION_SETTINGS } },
+      configuration: { localBackupSupported: true, cloudSyncEnabled: false, releaseManagerVersion: "v1", pluginApiVersion: "v1" },
+      plugins: readMockPlugins(),
+      qaData: { checks: qaChecks, qaScore, failuresCount: qaFailures, criticalFailures },
+      readiness: { items: readiness, readinessScore, failuresCount: readinessFailures }
+    };
+  }
+
+  function validateMockRelease(snapshot) {
+    const qaScore = Number(snapshot?.qaData?.qaScore || 0);
+    const readinessScore = Number(snapshot?.readiness?.readinessScore || 0);
+    const qaFailures = Number(snapshot?.qaData?.failuresCount || 0);
+    const readinessFailures = Number(snapshot?.readiness?.failuresCount || 0);
+    const criticalFailures = Number(snapshot?.qaData?.criticalFailures || 0);
+    const checks = [
+      { checkId: "release-qa-passed", status: qaScore >= 75 && qaFailures === 0 ? "passed" : "failed", title: "QA passed", description: `QA score ${Math.round(qaScore)}/100.` },
+      { checkId: "release-readiness-passed", status: readinessScore >= 75 && readinessFailures === 0 ? "passed" : "failed", title: "Production Readiness passed", description: `Readiness score ${Math.round(readinessScore)}/100.` },
+      { checkId: "release-backup-available", status: "passed", title: "Backup available", description: "Local PMAS Backup JSON layer is available." },
+      { checkId: "release-no-critical-failures", status: criticalFailures === 0 ? "passed" : "failed", title: "No critical failures", description: criticalFailures === 0 ? "No critical failures detected." : `${criticalFailures} critical failure(s) detected.` }
+    ];
+    return { ok: checks.every(item => item.status === "passed"), checks, qaScore, readinessScore, releaseScore: Math.round((qaScore + readinessScore) / 2) };
+  }
+
+  function mockReleaseCaseIds(release) {
+    return (release?.snapshot?.cases || []).map(item => item.caseId).filter(Boolean);
+  }
+
+  function recordMockReleaseAction(release, eventType, details = {}) {
+    mockReleaseCaseIds(release).forEach(caseId => {
+      recordMockAuditEvent({ caseId, action: "release_action", entityType: "release_candidate", entityId: release.releaseId, details: { eventType, version: release.version, status: release.status, ...details } });
+    });
+  }
+
   async function sha256Text(text) {
     const data = new TextEncoder().encode(text);
     const hash = await crypto.subtle.digest("SHA-256", data);
@@ -407,7 +680,10 @@
       simulations: readMockSurgicalSimulations(),
       auditEvents: readMockAuditEvents(),
       clinicalInsights: readMockClinicalInsights(),
-      qaChecks: readMockQaChecks()
+      qaChecks: readMockQaChecks(),
+      productionReadiness: readMockProductionReadiness(),
+      releases: readMockReleases(),
+      plugins: readMockPlugins()
     };
   }
 
@@ -952,6 +1228,33 @@
         title: plan.title || plan.procedureType || "Surgical note",
         description: plan.notes || plan.diagnosis || plan.goals || "Clinical planning note",
         createdAt: plan.updatedAt || plan.createdAt || caseItem.updatedAt
+      });
+    });
+    readMockProductionReadiness().filter(item => item.caseId === caseId).forEach(readiness => {
+      entries.push({
+        entryId: `timeline-entry-readiness-${readiness.readinessId}`,
+        caseId,
+        modelId: readiness.modelId || "",
+        reconstructionJobId: "",
+        entryType: "readiness_check_completed",
+        title: `Production readiness ${readiness.scope || "case"}`,
+        description: `${readiness.scope || "case"} · ${readiness.level || readiness.readinessLevel || "limited"} · score ${Math.round(Number(readiness.score || readiness.productionScore || 0))}/100`,
+        createdAt: readiness.createdAt || caseItem.updatedAt
+      });
+    });
+    readMockReleases().filter(release => mockReleaseCaseIds(release).includes(caseId)).forEach(release => {
+      (release.history || []).forEach(event => {
+        if (!["release_created", "release_promoted", "release_archived"].includes(event.eventType)) return;
+        entries.push({
+          entryId: `timeline-entry-release-${release.releaseId}-${event.eventId}`,
+          caseId,
+          modelId: "",
+          reconstructionJobId: "",
+          entryType: event.eventType,
+          title: `Release ${release.version || ""} ${release.status || ""}`.trim(),
+          description: `${release.name || release.releaseId} · QA ${Math.round(Number(release.qaScore || 0))}/100 · readiness ${Math.round(Number(release.readinessScore || 0))}/100`,
+          createdAt: event.createdAt || release.updatedAt || release.createdAt || caseItem.updatedAt
+        });
       });
     });
     entries.sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
@@ -1653,6 +1956,7 @@
           readinessLevel: item.readinessLevel || "poor"
         }));
       addMockReportToCase(caseId, `${caseId}:case-report`);
+      const productionResult = generateMockProductionReadiness(caseId, { recordAudit: false });
       const timeline = buildMockCaseTimeline(caseId);
       return {
         ...caseItem,
@@ -1697,6 +2001,8 @@
         surgicalSimulations,
         surgicalSimulationsCount: surgicalSimulations.length,
         simulationWarnings: Array.from(new Set(surgicalSimulations.flatMap(item => item.warnings || []))),
+        productionReadiness: productionResult.readiness,
+        productionReadinessSummary: productionResult.summary,
         timeline,
         timelineSummary: {
           timelineId: timeline?.timelineId || `timeline-${caseId}`,
@@ -1705,11 +2011,42 @@
           simulationEntriesCount: (timeline?.entries || []).filter(item => item.entryType === "simulation").length,
           reportEntriesCount: (timeline?.entries || []).filter(item => item.entryType === "report").length,
           measurementSnapshotEntriesCount: (timeline?.entries || []).filter(item => item.entryType === "measurement_snapshot").length,
-          noteEntriesCount: (timeline?.entries || []).filter(item => item.entryType === "note").length
+          noteEntriesCount: (timeline?.entries || []).filter(item => item.entryType === "note").length,
+          readinessEntriesCount: (timeline?.entries || []).filter(item => item.entryType === "readiness_check_completed").length
         }
       };
     }
     return await backendJson(ENDPOINTS.caseReport(caseId), { method: "GET" }, ERROR_CODES.jobFailed);
+  }
+
+  async function getSystemReport() {
+    if (reconstructionMode === "mock") {
+      const readiness = readMockProductionReadiness();
+      const summary = productionSummary(readiness);
+      return {
+        reportType: "system_report",
+        generatedAt: new Date().toISOString(),
+        casesCount: readMockCases().length,
+        modelsCount: readMockHistory().length,
+        reportsCount: readMockCases().reduce((sum, item) => sum + Number(item.reports?.length || 0), 0),
+        backupStatus: { backupVersion: "v1", localBackupSupported: true, cloudSyncEnabled: false },
+        auditStatus: { auditLogAvailable: true, eventsCount: readMockAuditEvents().length },
+        timelineStatus: { timelineAvailable: true },
+        productionReadiness: readiness,
+        productionReadinessSummary: summary,
+        releaseSummary: {
+          releasesCount: readMockReleases().length,
+          activeCount: readMockReleases().filter(item => item.status !== "archived").length,
+          approvedCount: readMockReleases().filter(item => item.status === "approved").length,
+          releaseCandidateCount: readMockReleases().filter(item => item.status === "release_candidate").length
+        },
+        releases: readMockReleases()
+        ,
+        installedPlugins: readMockPlugins(),
+        installedPluginsSummary: mockPluginSummary()
+      };
+    }
+    return await backendJson(ENDPOINTS.systemReport, { method: "GET" }, ERROR_CODES.jobFailed);
   }
 
   async function listCaseAuditEvents(caseId, filter = {}) {
@@ -2556,6 +2893,9 @@
       writeMockSurgicalSimulations(mode === "full" ? (snapshot.simulations || []) : merge(readMockSurgicalSimulations(), snapshot.simulations || [], "simulationId"));
       writeMockClinicalInsights(mode === "full" ? (snapshot.clinicalInsights || []) : merge(readMockClinicalInsights(), snapshot.clinicalInsights || [], "insightId"));
       writeMockQaChecks(mode === "full" ? (snapshot.qaChecks || []) : merge(readMockQaChecks(), snapshot.qaChecks || [], "checkId"));
+      writeMockProductionReadiness(mode === "full" ? (snapshot.productionReadiness || []) : merge(readMockProductionReadiness(), snapshot.productionReadiness || [], "readinessId"));
+      writeMockReleases(mode === "full" ? (snapshot.releases || []) : merge(readMockReleases(), snapshot.releases || [], "releaseId"));
+      writeMockPlugins(mode === "full" ? (snapshot.plugins || []) : merge(readMockPlugins(), snapshot.plugins || [], "pluginId"));
       writeMockAuditEvents(mode === "full" ? (snapshot.auditEvents || []) : merge(readMockAuditEvents(), snapshot.auditEvents || [], "eventId"));
       caseIds.forEach(caseId => {
         recordMockAuditEvent({ caseId, action: "backup_restored", entityType: "backup", entityId: validation.preview.backupId || "imported-backup", details: { mode, restoredCasesCount: caseIds.size } });
@@ -2609,6 +2949,251 @@
     return await backendJson(ENDPOINTS.resolveQaCheck(normalizedCheckId), { method: "PATCH" }, ERROR_CODES.jobFailed);
   }
 
+  async function listProductionReadiness(caseId, filter = {}) {
+    const normalizedCaseId = String(caseId || "").trim();
+    if (!normalizedCaseId) throw apiError(ERROR_CODES.jobFailed, "caseId is required.");
+    if (reconstructionMode === "mock") {
+      const scope = String(filter.scope || "all");
+      return readMockProductionReadiness()
+        .filter(item => item.caseId === normalizedCaseId)
+        .filter(item => scope === "all" || item.scope === scope)
+        .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+    }
+    const params = new URLSearchParams();
+    if (filter.scope && filter.scope !== "all") params.set("scope", filter.scope);
+    const query = params.toString() ? `?${params.toString()}` : "";
+    const payload = await backendJson(`${ENDPOINTS.caseReadiness(normalizedCaseId)}${query}`, { method: "GET" }, ERROR_CODES.jobFailed);
+    return payload?.readiness || [];
+  }
+
+  async function runProductionReadiness(caseId, options = {}) {
+    const normalizedCaseId = String(caseId || "").trim();
+    if (!normalizedCaseId) throw apiError(ERROR_CODES.jobFailed, "caseId is required.");
+    if (reconstructionMode === "mock") return generateMockProductionReadiness(normalizedCaseId);
+    return await backendJson(ENDPOINTS.runCaseReadiness(normalizedCaseId), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        scopes: options.scopes || ["case", "model", "report", "system"],
+        modelId: options.modelId || "",
+        reportId: options.reportId || ""
+      })
+    }, ERROR_CODES.jobFailed);
+  }
+
+  async function listReleases(filter = {}) {
+    if (reconstructionMode === "mock") {
+      const status = String(filter.status || "all");
+      const caseId = String(filter.caseId || "all");
+      return readMockReleases()
+        .filter(item => status === "all" || item.status === status)
+        .filter(item => caseId === "all" || mockReleaseCaseIds(item).includes(caseId))
+        .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+    }
+    const params = new URLSearchParams();
+    if (filter.status && filter.status !== "all") params.set("status", filter.status);
+    if (filter.caseId && filter.caseId !== "all") params.set("caseId", filter.caseId);
+    const query = params.toString() ? `?${params.toString()}` : "";
+    const payload = await backendJson(`${ENDPOINTS.releases}${query}`, { method: "GET" }, ERROR_CODES.jobFailed);
+    return payload?.releases || [];
+  }
+
+  async function createRelease(input = {}) {
+    if (reconstructionMode === "mock") {
+      const snapshot = mockReleaseSnapshot();
+      const validation = validateMockRelease(snapshot);
+      const version = ["v0.1", "v0.5", "v0.9", "v1.0", "v1.1"].includes(input.version) ? input.version : "v0.1";
+      const release = {
+        releaseId: makeMockReleaseId(),
+        version,
+        name: input.name || `PMAS ${version}`,
+        description: input.description || "",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        status: input.status === "release_candidate" && !validation.ok ? "testing" : input.status || "draft",
+        readinessScore: snapshot.readiness.readinessScore,
+        qaScore: snapshot.qaData.qaScore,
+        notes: input.notes || "",
+        snapshot,
+        validation,
+        history: [{ eventId: `release-event-${Date.now().toString(36)}`, eventType: "release_created", createdAt: new Date().toISOString(), details: { casesCount: snapshot.cases.length } }]
+      };
+      writeMockReleases([release, ...readMockReleases()]);
+      recordMockReleaseAction(release, "release_created", { validationOk: validation.ok });
+      return release;
+    }
+    return await backendJson(ENDPOINTS.releases, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input)
+    }, ERROR_CODES.jobFailed);
+  }
+
+  async function updateReleaseStatus(releaseId, status, notes = "") {
+    const normalizedReleaseId = String(releaseId || "").trim();
+    if (!normalizedReleaseId) throw apiError(ERROR_CODES.jobFailed, "releaseId is required.");
+    if (reconstructionMode === "mock") {
+      const releases = readMockReleases();
+      const existing = releases.find(item => item.releaseId === normalizedReleaseId);
+      if (!existing) throw apiError(ERROR_CODES.jobFailed, "Release candidate not found.");
+      const validation = validateMockRelease(existing.snapshot || {});
+      if (status === "release_candidate" && !validation.ok) {
+        const err = apiError(ERROR_CODES.jobFailed, "Release validation failed.");
+        err.release = { ...existing, validation: { ...validation, blocked: true } };
+        throw err;
+      }
+      const eventType = status === "archived" ? "release_archived" : status === "release_candidate" || status === "approved" ? "release_promoted" : "release_updated";
+      const next = {
+        ...existing,
+        status,
+        notes: notes || existing.notes || "",
+        updatedAt: new Date().toISOString(),
+        validation,
+        history: [...(existing.history || []), { eventId: `release-event-${Date.now().toString(36)}`, eventType, createdAt: new Date().toISOString(), details: { status } }]
+      };
+      writeMockReleases([next, ...releases.filter(item => item.releaseId !== normalizedReleaseId)]);
+      recordMockReleaseAction(next, eventType, { validationOk: validation.ok });
+      return next;
+    }
+    return await backendJson(ENDPOINTS.releaseStatus(normalizedReleaseId), {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status, notes })
+    }, ERROR_CODES.jobFailed);
+  }
+
+  async function archiveRelease(releaseId) {
+    if (reconstructionMode === "mock") return updateReleaseStatus(releaseId, "archived");
+    return await backendJson(ENDPOINTS.releaseArchive(releaseId), { method: "POST" }, ERROR_CODES.jobFailed);
+  }
+
+  async function cloneRelease(releaseId) {
+    const normalizedReleaseId = String(releaseId || "").trim();
+    if (!normalizedReleaseId) throw apiError(ERROR_CODES.jobFailed, "releaseId is required.");
+    if (reconstructionMode === "mock") {
+      const releases = readMockReleases();
+      const existing = releases.find(item => item.releaseId === normalizedReleaseId);
+      if (!existing) throw apiError(ERROR_CODES.jobFailed, "Release candidate not found.");
+      const clone = {
+        ...existing,
+        releaseId: makeMockReleaseId(),
+        name: `${existing.name || existing.version} clone`,
+        status: "draft",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        history: [{ eventId: `release-event-${Date.now().toString(36)}`, eventType: "release_created", createdAt: new Date().toISOString(), details: { clonedFrom: existing.releaseId } }]
+      };
+      writeMockReleases([clone, ...releases]);
+      recordMockReleaseAction(clone, "release_created", { clonedFrom: existing.releaseId });
+      return clone;
+    }
+    return await backendJson(ENDPOINTS.releaseClone(normalizedReleaseId), { method: "POST" }, ERROR_CODES.jobFailed);
+  }
+
+  async function getReleaseReport(releaseId) {
+    const normalizedReleaseId = String(releaseId || "").trim();
+    if (!normalizedReleaseId) throw apiError(ERROR_CODES.jobFailed, "releaseId is required.");
+    if (reconstructionMode === "mock") {
+      const release = readMockReleases().find(item => item.releaseId === normalizedReleaseId);
+      if (!release) throw apiError(ERROR_CODES.jobFailed, "Release candidate not found.");
+      return {
+        reportType: "release_summary_report",
+        generatedAt: new Date().toISOString(),
+        release,
+        snapshotSummary: {
+          casesCount: release.snapshot?.cases?.length || 0,
+          reportsCount: release.snapshot?.reports?.length || 0,
+          templatesCount: release.snapshot?.templates?.landmarkTemplates?.length || 0,
+          qaChecksCount: release.snapshot?.qaData?.checks?.length || 0,
+          readinessChecksCount: release.snapshot?.readiness?.items?.length || 0
+        },
+        validation: release.validation || {},
+        timelineEvents: release.history || []
+      };
+    }
+    return await backendJson(ENDPOINTS.releaseReport(normalizedReleaseId), { method: "GET" }, ERROR_CODES.jobFailed);
+  }
+
+  async function listPlugins(filter = {}) {
+    if (reconstructionMode === "mock") {
+      const category = String(filter.category || "all");
+      const enabled = String(filter.enabled ?? "all");
+      const plugins = readMockPlugins()
+        .filter(item => category === "all" || item.category === category)
+        .filter(item => enabled === "all" || String(Boolean(item.enabled)) === enabled)
+        .sort((a, b) => Number(b.builtIn) - Number(a.builtIn) || String(a.name).localeCompare(String(b.name)));
+      return { plugins, summary: mockPluginSummary(plugins) };
+    }
+    const params = new URLSearchParams();
+    if (filter.category && filter.category !== "all") params.set("category", filter.category);
+    if (filter.enabled !== undefined && filter.enabled !== "all") params.set("enabled", String(filter.enabled));
+    const query = params.toString() ? `?${params.toString()}` : "";
+    return await backendJson(`${ENDPOINTS.plugins}${query}`, { method: "GET" }, ERROR_CODES.jobFailed);
+  }
+
+  async function registerPlugin(input = {}) {
+    if (reconstructionMode === "mock") {
+      const plugins = readMockPlugins();
+      const plugin = normalizeMockPlugin(input);
+      if (!plugin.pluginId) throw apiError(ERROR_CODES.jobFailed, "pluginId is required.");
+      if (plugins.some(item => item.pluginId === plugin.pluginId)) throw apiError(ERROR_CODES.jobFailed, `Plugin ${plugin.pluginId} is already registered.`);
+      if (plugin.compatibleVersion !== "v1") throw apiError(ERROR_CODES.jobFailed, `Unsupported plugin API version: ${plugin.compatibleVersion}.`);
+      const missing = plugin.dependencies.filter(dep => !plugins.some(item => item.pluginId === dep));
+      if (missing.length) throw apiError(ERROR_CODES.jobFailed, `Missing dependencies: ${missing.join(", ")}.`);
+      writeMockPlugins([plugin, ...plugins.filter(item => !item.builtIn)]);
+      recordMockPluginAudit(plugin, "plugin_registered");
+      return plugin;
+    }
+    return await backendJson(ENDPOINTS.plugins, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input)
+    }, ERROR_CODES.jobFailed);
+  }
+
+  async function enablePlugin(pluginId) {
+    const normalizedPluginId = String(pluginId || "").trim();
+    if (!normalizedPluginId) throw apiError(ERROR_CODES.jobFailed, "pluginId is required.");
+    if (reconstructionMode === "mock") {
+      const plugins = readMockPlugins();
+      const existing = plugins.find(item => item.pluginId === normalizedPluginId);
+      if (!existing) throw apiError(ERROR_CODES.jobFailed, "Plugin not found.");
+      const next = { ...existing, enabled: true, updatedAt: new Date().toISOString() };
+      writeMockPlugins([next, ...plugins.filter(item => item.pluginId !== normalizedPluginId && !item.builtIn)]);
+      recordMockPluginAudit(next, "plugin_enabled");
+      return next;
+    }
+    return await backendJson(ENDPOINTS.pluginEnable(normalizedPluginId), { method: "POST" }, ERROR_CODES.jobFailed);
+  }
+
+  async function disablePlugin(pluginId) {
+    const normalizedPluginId = String(pluginId || "").trim();
+    if (!normalizedPluginId) throw apiError(ERROR_CODES.jobFailed, "pluginId is required.");
+    if (reconstructionMode === "mock") {
+      const plugins = readMockPlugins();
+      const existing = plugins.find(item => item.pluginId === normalizedPluginId);
+      if (!existing) throw apiError(ERROR_CODES.jobFailed, "Plugin not found.");
+      const next = { ...existing, enabled: false, updatedAt: new Date().toISOString() };
+      writeMockPlugins([next, ...plugins.filter(item => item.pluginId !== normalizedPluginId && !item.builtIn)]);
+      recordMockPluginAudit(next, "plugin_disabled");
+      return next;
+    }
+    return await backendJson(ENDPOINTS.pluginDisable(normalizedPluginId), { method: "POST" }, ERROR_CODES.jobFailed);
+  }
+
+  async function unregisterPlugin(pluginId) {
+    const normalizedPluginId = String(pluginId || "").trim();
+    if (!normalizedPluginId) throw apiError(ERROR_CODES.jobFailed, "pluginId is required.");
+    if (reconstructionMode === "mock") {
+      const plugins = readMockPlugins();
+      const existing = plugins.find(item => item.pluginId === normalizedPluginId && !item.builtIn);
+      if (!existing) throw apiError(ERROR_CODES.jobFailed, "Plugin not found or built-in plugin cannot be unregistered.");
+      writeMockPlugins(plugins.filter(item => item.pluginId !== normalizedPluginId && !item.builtIn));
+      return { deleted: true, plugin: existing };
+    }
+    return await backendJson(ENDPOINTS.plugin(normalizedPluginId), { method: "DELETE" }, ERROR_CODES.jobFailed);
+  }
+
   function setMode(mode) {
     if (mode !== "mock" && mode !== "backend") {
       throw apiError(ERROR_CODES.jobFailed, `Unsupported reconstruction mode: ${mode}`);
@@ -2641,6 +3226,7 @@
     createPatientCase,
     deletePatientCase,
     getPatientCaseReport,
+    getSystemReport,
     listCaseAuditEvents,
     listClinicalInsights,
     generateClinicalInsights,
@@ -2648,6 +3234,19 @@
     listQaChecks,
     runQaValidation,
     resolveQaCheck,
+    listProductionReadiness,
+    runProductionReadiness,
+    listReleases,
+    createRelease,
+    updateReleaseStatus,
+    archiveRelease,
+    cloneRelease,
+    getReleaseReport,
+    listPlugins,
+    registerPlugin,
+    enablePlugin,
+    disablePlugin,
+    unregisterPlugin,
     listCaseTeamMembers,
     saveCaseTeamMember,
     updateCaseTeamMemberRole,

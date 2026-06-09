@@ -19,7 +19,12 @@ const AUDIT_ACTIONS = new Set([
   "backup_imported",
   "backup_restored",
   "qa_run",
-  "qa_issue_resolved"
+  "qa_issue_resolved",
+  "readiness_check_run",
+  "release_action",
+  "plugin_enabled",
+  "plugin_disabled",
+  "plugin_registered"
 ]);
 
 function auditActor(input = {}) {

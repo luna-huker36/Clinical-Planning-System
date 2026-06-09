@@ -36,6 +36,21 @@ const {
   listQaChecks,
   runQaValidationForCase,
   resolveQaCheck,
+  listProductionReadiness,
+  runProductionReadinessCheck,
+  listReleaseCandidates,
+  createReleaseCandidate,
+  updateReleaseStatus,
+  archiveReleaseCandidate,
+  cloneReleaseCandidateToDraft,
+  buildReleaseSummaryReport,
+  registerPlugin,
+  unregisterPlugin,
+  enablePlugin,
+  disablePlugin,
+  getPlugins,
+  getPluginById,
+  getPluginRegistrySummary,
   saveLandmark,
   deleteLandmark,
   listLandmarks,
@@ -54,6 +69,7 @@ const {
   buildReconstructionReport,
   buildCaseReport,
   buildCaseTimeline,
+  buildSystemReport,
   deleteReconstructionResult,
   getArtifactPath
 } = require("./reconstruction-results");
@@ -139,6 +155,10 @@ router.get("/cases/:caseId/report", asyncRoute(async (req, res) => {
   const report = buildCaseReport(req.params.caseId);
   if (!report) throw new ApiError(404, ERROR_CODES.validationFailed, "Case not found.");
   res.json(report);
+}));
+
+router.get("/system/report", asyncRoute(async (req, res) => {
+  res.json(buildSystemReport());
 }));
 
 router.get("/cases/:caseId/timeline", asyncRoute(async (req, res) => {
@@ -276,6 +296,106 @@ router.patch("/qa/:checkId/resolve", asyncRoute(async (req, res) => {
   const check = resolveQaCheck(req.params.checkId);
   if (!check) throw new ApiError(404, ERROR_CODES.validationFailed, "QA check not found.");
   res.json(check);
+}));
+
+router.get("/cases/:caseId/readiness", asyncRoute(async (req, res) => {
+  if (!getCase(req.params.caseId)) throw new ApiError(404, ERROR_CODES.validationFailed, "Case not found.");
+  res.json({
+    readiness: listProductionReadiness({
+      caseId: req.params.caseId,
+      scope: req.query?.scope || "all"
+    })
+  });
+}));
+
+router.post("/cases/:caseId/readiness/run", asyncRoute(async (req, res) => {
+  const result = runProductionReadinessCheck(req.params.caseId, {
+    scopes: req.body?.scopes || ["case", "model", "report", "system"],
+    modelId: req.body?.modelId || "",
+    reportId: req.body?.reportId || ""
+  });
+  if (!result) throw new ApiError(404, ERROR_CODES.validationFailed, "Case not found.");
+  res.json(result);
+}));
+
+router.get("/releases", asyncRoute(async (req, res) => {
+  res.json({
+    releases: listReleaseCandidates({
+      status: req.query?.status || "all",
+      caseId: req.query?.caseId || "all"
+    })
+  });
+}));
+
+router.post("/releases", asyncRoute(async (req, res) => {
+  const release = createReleaseCandidate(req.body || {});
+  res.json(release);
+}));
+
+router.patch("/releases/:releaseId/status", asyncRoute(async (req, res) => {
+  const release = updateReleaseStatus(req.params.releaseId, req.body?.status || "", req.body?.notes || "");
+  if (!release) throw new ApiError(404, ERROR_CODES.validationFailed, "Release candidate not found.");
+  res.json(release);
+}));
+
+router.post("/releases/:releaseId/archive", asyncRoute(async (req, res) => {
+  const release = archiveReleaseCandidate(req.params.releaseId);
+  if (!release) throw new ApiError(404, ERROR_CODES.validationFailed, "Release candidate not found.");
+  res.json(release);
+}));
+
+router.post("/releases/:releaseId/clone", asyncRoute(async (req, res) => {
+  const release = cloneReleaseCandidateToDraft(req.params.releaseId);
+  if (!release) throw new ApiError(404, ERROR_CODES.validationFailed, "Release candidate not found.");
+  res.json(release);
+}));
+
+router.get("/releases/:releaseId/report", asyncRoute(async (req, res) => {
+  const report = buildReleaseSummaryReport(req.params.releaseId);
+  if (!report) throw new ApiError(404, ERROR_CODES.validationFailed, "Release candidate not found.");
+  res.json(report);
+}));
+
+router.get("/plugins", asyncRoute(async (req, res) => {
+  res.json({
+    plugins: getPlugins({
+      category: req.query?.category || "all",
+      enabled: req.query?.enabled ?? "all"
+    }),
+    summary: getPluginRegistrySummary()
+  });
+}));
+
+router.post("/plugins", asyncRoute(async (req, res) => {
+  const result = registerPlugin(req.body || {});
+  if (!result.ok) {
+    throw new ApiError(400, ERROR_CODES.validationFailed, result.errors.join(" "));
+  }
+  res.json(result.plugin);
+}));
+
+router.get("/plugins/:pluginId", asyncRoute(async (req, res) => {
+  const plugin = getPluginById(req.params.pluginId);
+  if (!plugin) throw new ApiError(404, ERROR_CODES.validationFailed, "Plugin not found.");
+  res.json(plugin);
+}));
+
+router.post("/plugins/:pluginId/enable", asyncRoute(async (req, res) => {
+  const plugin = enablePlugin(req.params.pluginId);
+  if (!plugin) throw new ApiError(404, ERROR_CODES.validationFailed, "Plugin not found.");
+  res.json(plugin);
+}));
+
+router.post("/plugins/:pluginId/disable", asyncRoute(async (req, res) => {
+  const plugin = disablePlugin(req.params.pluginId);
+  if (!plugin) throw new ApiError(404, ERROR_CODES.validationFailed, "Plugin not found.");
+  res.json(plugin);
+}));
+
+router.delete("/plugins/:pluginId", asyncRoute(async (req, res) => {
+  const plugin = unregisterPlugin(req.params.pluginId);
+  if (!plugin) throw new ApiError(404, ERROR_CODES.validationFailed, "Plugin not found or built-in plugin cannot be unregistered.");
+  res.json({ deleted: true, plugin });
 }));
 
 router.get("/measurements", asyncRoute(async (req, res) => {

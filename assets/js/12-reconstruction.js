@@ -43,6 +43,11 @@
     clinicalInsights: [],
     qaChecks: [],
     qaSummary: null,
+    productionReadiness: [],
+    productionReadinessSummary: null,
+    releases: [],
+    plugins: [],
+    pluginSummary: null,
     backupPreview: null,
     backupImportDraft: null,
     caseTimeline: null,
@@ -805,7 +810,12 @@
     backup_imported: "backup imported",
     backup_restored: "backup restored",
     qa_run: "QA run",
-    qa_issue_resolved: "QA issue resolved"
+    qa_issue_resolved: "QA issue resolved",
+    readiness_check_run: "readiness check run",
+    release_action: "release action",
+    plugin_enabled: "plugin enabled",
+    plugin_disabled: "plugin disabled",
+    plugin_registered: "plugin registered"
   };
 
   const INSIGHT_CATEGORY_LABELS = {
@@ -1069,6 +1079,9 @@
         loadAuditLog(),
         loadClinicalInsights(),
         loadQaDashboard(),
+        loadProductionReadiness(),
+        loadReleases(),
+        loadPlugins(),
         loadSurgicalPlanningNotes(),
         loadSurgicalSimulations(),
         loadCaseTimeline(),
@@ -1218,6 +1231,398 @@
       setStatusText("QA issue marked as resolved.");
     } catch (err) {
       setError(apiErrorMessage(err, "QA issue resolve failed."));
+    }
+  }
+
+  function computeProductionReadinessSummary(items = state.productionReadiness || []) {
+    const passedChecks = items.reduce((sum, item) => sum + Number(item.passedChecks || 0), 0);
+    const failedChecks = items.reduce((sum, item) => sum + Number(item.failedChecks || 0), 0);
+    const warnings = items.reduce((sum, item) => sum + Number(item.warnings || 0), 0);
+    const productionScore = items.length
+      ? Math.round(items.reduce((sum, item) => sum + Number(item.productionScore || item.score || 0), 0) / items.length)
+      : 0;
+    return {
+      productionScore,
+      readinessLevel: productionScore >= 90 ? "production_ready" : productionScore >= 75 ? "ready" : productionScore >= 50 ? "limited" : "not_ready",
+      passedChecks,
+      failedChecks,
+      warnings,
+      scopes: items.length
+    };
+  }
+
+  function productionReadinessBadgeClass(levelOrStatus) {
+    if (levelOrStatus === "production_ready" || levelOrStatus === "ready" || levelOrStatus === "passed") return "badge-success";
+    if (levelOrStatus === "not_ready" || levelOrStatus === "failed") return "badge-danger";
+    return "badge-info";
+  }
+
+  function renderProductionReadiness() {
+    const summary = state.productionReadinessSummary || computeProductionReadinessSummary();
+    const summaryEl = byId("productionReadinessSummary");
+    const list = byId("productionReadinessList");
+    if (summaryEl) {
+      summaryEl.textContent = state.currentCaseId
+        ? `${summary.scopes || 0} scope(s) · internal PMAS readiness only`
+        : "Select a patient case to check working readiness.";
+    }
+    byId("productionScoreValue").textContent = Number.isFinite(Number(summary.productionScore)) ? `${Math.round(Number(summary.productionScore))}/100` : "—";
+    const badge = byId("productionReadinessBadge");
+    if (badge) {
+      badge.className = `badge ${productionReadinessBadgeClass(summary.readinessLevel)}`;
+      badge.textContent = summary.readinessLevel || "—";
+    }
+    byId("productionPassedCount").textContent = String(summary.passedChecks || 0);
+    byId("productionWarningsCount").textContent = String(summary.warnings || 0);
+    byId("productionFailuresCount").textContent = String(summary.failedChecks || 0);
+    if (!list) return;
+    const items = state.productionReadiness || [];
+    if (!items.length) {
+      list.innerHTML = '<div class="hint">No production readiness checks yet.</div>';
+      return;
+    }
+    list.innerHTML = items.map(item => `
+      <div class="reconstruction-history-row" data-readiness-id="${escapeHtml(item.readinessId)}">
+        <div class="reconstruction-history-main">
+          <strong>${escapeHtml(String(item.scope || "case").replace(/_/g, " "))}</strong>
+          <div class="reconstruction-history-id">${escapeHtml(item.readinessId)} · ${escapeHtml(formatDateTime(item.createdAt))}</div>
+          <div class="reconstruction-history-id">${Number(item.checks?.length || 0)} check(s) · model ${escapeHtml(item.modelId || "—")}</div>
+        </div>
+        <div class="reconstruction-history-cell"><span class="badge ${escapeHtml(productionReadinessBadgeClass(item.level || item.readinessLevel))}">${escapeHtml(item.level || item.readinessLevel || "limited")}</span></div>
+        <div class="reconstruction-history-cell">${Math.round(Number(item.score || item.productionScore || 0))}/100</div>
+        <div class="reconstruction-history-cell">passed ${Number(item.passedChecks || 0)} · warnings ${Number(item.warnings || 0)} · failed ${Number(item.failedChecks || 0)}</div>
+      </div>
+      ${(item.checks || []).map(check => `
+        <div class="reconstruction-history-row is-muted">
+          <div class="reconstruction-history-main">
+            <strong>${escapeHtml(check.title || "Readiness check")}</strong>
+            <div class="reconstruction-history-id">${escapeHtml(check.description || "—")}</div>
+          </div>
+          <div class="reconstruction-history-cell"><span class="badge ${escapeHtml(productionReadinessBadgeClass(check.status))}">${escapeHtml(check.status || "warning")}</span></div>
+          <div class="reconstruction-history-cell">${escapeHtml(check.scope || item.scope || "case")}</div>
+          <div class="reconstruction-history-cell"></div>
+        </div>
+      `).join("")}
+    `).join("");
+  }
+
+  async function loadProductionReadiness() {
+    if (!api()?.listProductionReadiness || !state.currentCaseId) {
+      state.productionReadiness = [];
+      state.productionReadinessSummary = null;
+      renderProductionReadiness();
+      return;
+    }
+    try {
+      state.productionReadiness = await api().listProductionReadiness(state.currentCaseId, { scope: "all" });
+      state.productionReadinessSummary = computeProductionReadinessSummary(state.productionReadiness);
+      renderProductionReadiness();
+    } catch (err) {
+      state.productionReadiness = [];
+      state.productionReadinessSummary = null;
+      renderProductionReadiness();
+      setError(apiErrorMessage(err, "Production readiness unavailable."));
+    }
+  }
+
+  async function runProductionReadinessFromUi() {
+    if (!api()?.runProductionReadiness || !state.currentCaseId) {
+      setError("Select a patient case before running production readiness.");
+      return;
+    }
+    try {
+      const result = await api().runProductionReadiness(state.currentCaseId);
+      state.productionReadiness = result.readiness || [];
+      state.productionReadinessSummary = result.summary || computeProductionReadinessSummary(state.productionReadiness);
+      renderProductionReadiness();
+      await loadAuditLog();
+      await loadCaseTimeline();
+      state.currentCaseReport = null;
+      renderClinicalReportBuilder();
+      setStatusText("Production readiness check completed.");
+    } catch (err) {
+      setError(apiErrorMessage(err, "Production readiness check failed."));
+    }
+  }
+
+  const RELEASE_STATUS_LABELS = {
+    draft: "draft",
+    testing: "testing",
+    release_candidate: "release candidate",
+    approved: "approved",
+    archived: "archived"
+  };
+
+  function releaseBadgeClass(status) {
+    if (status === "approved" || status === "release_candidate") return "badge-success";
+    if (status === "archived") return "badge-danger";
+    return "badge-info";
+  }
+
+  function readReleaseForm() {
+    return {
+      version: byId("releaseVersion")?.value || "v0.1",
+      name: byId("releaseName")?.value || "",
+      status: byId("releaseStatus")?.value || "draft",
+      description: byId("releaseDescription")?.value || "",
+      notes: byId("releaseNotes")?.value || ""
+    };
+  }
+
+  function renderReleaseManager() {
+    const list = byId("releaseManagerList");
+    const summary = byId("releaseManagerSummary");
+    const releases = state.releases || [];
+    const active = releases.filter(item => item.status !== "archived");
+    if (summary) {
+      summary.textContent = `${releases.length} release(s) · ${active.length} active · internal PMAS version snapshots`;
+    }
+    if (!list) return;
+    if (!releases.length) {
+      list.innerHTML = '<div class="hint">No releases yet.</div>';
+      return;
+    }
+    list.innerHTML = releases.map(release => `
+      <div class="reconstruction-history-row" data-release-id="${escapeHtml(release.releaseId)}">
+        <div class="reconstruction-history-main">
+          <strong>${escapeHtml(release.version || "v0.1")} · ${escapeHtml(release.name || "PMAS release")}</strong>
+          <div class="reconstruction-history-id">${escapeHtml(release.releaseId)} · ${escapeHtml(formatDateTime(release.createdAt))}</div>
+          <div class="reconstruction-history-id">${escapeHtml(release.description || release.notes || "—")}</div>
+        </div>
+        <div class="reconstruction-history-cell"><span class="badge ${escapeHtml(releaseBadgeClass(release.status))}">${escapeHtml(RELEASE_STATUS_LABELS[release.status] || release.status || "draft")}</span></div>
+        <div class="reconstruction-history-cell">QA ${Math.round(Number(release.qaScore || 0))}/100</div>
+        <div class="reconstruction-history-cell">readiness ${Math.round(Number(release.readinessScore || 0))}/100</div>
+        <div class="reconstruction-history-actions">
+          <button class="btn btn-sm" data-release-action="promote" ${release.status === "release_candidate" || release.status === "approved" || release.status === "archived" ? "disabled" : ""}>candidate</button>
+          <button class="btn btn-sm" data-release-action="clone">clone</button>
+          <button class="btn btn-sm" data-release-action="export">export</button>
+          <button class="btn btn-sm btn-danger" data-release-action="archive" ${release.status === "archived" ? "disabled" : ""}>archive</button>
+        </div>
+      </div>
+      ${(release.validation?.checks || []).map(check => `
+        <div class="reconstruction-history-row is-muted">
+          <div class="reconstruction-history-main">
+            <strong>${escapeHtml(check.title || "Release check")}</strong>
+            <div class="reconstruction-history-id">${escapeHtml(check.description || "—")}</div>
+          </div>
+          <div class="reconstruction-history-cell"><span class="badge ${escapeHtml(check.status === "passed" ? "badge-success" : "badge-danger")}">${escapeHtml(check.status || "failed")}</span></div>
+          <div class="reconstruction-history-cell"></div>
+          <div class="reconstruction-history-cell"></div>
+        </div>
+      `).join("")}
+    `).join("");
+  }
+
+  async function loadReleases() {
+    if (!api()?.listReleases) {
+      state.releases = [];
+      renderReleaseManager();
+      return;
+    }
+    try {
+      state.releases = await api().listReleases({ status: "all" });
+      renderReleaseManager();
+    } catch (err) {
+      state.releases = [];
+      renderReleaseManager();
+      setError(apiErrorMessage(err, "Release Manager unavailable."));
+    }
+  }
+
+  async function createReleaseFromUi() {
+    if (!api()?.createRelease) return;
+    try {
+      const release = await api().createRelease(readReleaseForm());
+      await loadReleases();
+      await loadAuditLog();
+      await loadCaseTimeline();
+      setStatusText(`Release created: ${release.version} · ${release.status}`);
+    } catch (err) {
+      setError(apiErrorMessage(err, "Release creation failed."));
+    }
+  }
+
+  function downloadReleaseReport(report) {
+    const releaseId = String(report?.release?.releaseId || "release").replace(/[^\w.-]+/g, "_");
+    const blob = new Blob([JSON.stringify(report, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `pmas-release-summary-${releaseId}.json`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  async function handleReleaseClick(event) {
+    const button = event.target.closest("[data-release-action]");
+    if (!button) return;
+    const row = button.closest("[data-release-id]");
+    const releaseId = row?.dataset?.releaseId || "";
+    if (!releaseId) return;
+    const action = button.dataset.releaseAction;
+    try {
+      if (action === "promote") {
+        const release = await api().updateReleaseStatus(releaseId, "release_candidate");
+        if (release.validation?.blocked) {
+          state.releases = [release, ...state.releases.filter(item => item.releaseId !== release.releaseId)];
+          renderReleaseManager();
+          setError("Release validation failed. Resolve failed checks before promotion.");
+          return;
+        }
+        setStatusText("Release promoted to release_candidate.");
+      }
+      if (action === "archive") {
+        await api().archiveRelease(releaseId);
+        setStatusText("Release archived.");
+      }
+      if (action === "clone") {
+        await api().cloneRelease(releaseId);
+        setStatusText("Release cloned as draft.");
+      }
+      if (action === "export") {
+        const report = await api().getReleaseReport(releaseId);
+        downloadReleaseReport(report);
+        setStatusText("Release Summary Report exported.");
+      }
+      await loadReleases();
+      await loadAuditLog();
+      await loadCaseTimeline();
+    } catch (err) {
+      const blocked = err.release || err.details || null;
+      if (blocked?.validation?.checks) {
+        state.releases = [blocked, ...state.releases.filter(item => item.releaseId !== blocked.releaseId)];
+        renderReleaseManager();
+      }
+      setError(apiErrorMessage(err, "Release action failed."));
+    }
+  }
+
+  function pluginBadgeClass(plugin) {
+    if (!plugin?.enabled) return "badge-danger";
+    if (plugin.builtIn) return "badge-success";
+    return "badge-info";
+  }
+
+  function readPluginForm() {
+    return {
+      pluginId: byId("pluginIdInput")?.value || "",
+      name: byId("pluginNameInput")?.value || "",
+      version: byId("pluginVersionInput")?.value || "v1",
+      category: byId("pluginCategoryInput")?.value || "custom",
+      author: byId("pluginAuthorInput")?.value || "",
+      description: byId("pluginDescriptionInput")?.value || "",
+      compatibleVersion: "v1",
+      extensionPoints: (byId("pluginExtensionPointsInput")?.value || "")
+        .split(",")
+        .map(item => item.trim())
+        .filter(Boolean),
+      dependencies: []
+    };
+  }
+
+  function renderPluginManager() {
+    const list = byId("pluginManagerList");
+    const summary = byId("pluginManagerSummary");
+    const plugins = state.plugins || [];
+    const pluginSummary = state.pluginSummary || {};
+    if (summary) {
+      summary.textContent = `${pluginSummary.pluginsCount || plugins.length} plugin(s) · ${pluginSummary.enabledCount || plugins.filter(item => item.enabled).length} enabled · ${pluginSummary.builtInCount || plugins.filter(item => item.builtIn).length} built-in`;
+    }
+    if (!list) return;
+    if (!plugins.length) {
+      list.innerHTML = '<div class="hint">No plugins registered.</div>';
+      return;
+    }
+    list.innerHTML = plugins.map(plugin => `
+      <div class="reconstruction-history-row" data-plugin-id="${escapeHtml(plugin.pluginId)}">
+        <div class="reconstruction-history-main">
+          <strong>${escapeHtml(plugin.name || "PMAS Plugin")}</strong>
+          <div class="reconstruction-history-id">${escapeHtml(plugin.pluginId)} · ${escapeHtml(plugin.author || "Unknown")}</div>
+          <div class="reconstruction-history-id">${escapeHtml(plugin.description || "—")}</div>
+        </div>
+        <div class="reconstruction-history-cell">${escapeHtml(plugin.version || "v1")}</div>
+        <div class="reconstruction-history-cell">${escapeHtml(plugin.category || "custom")}</div>
+        <div class="reconstruction-history-cell"><span class="badge ${escapeHtml(pluginBadgeClass(plugin))}">${plugin.enabled ? "enabled" : "disabled"}${plugin.builtIn ? " · built-in" : ""}</span></div>
+        <div class="reconstruction-history-actions">
+          <button class="btn btn-sm" data-plugin-action="enable" ${plugin.enabled ? "disabled" : ""}>enable</button>
+          <button class="btn btn-sm" data-plugin-action="disable" ${!plugin.enabled ? "disabled" : ""}>disable</button>
+          <button class="btn btn-sm btn-danger" data-plugin-action="unregister" ${plugin.builtIn ? "disabled" : ""}>unregister</button>
+        </div>
+      </div>
+      <div class="reconstruction-history-row is-muted">
+        <div class="reconstruction-history-main">
+          <strong>Extension points</strong>
+          <div class="reconstruction-history-id">${escapeHtml((plugin.extensionPoints || []).join(", ") || "none")}</div>
+        </div>
+        <div class="reconstruction-history-cell">API ${escapeHtml(plugin.compatibleVersion || "v1")}</div>
+        <div class="reconstruction-history-cell">deps ${(plugin.dependencies || []).length}</div>
+        <div class="reconstruction-history-cell"></div>
+      </div>
+    `).join("");
+  }
+
+  async function loadPlugins() {
+    if (!api()?.listPlugins) {
+      state.plugins = [];
+      state.pluginSummary = null;
+      renderPluginManager();
+      return;
+    }
+    try {
+      const result = await api().listPlugins({ category: "all", enabled: "all" });
+      state.plugins = result.plugins || [];
+      state.pluginSummary = result.summary || null;
+      renderPluginManager();
+    } catch (err) {
+      state.plugins = [];
+      state.pluginSummary = null;
+      renderPluginManager();
+      setError(apiErrorMessage(err, "Plugin Manager unavailable."));
+    }
+  }
+
+  async function registerPluginFromUi() {
+    if (!api()?.registerPlugin) return;
+    try {
+      const plugin = await api().registerPlugin(readPluginForm());
+      setInputValue("pluginIdInput", "");
+      setInputValue("pluginNameInput", "");
+      setInputValue("pluginAuthorInput", "");
+      setInputValue("pluginDescriptionInput", "");
+      setInputValue("pluginExtensionPointsInput", "");
+      await loadPlugins();
+      await loadAuditLog();
+      setStatusText(`Plugin registered: ${plugin.name}`);
+    } catch (err) {
+      setError(apiErrorMessage(err, "Plugin registration failed."));
+    }
+  }
+
+  async function handlePluginClick(event) {
+    const button = event.target.closest("[data-plugin-action]");
+    if (!button) return;
+    const row = button.closest("[data-plugin-id]");
+    const pluginId = row?.dataset?.pluginId || "";
+    if (!pluginId) return;
+    try {
+      if (button.dataset.pluginAction === "enable") {
+        await api().enablePlugin(pluginId);
+        setStatusText("Plugin enabled.");
+      }
+      if (button.dataset.pluginAction === "disable") {
+        await api().disablePlugin(pluginId);
+        setStatusText("Plugin disabled.");
+      }
+      if (button.dataset.pluginAction === "unregister") {
+        await api().unregisterPlugin(pluginId);
+        setStatusText("Plugin unregistered.");
+      }
+      await loadPlugins();
+      await loadAuditLog();
+    } catch (err) {
+      setError(apiErrorMessage(err, "Plugin action failed."));
     }
   }
 
@@ -1820,6 +2225,7 @@
     { sectionId: "case_audit", label: "Audit Summary" },
     { sectionId: "backup_status", label: "Backup Status" },
     { sectionId: "qa_summary", label: "QA Summary" },
+    { sectionId: "production_readiness", label: "Production Readiness Summary" },
     { sectionId: "reconstruction_summary", label: "Reconstruction Summary" },
     { sectionId: "model_readiness", label: "Model Readiness" },
     { sectionId: "landmarks_summary", label: "Landmarks Summary" },
@@ -2095,6 +2501,10 @@
           qaSummary: report.qaSummary || state.qaSummary || computeQaSummary(state.qaChecks),
           qaChecks: report.qaChecks || state.qaChecks || []
         },
+        production_readiness: {
+          summary: report.productionReadinessSummary || state.productionReadinessSummary || computeProductionReadinessSummary(state.productionReadiness),
+          readiness: report.productionReadiness || state.productionReadiness || []
+        },
         reconstruction_summary: report.reconstructionJobs || report.jobs || [],
         model_readiness: report.readinessScores || [],
         landmarks_summary: {
@@ -2189,6 +2599,21 @@
           item.severity || "medium",
           item.category || "system",
           item.title || "QA check"
+        ]));
+      }
+      if (sectionId === "production_readiness") {
+        const summary = content?.summary || {};
+        return table(["Field", "Value"], [
+          ["Production score", Number.isFinite(Number(summary.productionScore)) ? `${Math.round(Number(summary.productionScore))}/100` : "—"],
+          ["Readiness level", summary.readinessLevel || "—"],
+          ["Passed checks", String(summary.passedChecks || 0)],
+          ["Warnings", String(summary.warnings || 0)],
+          ["Failed checks", String(summary.failedChecks || 0)]
+        ]) + table(["Scope", "Level", "Score", "Checks"], (content?.readiness || []).map(item => [
+          item.scope || "case",
+          item.level || item.readinessLevel || "limited",
+          Number.isFinite(Number(item.score || item.productionScore)) ? `${Math.round(Number(item.score || item.productionScore))}/100` : "—",
+          (item.checks || []).map(check => `${check.status || "warning"}: ${check.title || "check"}`).join("; ") || "—"
         ]));
       }
       if (sectionId === "model_readiness") {
@@ -3730,7 +4155,11 @@
       insight_generated: "insight generated",
       insight_reviewed: "insight reviewed",
       qa_check_completed: "QA check completed",
-      qa_issue_detected: "QA issue detected"
+      qa_issue_detected: "QA issue detected",
+      readiness_check_completed: "readiness check completed",
+      release_created: "release created",
+      release_promoted: "release promoted",
+      release_archived: "release archived"
     };
     return labels[type] || String(type || "note").replace(/_/g, " ");
   }
@@ -3894,6 +4323,11 @@
     state.caseTimeline = null;
     state.caseTeam = { ownerId: "", teamMembers: [], permissions: {} };
     state.auditEvents = [];
+    state.productionReadiness = [];
+    state.productionReadinessSummary = null;
+    state.releases = [];
+    state.plugins = [];
+    state.pluginSummary = null;
     applySurgicalPlanningForm(null);
     applySurgicalSimulationDraft({});
     resetJobUi();
@@ -3903,6 +4337,12 @@
     await loadComparisonModels();
     await loadComparisons();
     await loadCaseTeam();
+    await loadAuditLog();
+    await loadClinicalInsights();
+    await loadQaDashboard();
+    await loadProductionReadiness();
+    await loadReleases();
+    await loadPlugins();
     await loadSurgicalPlanningNotes();
     await loadSurgicalSimulations();
     await loadCaseTimeline();
@@ -4103,6 +4543,10 @@
       await loadCaseTeam();
       await loadAuditLog();
       await loadClinicalInsights();
+      await loadQaDashboard();
+      await loadProductionReadiness();
+      await loadReleases();
+      await loadPlugins();
       await loadSurgicalPlanningNotes();
       await loadSurgicalSimulations();
       await loadCaseTimeline();
@@ -4133,6 +4577,9 @@
       loadAuditLog(),
       loadClinicalInsights(),
       loadQaDashboard(),
+      loadProductionReadiness(),
+      loadReleases(),
+      loadPlugins(),
       loadSurgicalPlanningNotes(),
       loadSurgicalSimulations(),
       loadCaseTimeline()
@@ -4148,6 +4595,11 @@
     state.caseTeam = { ownerId: "", teamMembers: [], permissions: {} };
     state.auditEvents = [];
     state.clinicalInsights = [];
+    state.productionReadiness = [];
+    state.productionReadinessSummary = null;
+    state.releases = [];
+    state.plugins = [];
+    state.pluginSummary = null;
     ["reconstructionCasePatientName", "reconstructionCasePatientId", "reconstructionCaseNotes"].forEach(id => {
       const el = byId(id);
       if (el) el.value = "";
@@ -4158,6 +4610,9 @@
     renderCaseDashboard();
     renderCaseTeam();
     renderCaseTimeline();
+    renderProductionReadiness();
+    renderReleaseManager();
+    renderPluginManager();
     setStatusText("Ready to create a new patient case.");
     scheduleSessionAutoSave();
   }
@@ -4185,6 +4640,11 @@
         state.caseTeam = { ownerId: "", teamMembers: [], permissions: {} };
         state.auditEvents = [];
         state.clinicalInsights = [];
+        state.productionReadiness = [];
+        state.productionReadinessSummary = null;
+        state.releases = [];
+        state.plugins = [];
+        state.pluginSummary = null;
         applySurgicalPlanningForm(null);
         applySurgicalSimulationDraft({});
         resetJobUi();
@@ -4196,8 +4656,11 @@
       await loadCaseTeam();
       await loadAuditLog();
       await loadClinicalInsights();
-      await loadQaDashboard();
-      await loadSurgicalPlanningNotes();
+    await loadQaDashboard();
+    await loadProductionReadiness();
+    await loadReleases();
+    await loadPlugins();
+    await loadSurgicalPlanningNotes();
       await loadSurgicalSimulations();
       await loadCaseTimeline();
       await loadCaseMeasurements();
@@ -5315,6 +5778,10 @@
     const backupStatus = report?.backupStatus || {};
     const qaSummary = report?.qaSummary || state.qaSummary || {};
     const qaChecks = report?.qaChecks || state.qaChecks || [];
+    const productionSummary = report?.productionReadinessSummary || state.productionReadinessSummary || {};
+    const productionReadiness = report?.productionReadiness || state.productionReadiness || [];
+    const releaseSummary = report?.releaseSummary || {};
+    const releases = report?.releaseCandidates || state.releases || [];
     const measurements = report?.measurements || [];
     const measurementTemplateReport = report?.measurementTemplateReport || {};
     const autoMeasurementReport = report?.autoMeasurementReport || {};
@@ -5346,6 +5813,10 @@
       `Backup status: version ${backupStatus.backupVersion || "v1"} · local backup ${backupStatus.localBackupSupported === false ? "disabled" : "supported"} · cloud sync ${backupStatus.cloudSyncEnabled ? "enabled" : "disabled"}`,
       `QA summary: score ${Number.isFinite(Number(qaSummary.qaScore)) ? Math.round(Number(qaSummary.qaScore)) + "/100" : "—"} · readiness ${qaSummary.readinessLevel || "—"} · warnings ${qaSummary.warningsCount || 0} · failures ${qaSummary.failuresCount || 0}`,
       ...qaChecks.slice(0, 30).map(item => `- [${item.status || "warning"}:${item.severity || "medium"}] ${item.category || "system"} · ${item.title || "QA check"} · ${item.description || "—"}`),
+      `Production readiness: score ${Number.isFinite(Number(productionSummary.productionScore)) ? Math.round(Number(productionSummary.productionScore)) + "/100" : "—"} · level ${productionSummary.readinessLevel || "—"} · warnings ${productionSummary.warnings || 0} · failures ${productionSummary.failedChecks || 0}`,
+      ...productionReadiness.slice(0, 20).map(item => `- [${item.scope || "case"}] ${item.level || item.readinessLevel || "limited"} · ${Math.round(Number(item.score || item.productionScore || 0))}/100 · passed ${item.passedChecks || 0}, warnings ${item.warnings || 0}, failed ${item.failedChecks || 0}`),
+      `Release summary: ${releaseSummary.releasesCount || releases.length || 0} release(s) · active ${releaseSummary.activeCount || releases.filter(item => item.status !== "archived").length || 0} · approved ${releaseSummary.approvedCount || 0}`,
+      ...releases.slice(0, 20).map(item => `- ${item.version || "v0.1"} · ${item.status || "draft"} · QA ${Math.round(Number(item.qaScore || 0))}/100 · readiness ${Math.round(Number(item.readinessScore || 0))}/100 · ${item.name || item.releaseId}`),
       `Selected analysis presets: ${Number(clinicalAnalysisPresetReport.selectedAnalysisPresets?.length || report?.selectedAnalysisPresets?.length || 0)}`,
       ...(clinicalAnalysisPresetReport.selectedAnalysisPresets || report?.selectedAnalysisPresets || []).map(item => `- ${item.name || item.presetId}: landmarks ${item.generatedLandmarksCount || 0}, measurements ${item.generatedMeasurementsCount || 0}`),
       `Analysis preset warnings: ${(clinicalAnalysisPresetReport.warnings || []).join("; ") || "none"}`,
@@ -5770,6 +6241,11 @@
     byId("btnPreviewBackup")?.addEventListener("click", previewImportedBackup);
     byId("btnRestoreBackup")?.addEventListener("click", restoreImportedBackup);
     byId("btnRunQaValidation")?.addEventListener("click", runQaValidationFromUi);
+    byId("btnRunProductionReadiness")?.addEventListener("click", runProductionReadinessFromUi);
+    byId("btnCreateRelease")?.addEventListener("click", createReleaseFromUi);
+    byId("releaseManagerList")?.addEventListener("click", handleReleaseClick);
+    byId("btnRegisterPlugin")?.addEventListener("click", registerPluginFromUi);
+    byId("pluginManagerList")?.addEventListener("click", handlePluginClick);
     byId("qaChecksList")?.addEventListener("click", handleQaCheckClick);
     byId("btnDashboardCreateCase")?.addEventListener("click", resetCaseFormForCreate);
     byId("caseDashboardList")?.addEventListener("click", handleCaseDashboardClick);
@@ -5918,6 +6394,9 @@
     renderAccessModeUi();
     renderBackupRecovery();
     renderQaDashboard();
+    renderProductionReadiness();
+    renderReleaseManager();
+    renderPluginManager();
     renderClinicalAnalysisPresets();
     renderClinicalReportBuilder();
     renderMeasurementTemplates();
@@ -5927,7 +6406,7 @@
     resetJobUi();
     state.restoreCandidate = readSavedSession();
     loadCases().then(async () => {
-      await Promise.all([loadComparisonModels(), loadComparisons(), loadHistory(), loadCaseTeam(), loadAuditLog(), loadClinicalInsights(), loadQaDashboard(), loadSurgicalPlanningNotes(), loadSurgicalSimulations(), loadCaseTimeline(), loadCaseLandmarks(), loadLandmarkTemplates()]);
+      await Promise.all([loadComparisonModels(), loadComparisons(), loadHistory(), loadCaseTeam(), loadAuditLog(), loadClinicalInsights(), loadQaDashboard(), loadProductionReadiness(), loadReleases(), loadPlugins(), loadSurgicalPlanningNotes(), loadSurgicalSimulations(), loadCaseTimeline(), loadCaseLandmarks(), loadLandmarkTemplates()]);
       renderSessionRecoveryPrompt(state.restoreCandidate);
     });
   }
