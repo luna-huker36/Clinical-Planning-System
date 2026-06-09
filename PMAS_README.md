@@ -1,76 +1,76 @@
 # PMAS - Patient/Plastic Medical Analysis System
 
-PMAS is a browser-based clinical planning and documentation platform for facial analysis workflows. The current version is a demo/MVP foundation that connects 2D analysis, 3D model viewing, patient cases, reconstruction workflow, landmarks, measurements, reports, timeline, audit, QA checks, backups, release management and plugin architecture.
+PMAS - это браузерная система для анализа лица, клинического планирования и документирования patient case. Текущая версия является demo/MVP foundation: она объединяет 2D-анализ, 3D-viewer, patient cases, reconstruction workflow, landmarks, measurements, reports, timeline, audit, QA checks, backup/recovery, release management и plugin architecture.
 
-Live site:
+Сайт:
 
 https://luna-huker36.github.io/Clinical-Planning-System/
 
-Repository:
+Репозиторий:
 
 https://github.com/luna-huker36/Clinical-Planning-System
 
-## Important Status
+## Важный статус
 
-PMAS v1.0 is suitable for product demos, workflow demonstrations and architecture review.
+PMAS v1.0 подходит для демонстрации продукта, показа workflow и обсуждения архитектуры.
 
-PMAS v1.0 is not a certified medical device, not a diagnostic system and not a replacement for physician review.
+PMAS v1.0 не является сертифицированным медицинским изделием, диагностической системой или заменой врача.
 
-The reconstruction backend currently works as a scaffold/demo pipeline. By default it uses mock reconstruction output and a test GLB model to demonstrate the workflow.
+Текущий reconstruction backend работает как scaffold/demo pipeline. По умолчанию он использует mock reconstruction output и тестовую GLB-модель, чтобы показать процесс работы системы.
 
-## What PMAS Does
+## Что делает PMAS
 
-PMAS organizes the full case workflow:
+PMAS собирает полный workflow вокруг patient case:
 
-1. Create or open a patient case.
-2. Load a 2D photo or 3D model.
-3. Run or review reconstruction workflow.
-4. Add landmarks and measurements.
-5. Review clinical observations.
-6. Run QA and production readiness checks.
-7. Generate reports.
-8. Track all case activity through timeline and audit log.
-9. Export or restore local backup data.
-10. Manage internal release candidates and plugin registry.
+1. Создание или открытие кейса пациента.
+2. Загрузка 2D-фото или 3D-модели.
+3. Запуск или просмотр reconstruction workflow.
+4. Добавление landmarks и measurements.
+5. Просмотр clinical observations.
+6. Запуск QA и production readiness checks.
+7. Генерация отчётов.
+8. Отслеживание истории через timeline и audit log.
+9. Экспорт или восстановление локального backup.
+10. Управление внутренними release candidates и plugin registry.
 
-## Core Modules
+## Основные модули
 
 ### 2D Analysis
 
-The 2D module allows the user to load a facial photo and perform planning measurements directly in the browser.
+2D-модуль позволяет загрузить фотографию лица и выполнять планировочные измерения прямо в браузере.
 
-Features:
+Возможности:
 
-- image upload;
-- AI face landmarks in browser;
-- manual points, lines, angles, vectors and zones;
-- calibration in millimeters;
-- asymmetry comparison;
+- загрузка изображения;
+- AI face landmarks в браузере;
+- ручные точки, линии, углы, векторы и зоны;
+- калибровка в миллиметрах;
+- анализ асимметрии;
 - before/after overlay;
-- PDF and DOCX export.
+- экспорт в PDF и DOCX.
 
 ### 3D Viewer
 
-The 3D module allows the user to inspect and annotate a facial model.
+3D-модуль позволяет открыть, осмотреть и разметить лицевую 3D-модель.
 
-Features:
+Возможности:
 
-- GLB/GLTF model loading;
-- orbit, pan and zoom controls;
-- wireframe, normals and lighting modes;
-- 3D points and measurements;
-- 3D landmarks;
-- planning element list;
-- PDF and DOCX export.
+- загрузка GLB/GLTF;
+- вращение, перемещение и масштабирование модели;
+- режимы wireframe, normals и освещения;
+- 3D-точки и измерения;
+- 3D-landmarks;
+- список элементов плана;
+- экспорт в PDF и DOCX.
 
 ### Patient Cases
 
-Patient cases are the central unit of PMAS.
+Patient case - центральная сущность PMAS.
 
-Each case can contain:
+Каждый case может содержать:
 
-- patient data;
-- notes;
+- данные пациента;
+- заметки;
 - reconstruction jobs;
 - model metadata;
 - landmarks;
@@ -87,42 +87,42 @@ Each case can contain:
 
 ### Reconstruction Workflow
 
-The reconstruction workflow demonstrates the planned pipeline from source files to a PMAS-ready 3D model.
+Reconstruction workflow показывает запланированный путь от исходных файлов к PMAS-ready 3D-модели.
 
 Pipeline:
 
-1. Upload input files.
-2. Validate input.
-3. Analyze frames.
-4. Extract frames from video when needed.
-5. Run frame quality checks.
-6. Generate or mock segmentation masks.
-7. Pause for frame review.
-8. Run reconstruction engine.
-9. Convert mesh to GLB.
-10. Run mesh cleanup.
-11. Align model for PMAS.
-12. Optionally request manual adjustment.
-13. Produce final model metadata.
+1. Загрузка входных файлов.
+2. Валидация input.
+3. Анализ кадров.
+4. Извлечение кадров из видео при необходимости.
+5. Проверка качества кадров.
+6. Генерация или mock segmentation masks.
+7. Пауза для frame review.
+8. Запуск reconstruction engine.
+9. Конвертация mesh в GLB.
+10. Mesh cleanup.
+11. Alignment модели под PMAS.
+12. Опциональная ручная корректировка.
+13. Формирование финальной model metadata.
 
-Current limitation:
+Текущее ограничение:
 
-- the default engine is a mock engine;
-- external CLI integration points exist, but production reconstruction is not fully configured;
-- the output should be treated as demo data unless a real reconstruction engine is connected.
+- default engine является mock engine;
+- точки интеграции с external CLI есть, но production reconstruction ещё не настроен полностью;
+- output нужно считать demo data, если не подключён реальный reconstruction engine.
 
 ### Landmarks
 
-Landmarks represent key facial or anatomical reference points.
+Landmarks - это ключевые facial/anatomical reference points.
 
-Supported data:
+Поддерживаемые данные:
 
 - landmark ID;
 - case ID;
 - model ID;
-- name;
-- category;
-- 3D position;
+- название;
+- категория;
+- 3D-позиция;
 - source;
 - detection mode;
 - confidence;
@@ -130,13 +130,13 @@ Supported data:
 - required flag;
 - template metadata.
 
-Landmarks are used by measurements, clinical observations, QA checks and reports.
+Landmarks используются в measurements, clinical observations, QA checks и reports.
 
 ### Measurements
 
-Measurements store clinical planning values and annotations.
+Measurements хранят значения и аннотации для клинического планирования.
 
-Supported types:
+Поддерживаемые типы:
 
 - distance;
 - angle;
@@ -146,28 +146,28 @@ Supported types:
 - ratio;
 - custom.
 
-Measurements can be manual or template-driven. They can be linked to landmarks and included in reports, QA checks and clinical insights.
+Measurements могут быть ручными или template-driven. Они могут быть связаны с landmarks и попадать в reports, QA checks и clinical insights.
 
 ### Clinical Analysis
 
-PMAS includes a rule-based clinical analysis layer.
+PMAS содержит rule-based clinical analysis layer.
 
-It can summarize:
+Он может суммировать:
 
-- selected clinical presets;
+- выбранные clinical presets;
 - generated landmarks;
 - generated measurements;
 - missing data;
 - warnings;
 - comparison results.
 
-This module does not make diagnoses and does not provide medical recommendations.
+Этот модуль не ставит диагнозы и не даёт медицинские рекомендации.
 
 ### Clinical Insights Engine
 
-The Clinical Insights Engine creates structured observations from case data.
+Clinical Insights Engine создаёт структурированные observations на основе данных кейса.
 
-It analyzes:
+Он анализирует:
 
 - readiness score;
 - measurements;
@@ -177,14 +177,14 @@ It analyzes:
 - comparison results;
 - simulation results.
 
-Example observations:
+Примеры observations:
 
-- "Some landmarks have low confidence."
-- "Model readiness score requires attention."
-- "Required landmarks are missing."
-- "Some measurements require manual review."
+- "Некоторые landmarks имеют низкую уверенность."
+- "Readiness score модели требует внимания."
+- "Отсутствуют обязательные landmarks."
+- "Некоторые измерения требуют ручной проверки."
 
-Supported severity values:
+Поддерживаемые severity:
 
 - info;
 - warning;
@@ -192,7 +192,7 @@ Supported severity values:
 
 ### Reports
 
-PMAS can generate structured report data for:
+PMAS может формировать структурированные данные отчётов:
 
 - clinical report;
 - case report;
@@ -201,7 +201,7 @@ PMAS can generate structured report data for:
 - system report;
 - release summary report.
 
-Reports can include:
+Reports могут включать:
 
 - patient case summary;
 - reconstruction summary;
@@ -216,9 +216,9 @@ Reports can include:
 
 ### Timeline
 
-The timeline shows the history of a patient case.
+Timeline показывает историю patient case.
 
-It can include:
+Он может включать:
 
 - reconstruction events;
 - model events;
@@ -232,9 +232,9 @@ It can include:
 
 ### Audit Log
 
-Audit Log records important user actions inside a patient case.
+Audit Log фиксирует важные действия пользователя внутри patient case.
 
-Examples:
+Примеры событий:
 
 - case created;
 - case updated;
@@ -250,9 +250,9 @@ Examples:
 - QA run;
 - readiness check run;
 - release action;
-- plugin enabled or disabled.
+- plugin enabled/disabled.
 
-Audit events contain:
+Audit event содержит:
 
 - event ID;
 - case ID;
@@ -266,22 +266,22 @@ Audit events contain:
 
 ### Team Collaboration
 
-PMAS supports a basic collaboration model.
+PMAS поддерживает базовую модель командной работы.
 
-Supported roles:
+Роли:
 
 - owner;
 - surgeon;
 - assistant;
 - viewer.
 
-Each role has a permissions list. The current implementation is suitable for demo and data modeling. Production-ready backend authentication and permission enforcement still need to be added.
+У каждой роли есть список permissions. Текущая реализация подходит для demo и моделирования данных. Для production ещё нужно добавить полноценную backend authentication и enforcement прав.
 
 ### Backup & Recovery
 
-PMAS supports local backup and recovery through PMAS Backup JSON.
+PMAS поддерживает локальный backup/recovery через PMAS Backup JSON.
 
-Backup includes:
+Backup включает:
 
 - patient cases;
 - reconstruction jobs;
@@ -294,27 +294,27 @@ Backup includes:
 - simulations;
 - clinical insights;
 - QA/readiness data;
-- plugin/release metadata where available.
+- plugin/release metadata, если доступно.
 
-Backup supports:
+Backup поддерживает:
 
 - export full backup;
-- validate backup format;
-- validate backup version;
-- verify checksum;
-- show preview;
-- restore selected cases or full backup data.
+- validation формата;
+- validation версии;
+- checksum verification;
+- preview;
+- восстановление selected cases или full backup data.
 
-Current limitation:
+Текущее ограничение:
 
-- backup focuses on JSON application state;
-- binary model artifacts and durable external storage need a stronger production strategy.
+- backup ориентирован на JSON application state;
+- binary model artifacts и durable external storage требуют отдельной production-стратегии.
 
 ### QA Dashboard
 
-The QA Dashboard checks the technical completeness of each case.
+QA Dashboard проверяет техническую готовность каждого case.
 
-It validates:
+Он проверяет:
 
 - reconstruction status;
 - GLB availability;
@@ -341,13 +341,13 @@ QA output:
 }
 ```
 
-This is technical and product validation, not medical validation.
+Это техническая и продуктовая валидация, не медицинская валидация.
 
 ### Production Readiness
 
-Production Readiness checks whether a case, model, report or system is ready for internal working use.
+Production Readiness проверяет, готов ли case, model, report или system к внутреннему рабочему использованию.
 
-Supported scopes:
+Поддерживаемые scope:
 
 - case;
 - model;
@@ -361,18 +361,18 @@ Readiness levels:
 - ready;
 - production_ready.
 
-This is an internal PMAS readiness check, not medical certification.
+Это внутренняя PMAS-проверка готовности, не медицинская сертификация.
 
 ### Release Candidate Manager
 
-The Release Candidate Manager supports internal PMAS version snapshots.
+Release Candidate Manager поддерживает внутренние snapshots версий PMAS.
 
-It can:
+Он умеет:
 
-- create release candidates;
+- create release candidate;
 - promote release status;
-- archive releases;
-- clone releases;
+- archive release;
+- clone release;
 - export release summary.
 
 Release statuses:
@@ -383,13 +383,13 @@ Release statuses:
 - approved;
 - archived.
 
-The release manager is not a Git replacement. It is an internal product readiness and snapshot layer.
+Release manager не заменяет Git. Это внутренний слой product readiness и snapshot management.
 
 ### Plugin Architecture
 
-PMAS includes a Plugin Registry and Plugin Manager.
+PMAS содержит Plugin Registry и Plugin Manager.
 
-Plugin categories:
+Категории plugins:
 
 - reconstruction;
 - landmarks;
@@ -417,55 +417,55 @@ Built-in plugins:
 - Clinical Analysis Presets;
 - Report Builder.
 
-Current limitation:
+Текущее ограничение:
 
-- registry and validation are implemented;
-- runtime loading, plugin sandboxing and lifecycle hooks are future work.
+- registry и validation реализованы;
+- runtime loading, plugin sandboxing и lifecycle hooks относятся к future work.
 
-## System Architecture
+## Архитектура системы
 
-PMAS currently consists of:
+PMAS сейчас состоит из:
 
 - static browser frontend;
-- modular JavaScript files under `assets/js`;
-- Express backend scaffold under `backend`;
-- reconstruction API under `backend/reconstruction`;
-- local model assets under `models`;
-- localStorage fallback for frontend demo mode;
-- in-memory backend store for backend scaffold mode.
+- модульных JavaScript-файлов в `assets/js`;
+- Express backend scaffold в `backend`;
+- reconstruction API в `backend/reconstruction`;
+- локальных model assets в `models`;
+- localStorage fallback для frontend demo mode;
+- in-memory backend store для backend scaffold mode.
 
-Important files:
+Ключевые файлы:
 
-- `index.html` - main application page;
-- `assets/js/app.js` - 3D viewer and planning logic;
+- `index.html` - главная страница приложения;
+- `assets/js/app.js` - 3D viewer и planning logic;
 - `assets/js/12-reconstruction.js` - PMAS reconstruction/case UI controller;
-- `assets/js/15-reconstruction-api.js` - frontend PMAS API adapter and mock fallback;
+- `assets/js/15-reconstruction-api.js` - frontend PMAS API adapter и mock fallback;
 - `backend/server.js` - Express server;
 - `backend/reconstruction/routes.js` - reconstruction API routes;
 - `backend/reconstruction/store.js` - in-memory PMAS domain store;
-- `backend/reconstruction/reconstruction-results.js` - reports, timelines and result summaries;
+- `backend/reconstruction/reconstruction-results.js` - reports, timelines и result summaries;
 - `backend/reconstruction/clinical-insights-engine.js` - insights engine;
 - `backend/reconstruction/qa-validation-engine.js` - QA engine;
 - `backend/reconstruction/production-readiness-check.js` - readiness engine;
-- `backend/reconstruction/backup-recovery.js` - backup validation and export;
+- `backend/reconstruction/backup-recovery.js` - backup validation/export;
 - `backend/reconstruction/release-candidate-manager.js` - release manager logic;
 - `backend/reconstruction/plugin-architecture.js` - plugin registry definitions.
 
-## Running Locally
+## Локальный запуск
 
-Install dependencies:
+Установить зависимости:
 
 ```bash
 npm install
 ```
 
-Start the backend:
+Запустить backend:
 
 ```bash
 npm start
 ```
 
-Open frontend:
+Открыть frontend:
 
 ```text
 http://localhost:3000/
@@ -485,57 +485,57 @@ http://localhost:3000/?reconstructionMode=mock
 
 ## Demo Script
 
-Suggested demo flow:
+Рекомендуемый сценарий демонстрации:
 
-1. Open the PMAS site.
-2. Show 2D analysis with a sample face photo.
-3. Switch to 3D model viewer.
-4. Create a patient case.
-5. Attach or load model data.
-6. Show reconstruction workflow stages.
-7. Add landmarks.
-8. Add measurements.
-9. Open Clinical Insights.
-10. Run QA Dashboard checks.
-11. Run Production Readiness.
-12. Generate Case Report or Clinical Report.
-13. Open Timeline and Audit Log.
-14. Export PMAS Backup JSON.
-15. Show Release Manager.
-16. Show Plugin Manager and built-in plugins.
+1. Открыть сайт PMAS.
+2. Показать 2D analysis на тестовом фото лица.
+3. Перейти в 3D model viewer.
+4. Создать patient case.
+5. Привязать или загрузить model data.
+6. Показать stages reconstruction workflow.
+7. Добавить landmarks.
+8. Добавить measurements.
+9. Открыть Clinical Insights.
+10. Запустить QA Dashboard checks.
+11. Запустить Production Readiness.
+12. Сгенерировать Case Report или Clinical Report.
+13. Открыть Timeline и Audit Log.
+14. Экспортировать PMAS Backup JSON.
+15. Показать Release Manager.
+16. Показать Plugin Manager и built-in plugins.
 
-Recommended positioning:
+Рекомендуемое позиционирование:
 
-"PMAS v1.0 demonstrates the full product workflow and platform architecture. The next milestone is production hardening: persistence, authentication, real reconstruction integration, tests and clinical validation."
+"PMAS v1.0 показывает полный product workflow и platform architecture. Следующий milestone - production hardening: persistence, authentication, real reconstruction integration, tests и clinical validation."
 
-## Current Limitations
+## Текущие ограничения
 
-- No production database.
-- Backend state is currently in-memory.
-- Frontend mock mode uses localStorage.
-- Reconstruction engine is mock by default.
-- No production authentication.
-- Team permissions are modeled but not fully enforced by backend auth.
-- No clinical validation of measurements or observations.
-- Backup is JSON-first and does not fully solve durable artifact storage.
-- Plugin architecture has registry and extension points, but not runtime plugin execution.
-- No full automated test suite or CI gate yet.
+- Нет production database.
+- Backend state сейчас хранится in-memory.
+- Frontend mock mode использует localStorage.
+- Reconstruction engine по умолчанию mock.
+- Нет production authentication.
+- Team permissions смоделированы, но не полностью enforced backend auth.
+- Нет клинической валидации measurements или observations.
+- Backup в первую очередь JSON-first и не решает полностью durable artifact storage.
+- Plugin architecture имеет registry и extension points, но не runtime plugin execution.
+- Нет полноценного automated test suite и CI gate.
 
 ## PMAS v1.1 Priorities
 
-- Add persistent database and migrations.
-- Add authentication and backend permission enforcement.
-- Split large frontend controllers into feature modules.
-- Add automated unit, API and smoke tests.
-- Add strict API/domain schemas.
-- Improve backup to include artifact manifest and binary recovery strategy.
-- Improve report templates and export quality.
-- Add global immutable audit trail.
-- Configure real reconstruction backend integration.
+- Добавить persistent database и migrations.
+- Добавить authentication и backend permission enforcement.
+- Разделить крупные frontend controllers на feature modules.
+- Добавить automated unit, API и smoke tests.
+- Добавить строгие API/domain schemas.
+- Улучшить backup: artifact manifest и binary recovery strategy.
+- Улучшить report templates и качество export.
+- Добавить global immutable audit trail.
+- Настроить real reconstruction backend integration.
 
 ## PMAS v2.0 Vision
 
-Future PMAS can evolve into a medical planning platform with:
+В будущем PMAS может стать полноценной medical planning platform с:
 
 - real reconstruction workers;
 - durable case database;
@@ -543,19 +543,19 @@ Future PMAS can evolve into a medical planning platform with:
 - advanced model comparison;
 - specialty-specific clinical modules;
 - plugin marketplace;
-- enterprise audit, SSO and retention;
+- enterprise audit, SSO и retention;
 - clinical report template marketplace;
 - managed reconstruction processing service.
 
 ## Safety Notes
 
-PMAS should always keep the physician in control.
+PMAS должен сохранять врача в центре принятия решений.
 
-The system may highlight observations, warnings and data quality issues, but it must not:
+Система может подсвечивать observations, warnings и data quality issues, но не должна:
 
-- make diagnoses;
-- prescribe treatment;
-- replace clinician judgment;
-- hide uncertainty;
-- present mock reconstruction as real clinical output.
+- ставить диагнозы;
+- назначать лечение;
+- заменять clinical judgment врача;
+- скрывать uncertainty;
+- выдавать mock reconstruction за реальный clinical output.
 
