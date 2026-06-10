@@ -34,6 +34,7 @@
   });
 
   const ENDPOINTS = {
+    health: "/api/reconstruction/health",
     upload: "/api/reconstruction/upload",
     cases: "/api/reconstruction/cases",
     caseReport: caseId => `/api/reconstruction/cases/${encodeURIComponent(caseId)}/report`,
@@ -3194,11 +3195,29 @@
     return await backendJson(ENDPOINTS.plugin(normalizedPluginId), { method: "DELETE" }, ERROR_CODES.jobFailed);
   }
 
+  function updatePipelineBadge() {
+    try {
+      const badge = document.getElementById("reconstructionPipelineBadge");
+      if (!badge) return;
+      badge.textContent = reconstructionMode === "backend"
+        ? "PMAS Native Engine"
+        : "Mock pipeline (offline)";
+    } catch (err) {
+      console.warn("Unable to update reconstruction pipeline badge.", err);
+    }
+  }
+
   function setMode(mode) {
     if (mode !== "mock" && mode !== "backend") {
       throw apiError(ERROR_CODES.jobFailed, `Unsupported reconstruction mode: ${mode}`);
     }
     reconstructionMode = mode;
+    updatePipelineBadge();
+    try {
+      window.dispatchEvent(new CustomEvent("pmas-reconstruction-mode-changed", { detail: { mode } }));
+    } catch (err) {
+      console.warn("Unable to dispatch reconstruction mode event.", err);
+    }
     return reconstructionMode;
   }
 
@@ -3206,13 +3225,44 @@
     try {
       const params = new URLSearchParams(window.location.search || "");
       const mode = params.get("reconstructionMode");
-      if (mode === "mock" || mode === "backend") setMode(mode);
+      if (mode === "mock" || mode === "backend") {
+        setMode(mode);
+        return true;
+      }
     } catch (err) {
       console.warn("Unable to read reconstruction mode from URL.", err);
     }
+    return false;
   }
 
-  initModeFromUrl();
+  async function autoDetectBackend() {
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 2500);
+      const response = await fetch(ENDPOINTS.health, { method: "GET", signal: controller.signal });
+      clearTimeout(timer);
+      if (!response.ok) return false;
+      const payload = await response.json();
+      if (payload && payload.ok) {
+        setMode("backend");
+        return true;
+      }
+    } catch (err) {
+      // Backend unreachable — stay in offline mock mode.
+    }
+    return false;
+  }
+
+  const modeForcedByUrl = initModeFromUrl();
+  const initBadgeAndMode = () => {
+    updatePipelineBadge();
+    if (!modeForcedByUrl) autoDetectBackend();
+  };
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", initBadgeAndMode);
+  } else {
+    initBadgeAndMode();
+  }
 
   window.PMASReconstructionApi = {
     get mode() { return reconstructionMode; },
