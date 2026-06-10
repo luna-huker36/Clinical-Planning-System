@@ -17,13 +17,13 @@ https://luna-huker36.github.io/Clinical-Planning-System/
 
 > Требуется Python 3 и современный браузер (Chrome, Edge, Firefox).
 
-### Локально с backend scaffold
+### Локально с 3D-реконструкцией (рекомендуется)
 - Установите зависимости: `npm install`
-- Запустите Express backend: `npm start`
-- Mock frontend mode: `http://localhost:3000/`
-- Backend reconstruction mode: `http://localhost:3000/?reconstructionMode=backend`
+- Запустите backend: `npm start`
+- Откройте `http://localhost:3000/` — фронтенд сам обнаружит backend и включит реальный движок
 
-> Backend scaffold пока использует mock processing и тестовую модель `models/LeePerrySmith.glb`.
+> `start.command` / `start.bat` теперь сами запускают Node-бэкенд, если Node.js установлен.
+> Принудительно переключить режим: `?reconstructionMode=backend` или `?reconstructionMode=mock`.
 
 ---
 
@@ -116,6 +116,51 @@ https://luna-huker36.github.io/Clinical-Planning-System/
 
 ---
 
+## Движок 3D-реконструкции (PMAS Native Engine)
+
+Собственный движок реконструкции на чистом JavaScript (Node.js, без внешних
+зависимостей кроме `jpeg-js`/`pngjs`): из фотографий или видео, снятых вокруг
+объекта, строится настоящая 3D-модель в формате GLB.
+
+**Как снимать:** объект на контрастном однотонном фоне, 15–30 кадров по кругу
+(360°) с одного уровня и с одинакового расстояния, **против часовой стрелки**
+(если модель получится зеркальной — снимали по часовой; либо запустите сервер
+с `PMAS_CAPTURE_DIRECTION=cw`). Без рук в кадре, объект не должен касаться
+краёв фото. Видео тоже подходит — кадры извлекаются автоматически (нужен
+установленный `ffmpeg`).
+
+**Пайплайн движка** (`backend/reconstruction/engine/`):
+1. **Силуэты** — фон оценивается по рамке кадра, порог по методу Оцу,
+   морфология + связные компоненты + заливка дыр (`silhouette.js`)
+2. **Камеры** — turntable-модель: кадры равномерно распределяются по кругу,
+   ортографическая проекция (`camera-rig.js`)
+3. **Visual hull** — воксельная сетка вырезается по силуэтам всех ракурсов
+   (`voxel-carving.js`)
+4. **Поверхность** — Surface Nets: водонепроницаемый меш из вокселей
+   (`surface-nets.js`)
+5. **Постобработка** — сглаживание Таубина, нормали, ориентация наружу
+   (`mesh-post.js`)
+6. **Цвета** — каждая вершина окрашивается из лучшего по ракурсу фото
+   (`vertex-colors.js`)
+7. **Экспорт** — бинарный glTF 2.0 (GLB) собственным writer'ом (`glb-writer.js`)
+
+Поддерживается EXIF-ориентация (фото с телефона), три профиля качества
+(`fast` / `balanced` / `quality`), прогресс в реальном времени.
+
+**Тесты движка:**
+```bash
+node backend/reconstruction/engine/selftest.js   # геометрия на эталонных фигурах
+node backend/reconstruction/engine/e2e-test.js   # полный цикл через HTTP API
+```
+Селфтест реконструирует синтетические съёмки сферы и куба и проверяет объём
+(сфера: π/6 от bbox, точность ~0.2%), водонепроницаемость и валидность GLB.
+
+**Внешние движки:** через переменные окружения можно подключить COLMAP/Meshroom:
+`RECONSTRUCTION_ENGINE_MODE=external_cli RECONSTRUCTION_ENGINE_COMMAND=... npm start`.
+Вернуть мок: `RECONSTRUCTION_ENGINE_MODE=mock npm start`.
+
+---
+
 ## Технологии
 
 | Компонент | Технология |
@@ -123,6 +168,7 @@ https://luna-huker36.github.io/Clinical-Planning-System/
 | UI | HTML / CSS / JS |
 | AI-детекция | TensorFlow.js + MediaPipe FaceMesh |
 | 3D | Three.js + CSS2DRenderer |
+| 3D-реконструкция | PMAS Native Engine (visual hull, Node.js) |
 | Экспорт PDF | html2canvas + jsPDF |
 | Экспорт DOCX | docx.js + FileSaver.js |
 | Хранение | localStorage |
@@ -140,6 +186,7 @@ PMAS/
 ├── backend/
 │   ├── server.js
 │   └── reconstruction/      # API 3D Reconstruction
+│       └── engine/          # PMAS Native Engine (visual hull → GLB)
 ├── assets/
 │   ├── css/style.css
 │   ├── js/app.js            # 3D логика
