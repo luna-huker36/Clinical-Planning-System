@@ -28,6 +28,7 @@ app.use((err, req, res, next) => {
 });
 
 app.listen(port, () => {
-  console.log(`PMAS backend scaffold running at http://localhost:${port}`);
-  console.log(`Backend mode: http://localhost:${port}/?reconstructionMode=backend`);
+  const { getConfiguredEngineMode } = require("./reconstruction/reconstruction-engine");
+  console.log(`PMAS backend running at http://localhost:${port}`);
+  console.log(`Reconstruction engine mode: ${getConfiguredEngineMode()}`);
 });

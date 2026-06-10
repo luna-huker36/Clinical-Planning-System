@@ -5,6 +5,7 @@ const path = require("path");
 const { MAX_FILE_BYTES, ERROR_CODES, STATUSES } = require("./constants");
 const { ApiError, sendError } = require("./errors");
 const { validateUploadedFiles, toSafeFileMeta } = require("./validation");
+const { getConfiguredEngineMode } = require("./reconstruction-engine");
 const {
   createUpload,
   getUpload,
@@ -101,6 +102,15 @@ function asyncRoute(handler) {
     Promise.resolve(handler(req, res)).catch(err => sendError(res, err));
   };
 }
+
+router.get("/health", (req, res) => {
+  res.json({
+    ok: true,
+    service: "pmas-reconstruction",
+    engineMode: getConfiguredEngineMode(),
+    time: new Date().toISOString()
+  });
+});
 
 router.post("/upload", (req, res) => {
   upload.array("files")(req, res, err => {

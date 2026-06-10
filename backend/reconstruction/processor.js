@@ -52,7 +52,10 @@ function cancelJob(jobId, reason = "Canceled by user") {
   job.errorMessage = reason;
   job.resultGlbUrl = "";
   saveJob(job);
-  activeJobs.delete(jobId);
+  // The activeJobs entry is intentionally kept: the in-flight processJob
+  // promise is still running and removes itself in its finally block.
+  // Deleting it here would let startJob restart the same job while the old
+  // run is alive, and the two runs would corrupt each other's state.
   return getJob(jobId);
 }
 
@@ -419,7 +422,17 @@ async function processJob(jobId, phase = "analysis") {
     setJobProgress(jobId, STATUSES.reconstructing3d, 70);
     await sleep(180);
     if (isCanceled(jobId)) return getJob(jobId);
-    const reconstruction = await runMockReconstruction(ensureJob(jobId));
+    const reconstruction = await runMockReconstruction(ensureJob(jobId), {
+      settings,
+      onProgress: fraction => {
+        // Never throw from inside the engine: the job may have been canceled
+        // or deleted mid-run — in that case just stop reporting progress.
+        const liveJob = getMutableJob(jobId);
+        if (liveJob && liveJob.status !== STATUSES.canceled) {
+          setJobProgress(jobId, STATUSES.reconstructing3d, 70 + Math.round(fraction * 11));
+        }
+      }
+    });
     if (isCanceled(jobId)) return getJob(jobId);
     const jobWithReconstruction = ensureJob(jobId);
     jobWithReconstruction.reconstructionMode = reconstruction.reconstructionMode;
@@ -436,6 +449,7 @@ async function processJob(jobId, phase = "analysis") {
     jobWithReconstruction.rawMeshPath = reconstruction.rawMeshPath;
     jobWithReconstruction.reconstructionWarnings = reconstruction.reconstructionWarnings;
     jobWithReconstruction.reconstructionQuality = reconstruction.reconstructionQuality;
+    jobWithReconstruction.reconstructionStats = reconstruction.reconstructionStats || null;
     jobWithReconstruction.warnings = mergeWarnings(jobWithReconstruction.warnings || [], reconstruction.reconstructionWarnings);
     saveJob(jobWithReconstruction);
 
@@ -579,6 +593,7 @@ function startJob(jobId) {
   job.rawMeshPath = "";
   job.reconstructionWarnings = [];
   job.reconstructionQuality = "poor";
+  job.reconstructionStats = null;
   job.inputMeshFormat = "";
   job.conversionMode = "mock";
   job.conversionSuccess = false;

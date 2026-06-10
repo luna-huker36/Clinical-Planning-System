@@ -4,14 +4,16 @@ const { spawn } = require("child_process");
 
 const ENGINE_MODES = {
   mock: "mock",
+  native: "pmas_native",
   colmapReady: "colmap_ready",
   meshroomReady: "meshroom_ready",
   externalCli: "external_cli"
 };
-const RECONSTRUCTION_MODE = process.env.RECONSTRUCTION_ENGINE_MODE || ENGINE_MODES.mock;
+const RECONSTRUCTION_MODE = process.env.RECONSTRUCTION_ENGINE_MODE || ENGINE_MODES.native;
 const RECONSTRUCTION_ENGINE_COMMAND = process.env.RECONSTRUCTION_ENGINE_COMMAND || "";
 const RECONSTRUCTION_ENGINE_ARGS = process.env.RECONSTRUCTION_ENGINE_ARGS || "";
 const ENGINE_NAME = "PMAS Mock Reconstruction Engine";
+const { runNativeReconstruction, ENGINE_NAME: NATIVE_ENGINE_NAME } = require("./engine");
 const MOCK_INPUT_MODEL = path.resolve(__dirname, "../../models/LeePerrySmith.glb");
 const RAW_MESH_EXTENSIONS = new Set([".obj", ".ply", ".stl", ".glb", ".gltf"]);
 
@@ -241,6 +243,29 @@ async function runReconstructionEngine(datasetPath, options = {}) {
   const job = options.job;
   if (!job) throw new Error("Reconstruction job is required for mock engine.");
 
+  if (options.mode === ENGINE_MODES.native) {
+    const outputDir = getJobReconstructionDir(job);
+    const native = await runNativeReconstruction(job, {
+      outputPath: path.join(outputDir, "raw-model.glb"),
+      settings: options.settings,
+      onProgress: options.onProgress
+    });
+    return {
+      engineJobId: `native-${job.jobId}`,
+      rawMeshPath: native.rawMeshPath,
+      engineName: native.engineName || NATIVE_ENGINE_NAME,
+      reconstructionMode: ENGINE_MODES.native,
+      engineMode: ENGINE_MODES.native,
+      engineCommand: "",
+      engineExitCode: 0,
+      engineStdout: JSON.stringify(native.stats),
+      engineStderr: "",
+      nativeWarnings: native.warnings,
+      nativeQuality: native.quality,
+      nativeStats: native.stats
+    };
+  }
+
   // TODO: Add COLMAP adapter.
   // TODO: Add Meshroom / AliceVision adapter.
   // TODO: Add OpenMVG + OpenMVS adapter.
@@ -332,25 +357,26 @@ async function validateReconstructionOutput(outputPath) {
 }
 
 function shouldUseExternalCli() {
-  return getConfiguredEngineMode() !== ENGINE_MODES.mock;
+  return [ENGINE_MODES.externalCli, ENGINE_MODES.colmapReady, ENGINE_MODES.meshroomReady]
+    .includes(getConfiguredEngineMode());
 }
 
 function getConfiguredEngineMode() {
-  if (!Object.values(ENGINE_MODES).includes(RECONSTRUCTION_MODE)) return ENGINE_MODES.mock;
-  if (!RECONSTRUCTION_ENGINE_COMMAND) return ENGINE_MODES.mock;
+  if (!Object.values(ENGINE_MODES).includes(RECONSTRUCTION_MODE)) return ENGINE_MODES.native;
   if ([ENGINE_MODES.externalCli, ENGINE_MODES.colmapReady, ENGINE_MODES.meshroomReady].includes(RECONSTRUCTION_MODE)) {
-    return RECONSTRUCTION_MODE;
+    return RECONSTRUCTION_ENGINE_COMMAND ? RECONSTRUCTION_MODE : ENGINE_MODES.native;
   }
-  return ENGINE_MODES.mock;
+  return RECONSTRUCTION_MODE;
 }
 
-async function runMockReconstruction(job) {
+async function runMockReconstruction(job, options = {}) {
   const configuredMode = getConfiguredEngineMode();
   const dataset = shouldUseExternalCli()
     ? await prepareDatasetForEngine(job)
     : await prepareReconstructionDataset(job);
   const reconstructionWarnings = getReconstructionWarnings(dataset.inputFramesCount, dataset.inputMasksCount);
   let engine = null;
+  let nativeQuality = "";
 
   if (shouldUseExternalCli()) {
     engine = await runReconstructionEngine(dataset.datasetPath, {
@@ -376,10 +402,29 @@ async function runMockReconstruction(job) {
       engine.engineStdout = failedExternal.engineStdout || "";
       engine.engineStderr = failedExternal.engineStderr || "";
     }
-  } else {
-    if (RECONSTRUCTION_MODE !== ENGINE_MODES.mock) {
-      reconstructionWarnings.push("External reconstruction engine is not configured; fallback to mock mode.");
+  } else if (configuredMode === ENGINE_MODES.native) {
+    if (RECONSTRUCTION_MODE !== ENGINE_MODES.native && RECONSTRUCTION_MODE !== ENGINE_MODES.mock) {
+      reconstructionWarnings.push("External reconstruction engine is not configured; using PMAS native engine.");
     }
+    try {
+      engine = await runReconstructionEngine(dataset.datasetPath, {
+        job,
+        mode: ENGINE_MODES.native,
+        settings: options.settings,
+        onProgress: options.onProgress
+      });
+      (engine.nativeWarnings || []).forEach(warning => reconstructionWarnings.push(warning));
+      nativeQuality = engine.nativeQuality || "";
+    } catch (err) {
+      reconstructionWarnings.push(`Native reconstruction failed: ${err.message}; fallback to mock mode.`);
+      reconstructionWarnings.push("ВНИМАНИЕ: показана тестовая модель, а не реконструкция загруженных кадров.");
+      engine = await runReconstructionEngine(dataset.datasetPath, { job, mode: ENGINE_MODES.mock });
+      engine.engineMode = ENGINE_MODES.native;
+      engine.engineExitCode = -1;
+      engine.engineStderr = err.message;
+      nativeQuality = "poor";
+    }
+  } else {
     engine = await runReconstructionEngine(dataset.datasetPath, { job, mode: ENGINE_MODES.mock });
   }
 
@@ -404,12 +449,14 @@ async function runMockReconstruction(job) {
     inputMasksCount: dataset.inputMasksCount,
     rawMeshPath: output.rawMeshPath,
     reconstructionWarnings,
-    reconstructionQuality: getReconstructionQuality(dataset.inputFramesCount, dataset.inputMasksCount)
+    reconstructionQuality: nativeQuality || getReconstructionQuality(dataset.inputFramesCount, dataset.inputMasksCount),
+    reconstructionStats: engine.nativeStats || null
   };
 }
 
 module.exports = {
   ENGINE_MODES,
+  getConfiguredEngineMode,
   prepareReconstructionDataset,
   prepareDatasetForEngine,
   runReconstructionEngine,
