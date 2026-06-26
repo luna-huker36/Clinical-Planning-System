@@ -262,7 +262,8 @@ async function runReconstructionEngine(datasetPath, options = {}) {
       engineStderr: "",
       nativeWarnings: native.warnings,
       nativeQuality: native.quality,
-      nativeStats: native.stats
+      nativeStats: native.stats,
+      nativeRealHeightMm: native.realHeightMm || null
     };
   }
 
@@ -450,7 +451,8 @@ async function runMockReconstruction(job, options = {}) {
     rawMeshPath: output.rawMeshPath,
     reconstructionWarnings,
     reconstructionQuality: nativeQuality || getReconstructionQuality(dataset.inputFramesCount, dataset.inputMasksCount),
-    reconstructionStats: engine.nativeStats || null
+    reconstructionStats: engine.nativeStats || null,
+    resultRealHeightMm: engine.nativeRealHeightMm || null
   };
 }
 

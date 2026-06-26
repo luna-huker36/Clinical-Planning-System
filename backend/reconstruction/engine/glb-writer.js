@@ -35,6 +35,21 @@ function assertFiniteFloats(arr, label) {
   }
 }
 
+function validateTextureInputs(uvs, texturePng, vertexCount) {
+  if (uvs === null && texturePng === null) return;
+  if (uvs === null || texturePng === null) {
+    throw new Error('buildGlb: uvs and texturePng must be provided together');
+  }
+  if (!(uvs instanceof Float32Array)) throw new Error('buildGlb: uvs must be a Float32Array');
+  if (uvs.length !== 2 * vertexCount) {
+    throw new Error(`buildGlb: uvs length must be ${2 * vertexCount} (UV per vertex), got ${uvs.length}`);
+  }
+  if (!Buffer.isBuffer(texturePng) || texturePng.length < 8) {
+    throw new Error('buildGlb: texturePng must be a non-empty PNG Buffer');
+  }
+  assertFiniteFloats(uvs, 'uvs');
+}
+
 function validateBuildInputs(positions, normals, colors, indices) {
   if (!(positions instanceof Float32Array)) throw new Error('buildGlb: positions must be a Float32Array');
   if (positions.length === 0 || positions.length % 3 !== 0) {
@@ -86,32 +101,48 @@ function writeUint32sLE(target, byteOffset, values) {
   for (let i = 0; i < values.length; i += 1) target.writeUInt32LE(values[i], byteOffset + 4 * i);
 }
 
-function buildGltfJson({ vertexCount, indexCount, bounds, bufferViews, binByteLength, hasColors, name, generator }) {
+function buildGltfJson({ vertexCount, indexCount, bounds, bufferViews, binByteLength, hasColors, hasTexture, imageViewIndex, name, generator }) {
   const accessors = [
     { bufferView: 0, byteOffset: 0, componentType: COMP_UNSIGNED_INT, count: indexCount, type: 'SCALAR' },
     { bufferView: 1, byteOffset: 0, componentType: COMP_FLOAT, count: vertexCount, type: 'VEC3', min: bounds.min, max: bounds.max },
     { bufferView: 2, byteOffset: 0, componentType: COMP_FLOAT, count: vertexCount, type: 'VEC3' },
   ];
   const attributes = { POSITION: 1, NORMAL: 2 };
+  let nextView = 3;
   if (hasColors) {
-    accessors.push({ bufferView: 3, byteOffset: 0, componentType: COMP_UNSIGNED_BYTE, count: vertexCount, type: 'VEC4', normalized: true });
-    attributes.COLOR_0 = 3;
+    accessors.push({ bufferView: nextView, byteOffset: 0, componentType: COMP_UNSIGNED_BYTE, count: vertexCount, type: 'VEC4', normalized: true });
+    attributes.COLOR_0 = accessors.length - 1;
+    nextView += 1;
   }
-  return {
+  if (hasTexture) {
+    accessors.push({ bufferView: nextView, byteOffset: 0, componentType: COMP_FLOAT, count: vertexCount, type: 'VEC2' });
+    attributes.TEXCOORD_0 = accessors.length - 1;
+    nextView += 1;
+  }
+  const material = {
+    name: 'pmas-scan-material',
+    pbrMetallicRoughness: { baseColorFactor: [1, 1, 1, 1], metallicFactor: 0, roughnessFactor: 0.9 },
+    doubleSided: true,
+  };
+  const json = {
     asset: { version: '2.0', generator },
     buffers: [{ byteLength: binByteLength }],
     bufferViews,
     accessors,
-    materials: [{
-      name: 'pmas-scan-material',
-      pbrMetallicRoughness: { baseColorFactor: [1, 1, 1, 1], metallicFactor: 0, roughnessFactor: 0.9 },
-      doubleSided: true,
-    }],
+    materials: [material],
     meshes: [{ name, primitives: [{ attributes, indices: 0, material: 0, mode: 4 }] }],
     nodes: [{ mesh: 0, name }],
     scenes: [{ nodes: [0] }],
     scene: 0,
   };
+  if (hasTexture) {
+    material.pbrMetallicRoughness.baseColorTexture = { index: 0 };
+    json.images = [{ bufferView: imageViewIndex, mimeType: 'image/png' }];
+    // Цилиндрическая развёртка использует U за пределами [0,1] у шва — REPEAT.
+    json.samplers = [{ magFilter: 9729, minFilter: 9729, wrapS: 10497, wrapT: 33071 }];
+    json.textures = [{ sampler: 0, source: 0 }];
+  }
+  return json;
 }
 
 function assembleGlb(json, bin) {
@@ -148,29 +179,51 @@ function assembleGlb(json, bin) {
  */
 function buildGlb(options) {
   if (options === null || typeof options !== 'object') throw new Error('buildGlb: an options object is required');
-  const { positions, normals, colors = null, indices, name = DEFAULT_NAME, generator = DEFAULT_GENERATOR } = options;
+  const {
+    positions, normals, colors = null, indices,
+    uvs = null, texturePng = null,
+    name = DEFAULT_NAME, generator = DEFAULT_GENERATOR,
+  } = options;
   if (typeof name !== 'string' || name.length === 0) throw new Error('buildGlb: name must be a non-empty string');
   if (typeof generator !== 'string' || generator.length === 0) throw new Error('buildGlb: generator must be a non-empty string');
   const vertexCount = validateBuildInputs(positions, normals, colors, indices);
+  validateTextureInputs(uvs, texturePng, vertexCount);
   const hasColors = colors !== null;
+  const hasTexture = uvs !== null;
   const sections = [
     { byteLength: indices.length * 4, target: TARGET_ELEMENT_ARRAY_BUFFER },
     { byteLength: positions.length * 4, target: TARGET_ARRAY_BUFFER },
     { byteLength: normals.length * 4, target: TARGET_ARRAY_BUFFER },
   ];
   if (hasColors) sections.push({ byteLength: colors.length, target: TARGET_ARRAY_BUFFER });
+  if (hasTexture) {
+    sections.push({ byteLength: uvs.length * 4, target: TARGET_ARRAY_BUFFER });
+    sections.push({ byteLength: texturePng.length }); // image view: без target
+  }
   let cursor = 0;
   const bufferViews = sections.map((section) => {
     const byteOffset = align4(cursor);
     cursor = byteOffset + section.byteLength;
-    return { buffer: 0, byteOffset, byteLength: section.byteLength, target: section.target };
+    const view = { buffer: 0, byteOffset, byteLength: section.byteLength };
+    if (section.target) view.target = section.target;
+    return view;
   });
   const binByteLength = cursor;
   const bin = Buffer.alloc(align4(binByteLength));
   writeUint32sLE(bin, bufferViews[0].byteOffset, indices);
   writeFloatsLE(bin, bufferViews[1].byteOffset, positions);
   writeFloatsLE(bin, bufferViews[2].byteOffset, normals);
-  if (hasColors) bin.set(colors, bufferViews[3].byteOffset);
+  let viewCursor = 3;
+  if (hasColors) {
+    bin.set(colors, bufferViews[viewCursor].byteOffset);
+    viewCursor += 1;
+  }
+  let imageViewIndex = -1;
+  if (hasTexture) {
+    writeFloatsLE(bin, bufferViews[viewCursor].byteOffset, uvs);
+    imageViewIndex = viewCursor + 1;
+    texturePng.copy(bin, bufferViews[imageViewIndex].byteOffset);
+  }
   const json = buildGltfJson({
     vertexCount,
     indexCount: indices.length,
@@ -178,6 +231,8 @@ function buildGlb(options) {
     bufferViews,
     binByteLength,
     hasColors,
+    hasTexture,
+    imageViewIndex,
     name,
     generator,
   });
@@ -359,7 +414,7 @@ function checkIndices(json, bin, accessor, vertexCount, errors) {
  */
 function validateGlbBuffer(buffer) {
   const errors = [];
-  const stats = { vertexCount: 0, triangleCount: 0, byteLength: 0, hasColors: false, hasNormals: false };
+  const stats = { vertexCount: 0, triangleCount: 0, byteLength: 0, hasColors: false, hasNormals: false, hasTexture: false };
   let parsed;
   try {
     parsed = parseGlb(buffer);
@@ -381,6 +436,8 @@ function validateGlbBuffer(buffer) {
   const indexAccessor = accessors[primitive.indices];
   stats.hasNormals = accessors[primitive.attributes.NORMAL] !== undefined;
   stats.hasColors = accessors[primitive.attributes.COLOR_0] !== undefined;
+  stats.hasTexture = accessors[primitive.attributes.TEXCOORD_0] !== undefined &&
+    Array.isArray(json.textures) && json.textures.length > 0;
   if (!positionAccessor || positionAccessor.type !== 'VEC3' || positionAccessor.componentType !== COMP_FLOAT) {
     errors.push('POSITION accessor missing or not a float VEC3');
   } else {

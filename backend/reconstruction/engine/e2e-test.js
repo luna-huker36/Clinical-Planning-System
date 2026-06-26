@@ -127,13 +127,15 @@ async function main() {
     const glb = Buffer.from(await glbResponse.arrayBuffer());
     const validation = validateGlbBuffer(glb);
     if (!validation.ok) errors.push(`Result GLB invalid: ${validation.errors.join("; ")}`);
-    console.log(`result GLB: ${glb.length} bytes, ${validation.stats.vertexCount} verts, ${validation.stats.triangleCount} tris, colors=${validation.stats.hasColors}`);
+    console.log(`result GLB: ${glb.length} bytes, ${validation.stats.vertexCount} verts, ${validation.stats.triangleCount} tris, colors=${validation.stats.hasColors}, texture=${validation.stats.hasTexture}`);
 
     const mockGlb = await fs.readFile(MOCK_MODEL_PATH);
     if (glb.length === mockGlb.length && glb.equals(mockGlb)) {
       errors.push("Result GLB is byte-identical to the mock LeePerrySmith model — engine did not run");
     }
-    if (!validation.stats.hasColors) errors.push("Result GLB has no vertex colors (native engine always writes them)");
+    if (!validation.stats.hasColors && !validation.stats.hasTexture) {
+      errors.push("Result GLB has neither vertex colors nor a baked texture");
+    }
     if (validation.stats.triangleCount < 1000) errors.push(`Suspiciously low triangle count: ${validation.stats.triangleCount}`);
 
     const stats = finalJob.reconstructionStats;

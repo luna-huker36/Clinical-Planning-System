@@ -40,10 +40,23 @@ function readMeshFromGlb(buffer) {
       accessor.count * components
     );
   };
-  return {
-    positions: Float32Array.from(readAccessor(primitive.attributes.POSITION, Float32Array, 3)),
-    indices: Uint32Array.from(readAccessor(primitive.indices, Uint32Array, 1))
-  };
+  const positions = Float32Array.from(readAccessor(primitive.attributes.POSITION, Float32Array, 3));
+  const indices = Uint32Array.from(readAccessor(primitive.indices, Uint32Array, 1));
+  // Текстурная развёртка дублирует вершины на UV-шве — для проверки топологии
+  // склеиваем вершины по позициям (так же поступает 3D-вьюер приложения).
+  const weldMap = new Map();
+  const remap = new Uint32Array(positions.length / 3);
+  for (let v = 0; v < positions.length / 3; v += 1) {
+    const key = `${positions[v * 3].toFixed(7)},${positions[v * 3 + 1].toFixed(7)},${positions[v * 3 + 2].toFixed(7)}`;
+    let id = weldMap.get(key);
+    if (id == null) {
+      id = v;
+      weldMap.set(key, id);
+    }
+    remap[v] = id;
+  }
+  const weldedIndices = Uint32Array.from(indices, i => remap[i]);
+  return { positions, indices, weldedIndices };
 }
 
 async function runCase({ shape, viewCount, expectedFillRatio, tolerance, aspectTolerance }, workRoot) {
@@ -79,7 +92,7 @@ async function runCase({ shape, viewCount, expectedFillRatio, tolerance, aspectT
   const fillRatio = volume / bboxVolume;
 
   if (volume <= 0) errors.push(`Signed volume must be positive (outward orientation), got ${volume}`);
-  if (!isWatertight(mesh.indices)) errors.push("Mesh is not watertight");
+  if (!isWatertight(mesh.weldedIndices)) errors.push("Mesh is not watertight (after position weld)");
   if (Math.abs(fillRatio - expectedFillRatio) > tolerance) {
     errors.push(`Fill ratio ${fillRatio.toFixed(4)} differs from expected ${expectedFillRatio.toFixed(4)} by more than ${tolerance}`);
   }
@@ -89,7 +102,9 @@ async function runCase({ shape, viewCount, expectedFillRatio, tolerance, aspectT
     errors.push(`X/Z aspect should be ~1 for a turntable-symmetric shape, got ${aspectXZ.toFixed(3)}`);
   }
   if (result.quality === "poor") errors.push(`Quality graded poor: ${result.warnings.join("; ")}`);
-  if (!glbValidation.stats.hasColors) errors.push("GLB has no vertex colors");
+  if (!glbValidation.stats.hasColors && !glbValidation.stats.hasTexture) {
+    errors.push("GLB has neither vertex colors nor a baked texture");
+  }
 
   return {
     shape: `${shape} (${viewCount} views)`,
@@ -99,7 +114,7 @@ async function runCase({ shape, viewCount, expectedFillRatio, tolerance, aspectT
     expectedFillRatio: Number(expectedFillRatio.toFixed(4)),
     triangles: glbValidation.stats.triangleCount,
     vertices: glbValidation.stats.vertexCount,
-    watertight: isWatertight(mesh.indices),
+    watertight: isWatertight(mesh.weldedIndices),
     quality: result.quality,
     warnings: result.warnings,
     glbBytes: glb.length

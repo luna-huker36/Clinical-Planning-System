@@ -41,7 +41,9 @@ function extractSilhouette(img, options = {}) {
   const dist = buildDistanceMap(img, backgroundColor);
   const threshold = clampThreshold(otsuThreshold(dist));
   const rawMask = thresholdMask(dist, threshold);
-  const opened = dilate3x3(erode3x3(rawMask, width, height), width, height);
+  const lowThreshold = Math.max(12, Math.round(threshold * 0.45));
+  const grown = hysteresisGrow(rawMask, dist, lowThreshold, width, height);
+  const opened = dilate3x3(erode3x3(grown, width, height), width, height);
   const largest = keepLargestComponent(opened, width, height);
   if (!hasForeground(largest)) {
     return buildEmptyResult(width, height, backgroundColor);
@@ -134,6 +136,8 @@ function medianOfSorted(sorted) {
   return Math.round((sorted[mid - 1] + sorted[mid]) / 2);
 }
 
+const CHROMA_BOOST = 1.5;
+
 function buildDistanceMap(img, bg) {
   const { width, height, data } = img;
   const n = width * height;
@@ -143,9 +147,52 @@ function buildDistanceMap(img, bg) {
     const dg = data[4 * i + 1] - bg.g;
     const db = data[4 * i + 2] - bg.b;
     const e = Math.sqrt(dr * dr + dg * dg + db * db);
-    dist[i] = e >= 255 ? 255 : Math.round(e);
+    // Цветность учитывается с усилением: светлые волосы/кожа на белой стене
+    // почти не отличаются по яркости, но имеют тёплый оттенок — без этого
+    // ярко освещённая сторона объекта проваливается в фон.
+    const dLum = (dr + dg + db) / 3;
+    const cr = dr - dLum;
+    const cg = dg - dLum;
+    const cb = db - dLum;
+    const chroma = Math.sqrt(cr * cr + cg * cg + cb * cb);
+    const value = e + CHROMA_BOOST * chroma;
+    dist[i] = value >= 255 ? 255 : Math.round(value);
   }
   return dist;
+}
+
+/**
+ * Гистерезисное дорастание (как в детекторе Канни): к «ядру» (пиксели выше
+ * сильного порога) присоединяются СВЯЗНЫЕ с ним пиксели выше слабого порога.
+ * Светлая сторона объекта дорастает от тёмного ядра, а шум фона, не связанный
+ * с объектом, остаётся за бортом.
+ */
+function hysteresisGrow(strongMask, dist, lowThreshold, width, height) {
+  const mask = Uint8Array.from(strongMask);
+  const queue = new Int32Array(width * height);
+  let head = 0;
+  let tail = 0;
+  for (let i = 0; i < mask.length; i++) {
+    if (mask[i]) queue[tail++] = i;
+  }
+  while (head < tail) {
+    const i = queue[head++];
+    const x = i % width;
+    const neighbors = [
+      x > 0 ? i - 1 : -1,
+      x < width - 1 ? i + 1 : -1,
+      i - width,
+      i + width
+    ];
+    for (const n of neighbors) {
+      if (n < 0 || n >= mask.length || mask[n]) continue;
+      if (dist[n] >= lowThreshold) {
+        mask[n] = FOREGROUND;
+        queue[tail++] = n;
+      }
+    }
+  }
+  return mask;
 }
 
 function otsuThreshold(dist) {

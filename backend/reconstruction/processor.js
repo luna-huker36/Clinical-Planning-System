@@ -153,7 +153,15 @@ async function analyzeJobFrames(jobId) {
   }
 
   try {
-    const analysis = await analyzeFramesQuality(framePaths);
+    const analysis = await analyzeFramesQuality(framePaths, (index, total) => {
+      // Progress reporting must never break the analysis itself.
+      try {
+        if (!total || isCanceled(jobId)) return;
+        setJobProgress(jobId, STATUSES.analyzingFrames, 45 + Math.min(9, Math.floor((index / total) * 10)));
+      } catch (err) {
+        // Job may have been deleted mid-run; stop reporting silently.
+      }
+    });
     const selected = selectBestFrames(analysis, { maxFrames: settings.maxFrames });
     const rejectedFrames = selected.frameQualityReport.frames
       .filter(frame => frame.rejected)
@@ -251,7 +259,19 @@ async function segmentJobHead(jobId) {
   }
 
   try {
-    return await generateSegmentationMasks(selectedFrames, { masksDir, mode: "person_segmentation" });
+    return await generateSegmentationMasks(selectedFrames, {
+      masksDir,
+      mode: "person_segmentation",
+      onProgress: (index, total) => {
+        // Progress reporting must never break segmentation itself.
+        try {
+          if (!total || isCanceled(jobId)) return;
+          setJobProgress(jobId, STATUSES.segmentingHead, 55 + Math.min(9, Math.floor((index / total) * 10)));
+        } catch (progressErr) {
+          // Job may have been deleted mid-run; stop reporting silently.
+        }
+      }
+    });
   } catch (err) {
     return {
       segmentationMode: "mock",
@@ -450,6 +470,7 @@ async function processJob(jobId, phase = "analysis") {
     jobWithReconstruction.reconstructionWarnings = reconstruction.reconstructionWarnings;
     jobWithReconstruction.reconstructionQuality = reconstruction.reconstructionQuality;
     jobWithReconstruction.reconstructionStats = reconstruction.reconstructionStats || null;
+    jobWithReconstruction.resultRealHeightMm = reconstruction.resultRealHeightMm || null;
     jobWithReconstruction.warnings = mergeWarnings(jobWithReconstruction.warnings || [], reconstruction.reconstructionWarnings);
     saveJob(jobWithReconstruction);
 

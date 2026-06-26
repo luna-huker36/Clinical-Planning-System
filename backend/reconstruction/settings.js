@@ -8,8 +8,11 @@ const DEFAULT_RECONSTRUCTION_SETTINGS = Object.freeze({
   frameExtractionRate: 1,
   cleanupStrength: "medium",
   targetModelQuality: "preview",
-  saveIntermediateFiles: false
+  saveIntermediateFiles: false,
+  realHeightMm: null
 });
+
+const REAL_HEIGHT_MM_RANGE = Object.freeze({ min: 50, max: 3000 });
 
 const ALLOWED = Object.freeze({
   processingMode: new Set(["fast", "balanced", "quality"]),
@@ -27,6 +30,11 @@ function normalizeBoolean(value, fallback) {
   return fallback;
 }
 
+function normalizeRealHeightMm(value) {
+  if (value === null || value === undefined || value === "") return DEFAULT_RECONSTRUCTION_SETTINGS.realHeightMm;
+  return Number(value);
+}
+
 function normalizeReconstructionSettings(settings = {}) {
   const source = settings && typeof settings === "object" ? settings : {};
   return {
@@ -39,7 +47,8 @@ function normalizeReconstructionSettings(settings = {}) {
     saveIntermediateFiles: normalizeBoolean(
       source.saveIntermediateFiles,
       DEFAULT_RECONSTRUCTION_SETTINGS.saveIntermediateFiles
-    )
+    ),
+    realHeightMm: normalizeRealHeightMm(source.realHeightMm)
   };
 }
 
@@ -54,6 +63,12 @@ function validateReconstructionSettings(settings = {}) {
   if (!ALLOWED.cleanupStrength.has(normalized.cleanupStrength)) errors.push("cleanupStrength must be low, medium, or high.");
   if (!ALLOWED.targetModelQuality.has(normalized.targetModelQuality)) errors.push("targetModelQuality must be preview or planning.");
   if (typeof normalized.saveIntermediateFiles !== "boolean") errors.push("saveIntermediateFiles must be boolean.");
+  if (normalized.realHeightMm !== null &&
+    (!Number.isFinite(normalized.realHeightMm) ||
+      normalized.realHeightMm < REAL_HEIGHT_MM_RANGE.min ||
+      normalized.realHeightMm > REAL_HEIGHT_MM_RANGE.max)) {
+    errors.push(`realHeightMm must be null or a number between ${REAL_HEIGHT_MM_RANGE.min} and ${REAL_HEIGHT_MM_RANGE.max}.`);
+  }
 
   return {
     ok: errors.length === 0,

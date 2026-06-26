@@ -45,8 +45,10 @@ function buildTurntableRig(silhouettes, options = {}) {
   const fullCircle = Math.abs(coverage - Math.PI * 2) < 1e-6;
   // When some captured frames were rejected, azimuths must still follow the
   // ORIGINAL capture positions (frame.sourceIndex over totalFrames) — spacing
-  // the survivors evenly would assign systematically wrong angles.
-  const totalFrames = Number.isInteger(options.totalFrames) && options.totalFrames >= frames.length
+  // the survivors evenly would assign systematically wrong angles. With
+  // rotation-period folding totalFrames may be SMALLER than the frame count
+  // (several frames share an azimuth), so only sanity-check the value.
+  const totalFrames = Number.isInteger(options.totalFrames) && options.totalFrames >= 2
     ? options.totalFrames
     : frames.length;
 
@@ -66,13 +68,20 @@ function buildTurntableRig(silhouettes, options = {}) {
     const halfWidthPx = Math.max(1, (frame.bbox.maxX - frame.bbox.minX) / 2);
     maxHalfWidthWorld = Math.max(maxHalfWidthWorld, halfWidthPx / scalePx);
 
+    // Вертикальный якорь — ВЕРХ силуэта (макушка), а не центр bbox: нижняя
+    // граница силуэта нестабильна (одежда в цвет фона, тень у основания),
+    // и выравнивание по центру кладёт объект в каждом ракурсе на свою
+    // высоту — пересечение даёт «этажерку». Верх объекта сегментируется
+    // стабильно. Для съёмок со стабильным низом формула эквивалентна центру.
+    const centerYAnchored = frame.bbox.minY + scalePx;
+
     return {
       index,
       azimuth,
       cos: Math.cos(azimuth),
       sin: Math.sin(azimuth),
       centerX: frame.center.x,
-      centerY: frame.center.y,
+      centerY: centerYAnchored,
       scalePx,
       width: frame.width,
       height: frame.height,

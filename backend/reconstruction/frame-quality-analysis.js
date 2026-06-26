@@ -2,12 +2,21 @@ const fs = require("fs/promises");
 const path = require("path");
 const jpeg = require("jpeg-js");
 const { PNG } = require("pngjs");
+const { downscaleImage } = require("./engine/image-utils");
 
 const MAX_SELECTED_FRAMES = 60;
 const MIN_GOOD_FRAMES = 15;
-const BLUR_THRESHOLD = 8;
+// Метрики считаются по центральному кропу 60% (объект в центре кадра), а
+// резкость — по верхним 10% значений лапласиана: средняя энергия по всему
+// кадру на белом студийном фоне стремится к нулю и браковала резкие кадры.
+const CROP_RATIO = 0.2;
+const LAPLACIAN_TOP_FRACTION = 0.1;
+// Метрики зависят от пиксельной плотности (4K-кадр «мягче» попиксельно, чем
+// он же в 1080p), поэтому перед анализом кадр приводится к единому размеру.
+const ANALYSIS_MAX_DIM = 1024;
+const BLUR_THRESHOLD = 10;
 const MIN_BRIGHTNESS = 45;
-const MAX_BRIGHTNESS = 215;
+const MAX_BRIGHTNESS = 225;
 const MIN_CONTRAST = 18;
 
 function getExtension(filePath) {
@@ -16,7 +25,7 @@ function getExtension(filePath) {
 
 function decodeImage(buffer, extension) {
   if (extension === "jpg" || extension === "jpeg") {
-    const decoded = jpeg.decode(buffer, { useTArray: true });
+    const decoded = jpeg.decode(buffer, { useTArray: true, maxMemoryUsageInMB: 2048, maxResolutionInMP: 120 });
     return { width: decoded.width, height: decoded.height, data: decoded.data };
   }
   if (extension === "png") {
@@ -33,38 +42,49 @@ function luminanceAt(data, index) {
 function analyzePixels(decoded) {
   const { width, height, data } = decoded;
   const pixelCount = width * height;
-  let sum = 0;
-  let sumSq = 0;
   const luminance = new Float32Array(pixelCount);
-
   for (let i = 0; i < pixelCount; i += 1) {
-    const value = luminanceAt(data, i * 4);
-    luminance[i] = value;
-    sum += value;
-    sumSq += value * value;
+    luminance[i] = luminanceAt(data, i * 4);
   }
 
-  const brightness = sum / pixelCount;
-  const contrast = Math.sqrt(Math.max(0, (sumSq / pixelCount) - (brightness * brightness)));
-  let laplacianEnergy = 0;
-  let laplacianSamples = 0;
+  const x0 = Math.max(1, Math.round(width * CROP_RATIO));
+  const x1 = Math.min(width - 1, Math.round(width * (1 - CROP_RATIO)));
+  const y0 = Math.max(1, Math.round(height * CROP_RATIO));
+  const y1 = Math.min(height - 1, Math.round(height * (1 - CROP_RATIO)));
 
-  for (let y = 1; y < height - 1; y += 1) {
-    for (let x = 1; x < width - 1; x += 1) {
+  let sum = 0;
+  let sumSq = 0;
+  let count = 0;
+  const laplacians = [];
+  for (let y = y0; y < y1; y += 1) {
+    for (let x = x0; x < x1; x += 1) {
       const idx = y * width + x;
+      const value = luminance[idx];
+      sum += value;
+      sumSq += value * value;
+      count += 1;
       const laplacian =
-        (4 * luminance[idx]) -
+        (4 * value) -
         luminance[idx - 1] -
         luminance[idx + 1] -
         luminance[idx - width] -
         luminance[idx + width];
-      laplacianEnergy += laplacian * laplacian;
-      laplacianSamples += 1;
+      laplacians.push(laplacian * laplacian);
     }
   }
+  if (!count) return { blurScore: 0, brightness: 0, contrast: 0 };
+
+  const brightness = sum / count;
+  const contrast = Math.sqrt(Math.max(0, (sumSq / count) - (brightness * brightness)));
+  // Резкость по самым контрастным структурам кропа: достаточно, чтобы где-то
+  // в центре кадра были резкие границы — фон в метрику не входит.
+  laplacians.sort((a, b) => b - a);
+  const topCount = Math.max(1, Math.floor(laplacians.length * LAPLACIAN_TOP_FRACTION));
+  let topSum = 0;
+  for (let i = 0; i < topCount; i += 1) topSum += laplacians[i];
 
   return {
-    blurScore: laplacianSamples ? Math.sqrt(laplacianEnergy / laplacianSamples) : 0,
+    blurScore: Math.sqrt(topSum / topCount),
     brightness,
     contrast
   };
@@ -80,7 +100,7 @@ function getRejectionReason(result) {
 
 function calculateQualityScore(result) {
   if (!result.isReadable) return 0;
-  const blurScore = Math.min(1, result.blurScore / 160);
+  const blurScore = Math.min(1, result.blurScore / 50);
   const brightnessDistance = Math.abs(result.brightness - 128) / 128;
   const brightnessScore = Math.max(0, 1 - brightnessDistance);
   const contrastScore = Math.min(1, result.contrast / 70);
@@ -93,7 +113,8 @@ async function analyzeFrameQuality(framePath) {
     const buffer = await fs.readFile(framePath);
     const extension = getExtension(framePath);
     const decoded = decodeImage(buffer, extension);
-    const metrics = analyzePixels(decoded);
+    const normalized = downscaleImage(decoded, ANALYSIS_MAX_DIM);
+    const metrics = analyzePixels(normalized);
     const baseResult = {
       fileName,
       framePath,
@@ -137,11 +158,14 @@ async function analyzeFrameQuality(framePath) {
   }
 }
 
-async function analyzeFramesQuality(framePaths) {
+async function analyzeFramesQuality(framePaths, onProgress) {
   const paths = Array.from(framePaths || []);
   const results = [];
-  for (const framePath of paths) {
-    results.push(await analyzeFrameQuality(framePath));
+  for (let index = 0; index < paths.length; index += 1) {
+    results.push(await analyzeFrameQuality(paths[index]));
+    if (typeof onProgress === "function") onProgress(index + 1, paths.length);
+    // Decoding is CPU-heavy and synchronous: yield so the HTTP server stays responsive.
+    await new Promise(resolve => setImmediate(resolve));
   }
   return results;
 }
@@ -175,6 +199,26 @@ function selectBestFrames(frameAnalysisResults, options = {}) {
     .slice(0, maxFrames);
   const selectedNames = new Set(eligible.map(result => result.fileName));
 
+  // Реконструкции нужно достаточно ракурсов: если жёсткие пороги оставили
+  // слишком мало кадров, добираем лучшие из отбракованных — пользователь
+  // всё равно увидит их на экране проверки и сможет снять вручную.
+  let autoIncludedCount = 0;
+  const minKeep = Math.min(
+    MIN_GOOD_FRAMES,
+    maxFrames,
+    results.filter(result => result.isReadable).length
+  );
+  if (selectedNames.size < minKeep) {
+    const topUp = results
+      .filter(result => result.isReadable && !selectedNames.has(result.fileName))
+      .sort((left, right) => right.qualityScore - left.qualityScore)
+      .slice(0, minKeep - selectedNames.size);
+    for (const frame of topUp) {
+      selectedNames.add(frame.fileName);
+      autoIncludedCount += 1;
+    }
+  }
+
   const normalizedResults = results.map(result => {
     const selected = selectedNames.has(result.fileName);
     const rejectionReason = selected ? "" : (result.rejectionReason || getRejectionReason(result) || "not_selected");
@@ -199,15 +243,20 @@ function selectBestFrames(frameAnalysisResults, options = {}) {
       height: result.height
     }));
   const rejectedFramesCount = normalizedResults.length - selectedFrames.length;
+  const warnings = buildWarnings(normalizedResults, selectedFrames);
+  if (autoIncludedCount > 0) {
+    warnings.push(`Кадров с хорошими метриками мало — ${autoIncludedCount} кадр(ов) добавлено автоматически, проверьте их на экране ревью`);
+  }
   const report = {
     totalFrames: normalizedResults.length,
     selectedFramesCount: selectedFrames.length,
     rejectedFramesCount,
+    autoIncludedCount,
     averageBlurScore: average(normalizedResults.map(result => result.blurScore)),
     averageBrightness: average(normalizedResults.map(result => result.brightness)),
     averageContrast: average(normalizedResults.map(result => result.contrast)),
     qualityScore: average(selectedFrames.map(result => result.qualityScore)),
-    warnings: buildWarnings(normalizedResults, selectedFrames),
+    warnings,
     frames: normalizedResults.map(result => ({
       fileName: result.fileName,
       isReadable: result.isReadable,

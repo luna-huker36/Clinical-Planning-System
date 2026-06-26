@@ -93,7 +93,8 @@ const upload = multer({
     }
   }),
   limits: {
-    fileSize: MAX_FILE_BYTES
+    fileSize: MAX_FILE_BYTES,
+    files: 200
   }
 });
 
@@ -117,7 +118,9 @@ router.post("/upload", (req, res) => {
     if (err) {
       const message = err.code === "LIMIT_FILE_SIZE"
         ? "Файл превышает лимит 250 MB."
-        : "Upload failed.";
+        : err.code === "LIMIT_FILE_COUNT"
+          ? "Слишком много файлов в одной загрузке (максимум 200)."
+          : "Upload failed.";
       sendError(res, new ApiError(400, ERROR_CODES.uploadFailed, message));
       return;
     }
@@ -729,10 +732,15 @@ router.get("/artifacts/:jobId/mesh/cleaned-model.glb", asyncRoute(async (req, re
 router.get("/artifacts/:jobId/frames/:frameName", asyncRoute(async (req, res) => {
   const job = getMutableJob(req.params.jobId);
   if (!job) throw new ApiError(404, ERROR_CODES.jobNotFound, "Reconstruction job не найден.");
-  const frameName = req.params.frameName;
+  const frameName = path.basename(String(req.params.frameName));
   const frame = [...(job.selectedFrames || []), ...(job.rejectedFrames || []), ...(job.finalSelectedFrames || [])]
     .find(item => item.fileName === frameName);
-  const framePath = frame?.framePath || (job.framesDir ? path.join(job.framesDir, frameName) : "");
+  let framePath = frame?.framePath || "";
+  if (!framePath && job.framesDir) {
+    const framesDir = path.resolve(job.framesDir);
+    const candidatePath = path.resolve(framesDir, frameName);
+    if (candidatePath.startsWith(framesDir + path.sep)) framePath = candidatePath;
+  }
   if (!framePath || !fs.existsSync(framePath)) {
     throw new ApiError(404, ERROR_CODES.resultNotReady, "Frame preview не найден.");
   }
@@ -742,10 +750,15 @@ router.get("/artifacts/:jobId/frames/:frameName", asyncRoute(async (req, res) =>
 router.get("/artifacts/:jobId/masks/:maskName", asyncRoute(async (req, res) => {
   const job = getMutableJob(req.params.jobId);
   if (!job) throw new ApiError(404, ERROR_CODES.jobNotFound, "Reconstruction job не найден.");
-  const maskName = req.params.maskName;
+  const maskName = path.basename(String(req.params.maskName));
   const mask = [...(job.segmentationMasks || []), ...(job.finalSelectedMasks || [])]
     .find(item => item.maskName === maskName);
-  const maskPath = mask?.maskPath || (job.masksDir ? path.join(job.masksDir, maskName) : "");
+  let maskPath = mask?.maskPath || "";
+  if (!maskPath && job.masksDir) {
+    const masksDir = path.resolve(job.masksDir);
+    const candidatePath = path.resolve(masksDir, maskName);
+    if (candidatePath.startsWith(masksDir + path.sep)) maskPath = candidatePath;
+  }
   if (!maskPath || !fs.existsSync(maskPath)) {
     throw new ApiError(404, ERROR_CODES.resultNotReady, "Mask preview не найден.");
   }

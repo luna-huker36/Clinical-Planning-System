@@ -244,6 +244,7 @@ async function segmentHeadOnFrame(frame, options = {}) {
 async function segmentHeadOnFrames(frames, options = {}) {
   const frameArray = Array.from(frames || []);
   const masksDir = options.masksDir;
+  const onProgress = typeof options.onProgress === "function" ? options.onProgress : null;
   const selectedMode = await selectSegmentationMode(options.mode || SEGMENTATION_MODES.person);
   const masks = [];
   const warnings = selectedMode.warning ? [selectedMode.warning] : [];
@@ -258,6 +259,9 @@ async function segmentHeadOnFrames(frames, options = {}) {
     });
     if (mask.warning) warnings.push(mask.warning);
     masks.push(mask);
+    if (onProgress) onProgress(index + 1, frameArray.length);
+    // Mask generation decodes images synchronously: yield so the HTTP server stays responsive.
+    await new Promise(resolve => setImmediate(resolve));
   }
 
   return { masks, mode: selectedMode.mode, warnings };
@@ -313,7 +317,8 @@ async function generateSegmentationMasks(selectedFrames, options = {}) {
   await fs.mkdir(masksDir, { recursive: true });
   const segmentation = await segmentHeadOnFrames(selectedFrames, {
     masksDir,
-    mode: options.mode || SEGMENTATION_MODES.person
+    mode: options.mode || SEGMENTATION_MODES.person,
+    onProgress: options.onProgress
   });
   const validation = validateSegmentationMasks(segmentation.masks, {
     mode: segmentation.mode,
